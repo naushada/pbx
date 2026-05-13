@@ -66,6 +66,8 @@ file(GLOB SOURCES "*.cc"
     "../pbx-agent/src/test/ace_ssl_transport_test.cc"
     "../pbx-agent/src/main/ari_ws_client.cpp"
     "../pbx-agent/src/test/ari_ws_client_test.cc"
+    "../pbx-agent/src/main/asterisk_ws_factory.cpp"
+    "../pbx-agent/src/test/asterisk_ws_factory_test.cc"
     # ── Layer 3 integration ──────────────────────────────────────────
     "integration/tunnel_e2e_test.cc"
     "integration/handoff_ordering_test.cc"

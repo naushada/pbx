@@ -47,6 +47,8 @@ if(BUILD_BINARIES)
       modules/module/pbx/src/sip_bridge.cpp
       modules/module/wsdbproxy/src/wsframe.cpp
       modules/module/mongodb/src/mongodbc.cpp)
+  # AsteriskWsFactory is part of pbx-agent/src/main, picked up via the
+  # glob above. No additional source list needed.
   add_executable(pbx-agent ${PBX_AGENT_MAIN_SRC} ${PBX_AGENT_DEPS})
   target_link_libraries(pbx-agent pthread)
   target_link_libraries(pbx-agent ACE)

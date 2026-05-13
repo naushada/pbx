@@ -40,8 +40,9 @@ See:
 | 1     | SipBridge 14 + MicroServicePbx 11 + MicroServiceRouting 7 + PushSender 8 | **40** |
 | 2     | SipFrameDemux 14 + CloudConnector 11 + AriClient 11 + CloudTunnelEndpoint 12 | **48** |
 | 3     | TunnelE2E 8 + BrowserStream 8 + AgentStream 9 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 | **57** |
+| 4     | AsteriskWsFactory 13 | **13** |
 | regression | inherited xpmile suites (verbatim copy) | **112** |
-| **Total** | **33 suites** | **312** |
+| **Total** | **34 suites** | **325** |
 
 **Layer 3 is feature-complete.** The full cloud + agent control plane has real ACE bindings end-to-end, and the `WebConnection` hand-off ordering is defended against future regressions by a source-invariant test.
 
@@ -205,7 +206,7 @@ Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deploym
 | `pbx-agent/src/main/main.cpp` — agent reactor + CloudConnector + AceSslTransportFactory + SipFrameDemux + AriClient + AriWsClient + tiny reconnect supervisor + MongodbClient | ✅ Linked + `--help` clean. Two placeholders documented inline: `NoopAriRest` (the admission `continue` REST call is not wired yet) and `StubAsteriskFactory` (the per-stream WS connection to local Asterisk's `chan_pjsip` is not wired yet). Both placeholders log loudly and the rest of the agent works around them. |
 | Cloud bootstrap in `webservice_main.cpp` — instantiate `SipBridge` + `CloudTunnelEndpoint`; wire `bridge.set_push_notify_handler` (placeholder: log only — `PushSender` not yet wired); wire `bridge.set_cdr_push_handler` → `MongodbClient::create_document("cdr", payload)` | ✅ Both `--remote-db` and local-Mongo modes patched; cloud binary `pbx-cloud` builds + `--help` clean. |
 | CMake `pbx-agent` + `pbx-cloud` build targets | ✅ Both binaries link; `BUILD_BINARIES=ON` is on by default. `docker/Dockerfile.test` builds them alongside `offtarget`. |
-| Real `AsteriskWsFactory` (replaces `StubAsteriskFactory`) — plain-TCP + WS upgrade to `ws://127.0.0.1:8088/ws` (chan_pjsip transport). Same pattern as `AriWsClient`. | ⏳ Next |
+| Real `AsteriskWsFactory` (replaces `StubAsteriskFactory`) — plain-TCP + WS upgrade to `ws://127.0.0.1:8088/ws` (chan_pjsip transport) with `Sec-WebSocket-Protocol: sip` per RFC 7118 §4 | ✅ Complete |
 | Real `IAriRest` impl — REST POSTs to `/ari/applications/.../subscription` and `/ari/channels/.../continue` (admission-busy redirect). | ⏳ |
 | Real `PushSender` wiring on cloud — instantiate with VAPID keys from env, pass into the bridge's push handler | ⏳ |
 | `docker-compose.agent.yml` — Asterisk LTS + coturn + MongoDB + `pbx-agent` binary | ⏳ |

@@ -172,7 +172,9 @@ bool AriWsClient::drain_frames() {
       if (m_handle == ACE_INVALID_HANDLE) return false;
       break;
     case kOpcodePing: {
-      const auto pong = wsframe::pong_frame(frame.payload);
+      // Client→server frames MUST be masked (RFC 6455 §5.2).
+      const auto pong = wsframe::encode(frame.payload, kOpcodePong,
+                                          /*mask=*/true);
       m_stream.send_n(pong.data(), pong.size());
       break;
     }

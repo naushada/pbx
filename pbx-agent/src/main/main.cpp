@@ -18,6 +18,7 @@
 #include "ace_ssl_transport.hpp"
 #include "ari_client.hpp"
 #include "ari_ws_client.hpp"
+#include "asterisk_ws_factory.hpp"
 #include "cloud_connector.hpp"
 #include "mongodbc.hpp"
 #include "sip_frame_demux.hpp"
@@ -80,35 +81,6 @@ public:
                         "concurrent call will not be routed to busy\n"),
                channel_id.c_str(), ctx.c_str(), ext.c_str(), prio));
     return {500, "{\"error\":\"NoopAriRest\"}"};
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// StubAsteriskFactory — Layer-4 placeholder until AsteriskWsFactory lands.
-//
-// `SipFrameDemux::on_tunnel_bytes(OPEN…)` calls this factory to open a
-// fresh WS connection to local Asterisk per browser stream. The real
-// implementation is structurally identical to `AriWsClient`: plain TCP
-// to 127.0.0.1:8088 + WS upgrade to `/ws` (chan_pjsip's transport path),
-// wrapped in an `IAsteriskStream` that pumps bytes both ways via the
-// reactor.
-//
-// For this slice it returns nullptr so the demux can compile + start —
-// any incoming browser stream gets a "asterisk_unreachable" CLOSE frame
-// echoed back, which is the same behaviour as a flapping Asterisk.
-// Calls are logged so missing wiring is loud.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class StubAsteriskFactory : public IAsteriskFactory {
-public:
-  std::unique_ptr<IAsteriskStream> open(std::uint32_t stream_id,
-                                         const std::string &meta) override {
-    ACE_ERROR((LM_WARNING,
-               ACE_TEXT("%D [pbx-agent] StubAsteriskFactory::open(sid=%u) — "
-                        "AsteriskWsFactory not yet wired; returning nullptr. "
-                        "meta=%s\n"),
-               stream_id, meta.c_str()));
-    return nullptr;
   }
 };
 
@@ -296,11 +268,11 @@ int main(int argc, char *argv[]) {
                         ari_client.on_event(event);
                       });
 
-  // ── SipFrameDemux + (stub) AsteriskFactory ─────────────────────────────
-  StubAsteriskFactory asterisk_factory;
-  // CloudConnector is constructed below; we'll set the demux to point at
-  // it afterwards. SipFrameDemux takes the TunnelSink in its constructor,
-  // so build the connector first.
+  // ── AsteriskWsFactory needs the demux + reactor at construction.
+  // Both are known by the time we reach this point in main(). We
+  // construct it after CloudConnector + SipFrameDemux below so the
+  // factory has the demux reference, but assemble the variables here
+  // so the comment + ordering reads top-to-bottom.
 
   // ── CloudConnector + AceSslTransportFactory ────────────────────────────
   CloudConnector::Config cc_cfg;
@@ -327,10 +299,28 @@ int main(int argc, char *argv[]) {
   CloudConnector connector(cc_cfg, transport_factory, clock);
   cc_ptr = &connector;
 
-  SipFrameDemux demux(&connector, asterisk_factory);
+  // We need an IAsteriskFactory ref for SipFrameDemux's ctor; build a
+  // shim that defers to the real AsteriskWsFactory once it exists. This
+  // breaks the construction-order cycle (demux needs factory; factory
+  // needs demux ref).
+  class DeferredAsteriskFactory : public IAsteriskFactory {
+  public:
+    IAsteriskFactory *real = nullptr;
+    std::unique_ptr<IAsteriskStream> open(std::uint32_t sid,
+                                           const std::string &meta) override {
+      return real ? real->open(sid, meta) : nullptr;
+    }
+  } deferred_factory;
+
+  SipFrameDemux demux(&connector, deferred_factory);
   demux_ptr = &demux;
   (void)demux_ptr;
   connector.attach_demux(&demux);
+
+  AsteriskWsFactory asterisk_factory(reactor, demux, ast_host,
+                                       static_cast<std::uint16_t>(ast_port),
+                                       "/ws");
+  deferred_factory.real = &asterisk_factory;
 
   // ── Reconnect supervisor (1 s tick) ────────────────────────────────────
   ReconnectSupervisor supervisor(connector, ari_ws, reactor);
