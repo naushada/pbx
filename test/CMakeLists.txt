@@ -13,6 +13,7 @@ include_directories(../modules/module/sip/inc)
 include_directories(../modules/module/sip/test)
 include_directories(../modules/module/pbx/inc)
 include_directories(../modules/module/pbx/test)
+include_directories(integration)
 include_directories(../pbx-agent/src/main)
 include_directories(../pbx-agent/src/test)
 include_directories(../modules/module/webservice/inc)
@@ -57,6 +58,8 @@ file(GLOB SOURCES "*.cc"
     "../pbx-agent/src/test/cloud_connector_test.cc"
     "../pbx-agent/src/main/ari_client.cpp"
     "../pbx-agent/src/test/ari_client_test.cc"
+    # ── Layer 3 integration ──────────────────────────────────────────
+    "integration/tunnel_e2e_test.cc"
     # ── webservice (xpmile copy, Layer 1) ─────────────────────────────
     "../modules/module/webservice/src/webservice.cpp"
     "../modules/module/webservice/test/webservice_test.cc"

@@ -148,6 +148,12 @@ public:
   void on_tunnel_disconnect ();
   void set_tunnel           (TunnelSink* tunnel);
 
+  // Out-of-band tunnel ops (agent → cloud)
+  using PushNotifyHandler = std::function<void(const std::string& payload)>;
+  using CdrPushHandler    = std::function<void(const std::string& payload)>;
+  void set_push_notify_handler(PushNotifyHandler);  // production: PushSender::notify
+  void set_cdr_push_handler   (CdrPushHandler);     // production: Mongo CDR writer
+
   // Observability (test surface)
   std::size_t   active_streams () const;
   std::uint32_t last_stream_id () const;
@@ -177,6 +183,8 @@ Tunnel→browser demux: `OnTunnelData_DemuxesByStreamId` (two streams, no cross-
 Close semantics: `OnBrowserClose_SendsCloseFrame` (asserts `BrowserSink::close()` is NOT called — caller owns), `OnTunnelCloseFrame_ClosesBrowserSink` (asserts the sink IS closed when agent initiated).
 
 Lifecycle: `OnTunnelDisconnect_ClosesAllBrowserConns`, `OnAgentReconnect_NewStreamIdsOnly` (monotonic counter survives reconnect).
+
+Out-of-band ops: `OnTunnelPushNotify_InvokesPushHandler`, `OnTunnelCdrPush_InvokesCdrHandler` — production wires these to `PushSender::notify` and a Mongo CDR writer respectively. End-to-end coverage in [Layer 3 TunnelE2E](../../../test/integration/tunnel_e2e_test.cc).
 
 > **Not yet pinned:** `HandoffOrdering` (TDD plan Layer 1) — this asserts the `remove_handler → m_handle = INVALID → publish to bridge` ordering in `WebConnection`. The test belongs to the [`webservice/`](../webservice/README.md) module's suite, lands when that module is copied from xpmile.
 

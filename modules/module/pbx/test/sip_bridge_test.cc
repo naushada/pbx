@@ -229,6 +229,42 @@ TEST(SipBridge, OnTunnelDisconnect_ClosesAllBrowserConns)
 
 // ── reconnect ─────────────────────────────────────────────────────────────────
 
+// ── PUSH_NOTIFY / CDR_PUSH handlers ──────────────────────────────────────────
+
+TEST(SipBridge, OnTunnelPushNotify_InvokesPushHandler)
+{
+    FakeTunnel  tun;
+    SipBridge   bridge(&tun);
+
+    std::vector<std::string> got;
+    bridge.set_push_notify_handler(
+        [&got](const std::string &payload) { got.push_back(payload); });
+
+    const std::string payload = R"({"subscriberId":"u1","callerFlat":"A-101","callId":"abc"})";
+    EXPECT_TRUE(bridge.on_tunnel_bytes(
+        SipFrame::encode(SipFrame::Op::PUSH_NOTIFY, 0, payload)));
+
+    ASSERT_EQ(1u, got.size());
+    EXPECT_EQ(payload, got[0]);
+}
+
+TEST(SipBridge, OnTunnelCdrPush_InvokesCdrHandler)
+{
+    FakeTunnel  tun;
+    SipBridge   bridge(&tun);
+
+    std::vector<std::string> got;
+    bridge.set_cdr_push_handler(
+        [&got](const std::string &payload) { got.push_back(payload); });
+
+    const std::string payload = R"({"_id":"c1","societyId":"s1","durationSec":42})";
+    EXPECT_TRUE(bridge.on_tunnel_bytes(
+        SipFrame::encode(SipFrame::Op::CDR_PUSH, 0, payload)));
+
+    ASSERT_EQ(1u, got.size());
+    EXPECT_EQ(payload, got[0]);
+}
+
 TEST(SipBridge, OnAgentReconnect_NewStreamIdsOnly)
 {
     FakeTunnel  tun1;

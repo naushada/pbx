@@ -93,11 +93,20 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
     // OPEN is cloud→agent only. Agent must never originate it. Drop.
     return;
   case Op::PUSH_NOTIFY:
+    if (m_push_handler) m_push_handler(f.payload);
+    return;
   case Op::CDR_PUSH:
-    // Hooks to PushSender / CDR replicator will be wired in Layer 1's
-    // remaining slices. For now, the bridge holds no opinion.
+    if (m_cdr_handler)  m_cdr_handler(f.payload);
     return;
   }
+}
+
+void SipBridge::set_push_notify_handler(PushNotifyHandler h) {
+  m_push_handler = std::move(h);
+}
+
+void SipBridge::set_cdr_push_handler(CdrPushHandler h) {
+  m_cdr_handler = std::move(h);
 }
 
 void SipBridge::close_stream(std::uint32_t stream_id,

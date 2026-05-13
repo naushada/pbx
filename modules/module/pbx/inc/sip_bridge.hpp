@@ -4,6 +4,7 @@
 #include "sip_frame.hpp"
 #include "tunnel_sink.hpp"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -93,6 +94,22 @@ public:
   /// are not migrated (they were closed by `on_tunnel_disconnect()`).
   void set_tunnel(TunnelSink *tunnel);
 
+  // ── Out-of-band tunnel ops (agent → cloud) ─────────────────────────────
+
+  /// Install a handler called when the bridge sees a `PUSH_NOTIFY` frame
+  /// from the agent. Payload is the JSON `{subscriberId, callerFlat,
+  /// callId}` the agent originated. Production wires this to
+  /// `PushSender::notify`; tests substitute a recorder.
+  using PushNotifyHandler = std::function<void(const std::string &payload)>;
+  void set_push_notify_handler(PushNotifyHandler h);
+
+  /// Install a handler called when the bridge sees a `CDR_PUSH` frame
+  /// from the agent. Payload is the BSON-serialised CDR document the
+  /// agent finalised. Production wires this to a Mongo writer; tests
+  /// substitute a recorder.
+  using CdrPushHandler = std::function<void(const std::string &payload)>;
+  void set_cdr_push_handler(CdrPushHandler h);
+
   // ── Observability (test surface) ───────────────────────────────────────
 
   /// Number of currently registered browser streams.
@@ -109,6 +126,8 @@ private:
   std::uint32_t m_next_stream_id;
   std::unordered_map<std::uint32_t, BrowserSink *> m_browsers;
   std::string m_recv_buffer; // partial-frame accumulator for tunnel side
+  PushNotifyHandler m_push_handler;
+  CdrPushHandler    m_cdr_handler;
 };
 
 #endif // SIP_BRIDGE_HPP

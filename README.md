@@ -24,9 +24,10 @@ See:
 | 2   | `CloudConnector` — agent-side mTLS dial-out, reconnect-backoff state machine, outbound buffer | ✅ Complete (state machine; `AceSslTransport` deferred to Layer 3) |
 | 2   | `AriClient` — ARI event consumer, bridge-counter admission, CDR writer, conference detection | ✅ Complete (state machine; WS subscription glue deferred to Layer 3) |
 | 2   | `CloudTunnelEndpoint` — accept-side of the cloud↔agent tunnel; wired into `WebServer`; `/agent` WS upgrade branch in `WebConnection`; context-aware `/sip-ws` 503 hint | ✅ Complete (`BrowserStream` + agent WS decoder deferred to Layer 3) |
-| 3+  | `BrowserStream` (retires `/sip-ws` 503), `AceSslTransport`, agent WS decoder, Tunnel E2E, Angular UI, Playwright | ⏳ Not started |
+| 3   | `TunnelE2E` — paired in-memory transport harness, end-to-end frame plumbing tests (browser ↔ cloud bridge ↔ tunnel ↔ agent demux ↔ fake Asterisk and back) | ✅ Complete |
+| 3+  | `BrowserStream` (retires `/sip-ws` 503), `AceSslTransport`, agent WS decoder, Angular UI, Playwright | ⏳ Not started |
 
-**Test totals: 253/253 passing across 27 suites** — our 141 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 12, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12) + 112 inherited from xpmile (regression guard).
+**Test totals: 263/263 passing across 28 suites** — our 151 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 14 [+2 push/cdr handlers], MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12, TunnelE2E 8) + 112 inherited from xpmile (regression guard).
 
 ### Skipped tests
 
