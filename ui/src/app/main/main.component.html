@@ -3,6 +3,16 @@
         <div class="branding">
             <span class="title">Society Softphone</span>
         </div>
+
+        <div class="header-actions">
+            <span *ngIf="subscriber" class="who">
+                {{ subscriber.flatNumber }}<span *ngIf="subscriber.displayName">
+                · {{ subscriber.displayName }}</span>
+            </span>
+            <a href="javascript:void(0)" (click)="onSignOut()" class="nav-link nav-text">
+                Sign out
+            </a>
+        </div>
     </clr-header>
 
     <div class="content-container">

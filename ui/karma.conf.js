@@ -32,6 +32,17 @@ module.exports = function (config) {
         { type: 'text-summary' }
       ]
     },
+    customLaunchers: {
+      // Headless Chromium under podman: no /dev/shm, run as root, no sandbox.
+      ChromeHeadlessCI: {
+        base: 'ChromeHeadless',
+        flags: [
+          '--no-sandbox',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+        ],
+      },
+    },
     reporters: ['progress', 'kjhtml'],
     port: 9876,
     colors: true,

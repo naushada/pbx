@@ -1,2 +1,14 @@
-<h2>Dashboard</h2>
-<p class="placeholder">Dashboard widgets land in slice 2 (after the SIP client wrapper service).</p>
+<section class="dashboard">
+    <h2>Welcome<span *ngIf="subscriber">, {{ subscriber.displayName || subscriber.flatNumber }}</span></h2>
+
+    <div class="status-card" *ngIf="subscriber">
+        <dl class="info-grid">
+            <dt>Society</dt>          <dd>{{ subscriber.societyId }}</dd>
+            <dt>Flat</dt>             <dd>{{ subscriber.flatNumber }}</dd>
+            <dt>SIP user</dt>         <dd>{{ subscriber.sipUser }}</dd>
+            <dt>Role</dt>             <dd>{{ subscriber.role || 'resident' }}</dd>
+        </dl>
+    </div>
+
+    <p class="placeholder">SIP registration + recent calls land in slice 2.</p>
+</section>

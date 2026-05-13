@@ -4,14 +4,16 @@ import { RouterModule, Routes } from '@angular/router';
 import { LoginComponent } from './login/login.component';
 import { MainComponent } from './main/main.component';
 import { DashboardComponent } from './dashboard/dashboard.component';
+import { AuthGuard } from 'src/common/auth.guard';
 
-// Placeholder route table for slice 0. Subsequent slices will add
-// directory, dialer, call, history, and settings as children of /main.
+// /main and its children require a valid session. Slice-1 surface is
+// just `dashboard`; directory / dialer / call / history land as
+// additional children in later slices.
 const routes: Routes = [
     { path: '',           redirectTo: '/login', pathMatch: 'full' },
     { path: 'login',      component: LoginComponent },
     {
-        path: 'main', component: MainComponent,
+        path: 'main', component: MainComponent, canActivate: [AuthGuard],
         children: [
             { path: '',          redirectTo: 'dashboard', pathMatch: 'full' },
             { path: 'dashboard', component: DashboardComponent },

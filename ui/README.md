@@ -48,9 +48,19 @@ podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-alpine \
 podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-alpine \
   npx ng build --configuration development
 
-# Dev server on :4200 (proxy + live-reload come in slice 1)
+# Dev server on :4200
 podman run --rm -p 4200:4200 -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-alpine \
   npx ng serve --host 0.0.0.0
+
+# Run unit tests headless (Chromium installed on-demand inside a
+# debian-slim container — karma + jasmine drive the spec files).
+podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-bullseye-slim sh -c "
+  apt-get update -qq && apt-get install -y -qq \
+    chromium ca-certificates fonts-liberation libnss3 libatk-bridge2.0-0 \
+    libxkbcommon0 libgbm1 libasound2 >/dev/null
+  CHROME_BIN=/usr/bin/chromium \
+  npx ng test --watch=false --browsers=ChromeHeadlessCI
+"
 ```
 
 ## Notable pinning
@@ -64,7 +74,7 @@ podman run --rm -p 4200:4200 -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-a
 | Slice | What | Status |
 |---|---|---|
 | 0 | Project scaffold + Clarity/CDS styles + common services + empty routes | ✅ Complete |
-| 1 | Login flow (form + HttpInterceptor for bearer token + route guard) | ⏳ |
+| 1 | Login flow — `AuthService` (localStorage session, rehydrate on load) + `AuthInterceptor` (Bearer + 401 → /login) + `AuthGuard` on /main + real `LoginComponent` (Clarity form, error states) + logout in header/dashboard. **15/15 specs green.** | ✅ Complete |
 | 2 | `src/common/sip.service.ts` — SIP.js wrapper over `/sip-ws` + registration | ⏳ |
 | 3 | Directory search + outgoing call (P2P) UI | ⏳ |
 | 4 | Incoming call wakeup: VAPID push + Service Worker + ringtone | ⏳ |

@@ -1,6 +1,43 @@
 <div class="login-wrapper">
-    <clr-icon shape="phone-handset" size="48"></clr-icon>
-    <h1>Society Softphone</h1>
-    <p class="placeholder">Login form lands in slice 1.</p>
-    <a routerLink="/main/dashboard" class="btn btn-primary">Skip to dashboard (dev)</a>
+    <header class="brand">
+        <clr-icon shape="phone-handset" size="40"></clr-icon>
+        <h1>Society Softphone</h1>
+        <p class="hint">Sign in with your flat number and password.</p>
+    </header>
+
+    <form [formGroup]="loginForm" (ngSubmit)="onLogin()" class="login-form">
+        <clr-input-container>
+            <label>Society code</label>
+            <input type="text" name="societyCode" clrInput
+                   placeholder="e.g. greenwoods-a"
+                   formControlName="societyCode"
+                   autocomplete="organization" />
+            <clr-control-error>Society code is required.</clr-control-error>
+        </clr-input-container>
+
+        <clr-input-container>
+            <label>Flat number</label>
+            <input type="text" name="flatNumber" clrInput
+                   placeholder="e.g. A-204"
+                   formControlName="flatNumber"
+                   autocomplete="username" />
+            <clr-control-error>Flat number is required.</clr-control-error>
+        </clr-input-container>
+
+        <clr-password-container>
+            <label>Password</label>
+            <input type="password" name="password" clrPassword
+                   formControlName="password"
+                   autocomplete="current-password" />
+            <clr-control-error>Password is required.</clr-control-error>
+        </clr-password-container>
+
+        <p *ngIf="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
+
+        <button type="submit"
+                class="btn btn-primary btn-block"
+                [clrLoading]="submitState">
+            SIGN IN
+        </button>
+    </form>
 </div>

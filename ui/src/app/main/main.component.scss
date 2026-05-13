@@ -1,2 +1,13 @@
-// Shell styles. Clarity supplies the bulk via clr-main-container
-// + the @import chain in src/styles.scss; only overrides land here.
+// Most of the shell's look comes from src/styles.scss; only the
+// per-component bits that can't sit globally land here.
+.header .header-actions {
+    display: flex;
+    align-items: center;
+
+    .who {
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 0.82rem;
+        margin-right: 14px;
+        letter-spacing: 0.02em;
+    }
+}
