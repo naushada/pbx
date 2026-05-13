@@ -50,12 +50,24 @@ Auth-gate behaviour is still pinned by `MicroServicePbx.Auth_RejectsAnonymousSip
 
 The xpmile `/ws/db` upgrade branch is **unchanged** — three upgrades (`/ws/db`, `/agent`, `/sip-ws`) now coexist on the same `WebConnection::handle_input` path with the same hand-off mechanics.
 
-## Upcoming (rest of Layer 3)
+## HandoffOrdering invariant
 
-- Cloud-side `AgentStream` ACE event handler — decodes inbound WS frames from the agent, calls `CloudTunnelEndpoint::on_bytes_received`. Implements `IAgentTransport`. Retires the `/agent` hand-off's "info log only" stub.
-- Agent-side `AceSslTransport` — `ACE_SSL_SOCK_Connector` outbound dial for `CloudConnector::ITransportFactory`.
-- Asterisk ARI WS-events client — reads `/ari/events`, calls `AriClient::on_event` per parsed event.
-- `HandoffOrdering` test — verifies the WebConnection ordering end-to-end against a real reactor.
+All three WS upgrade branches (`/ws/db`, `/sip-ws`, `/agent`) follow the xpmile-CLAUDE.md mechanic:
+
+```
+m_handedOff = true                       // 1
+m_stream.set_handle(ACE_INVALID_HANDLE)  // 2
+reactor()->remove_handler(this, …)       // 3  ── must precede #4
+m_handle = ACE_INVALID_HANDLE            // 4
+<publish raw fd to subsystem>            // 5
+parent().connectionPool().erase(raw)     // 6  ── deletes `this`
+```
+
+The fatal mistake is swapping (3) and (4). `remove_handler` calls `get_handle()` internally to find which fd to deregister from epoll; if `m_handle` is `ACE_INVALID_HANDLE` first, the deregistration silently no-ops, the fd stays in epoll, and the reactor dispatches to the already-deleted `WebConnection` the next time the socket is readable.
+
+This invariant is defended by [`test/integration/handoff_ordering_test.cc`](../../test/integration/handoff_ordering_test.cc) — a **source-invariant test** that reads `webservice.cpp` directly and asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three branches. Also verifies (5) publish happens after (3) remove, (2) stream's set_handle happens before (3), and (1) `m_handedOff = true` happens before everything else.
+
+The source-grep approach was chosen over a real-reactor end-to-end test because the bug we're guarding against ("swap two adjacent lines") can pass platform-dependent reactor tests but is unambiguous in the source. xpmile's `/ws/db` branch is included as a regression guard against drift in the xpmile copy.
 
 The cloud's HTTP/WSS-serving spine. Three classes copied near-verbatim from xpmile's `modules/module/webservice/` and then extended:
 
