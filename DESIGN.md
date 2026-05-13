@@ -127,6 +127,8 @@ Third-party processes co-located on the agent host (not rewritten):
 
 There is exactly **one MongoDB instance per society**, deployed on the pbx-agent host. The Heroku cloud reads/writes it through the existing wsdbagent tunnel — there is no second copy in the cloud and no replication. When the agent is offline, the cloud portal is read-degraded until the tunnel returns (acknowledged limitation).
 
+**Database name:** `pbx`. All collections below (`societies`, `flats`, `subscribers`, `cdr`, `push_subscriptions`, `audit`) live under `pbx.<collection>`. Connection URIs in both `pbx-agent` and the wsdbagent-tunneled cloud point at `mongodb://<host>/pbx`.
+
 `_id` is ObjectId unless noted.
 
 ```js
