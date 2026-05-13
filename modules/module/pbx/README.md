@@ -9,7 +9,7 @@ Current status:
 | `SipFrame`          | `inc/sip_frame.hpp` + `src/sip_frame.cpp`                   | ✅ Complete (Layer 0) |
 | `SipBridge`         | `inc/sip_bridge.hpp` + `src/sip_bridge.cpp`                 | ✅ Complete (Layer 1, first slice) |
 | `MicroServicePbx`   | `inc/microservice_pbx.hpp` + `src/microservice_pbx.cpp`     | ✅ Complete (Layer 1, second slice) |
-| `PushSender`        | (not yet)                                                   | ⏳ Layer 1, later slice |
+| `PushSender`        | `inc/push_sender.hpp` + `src/push_sender.cpp`               | ✅ Complete (Layer 1, third slice) |
 
 ---
 
@@ -225,11 +225,110 @@ Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collec
 
 ---
 
+---
+
+## PushSender — VAPID Web Push trigger
+
+Receives `PUSH_NOTIFY` frames from the agent (eventually — wired through `SipBridge`'s `PUSH_NOTIFY` dispatch in a later slice), looks up `push_subscriptions` for the target subscriber, signs a VAPID JWT (RFC 8292), encrypts the payload (RFC 8291), and POSTs to each browser's push endpoint with retry + 410 cleanup. Cryptographic + policy core only; HTTP I/O and time-of-day are dependency-injected.
+
+### Dependency injection
+
+```cpp
+class IPushHttpClient {
+public:
+  struct Response { int status; std::string body; };
+  virtual Response post(const std::string& url,
+                        const std::vector<std::pair<std::string, std::string>>& headers,
+                        const std::string& body) = 0;
+};
+
+class IClock { public: virtual std::int64_t now_unix() const = 0; };
+```
+
+Production wires `IPushHttpClient` to an ACE_SSL_SOCK_Connector wrapper (lands with the cloud's eventual reactor binding); tests use `FakeHttpClient` that scripts per-attempt responses and records every call. `IClock` lets `VapidJwt_ExpiresIn12hMax` pin "now" deterministically.
+
+### VAPID JWT (RFC 8292)
+
+- Header: `{"typ":"JWT","alg":"ES256"}`
+- Claims: `{"aud":"<endpoint origin>","exp":<now + 12 h>,"sub":"mailto:..."}`
+- Signature: ECDSA P-256 over `b64url(header) . b64url(claims)`, encoded as the **JOSE 64-byte `r||s`** (not OpenSSL's ASN.1 DER form — converted via `ECDSA_SIG_get0` + `BN_bn2binpad`).
+- Authorization header value: `vapid t=<jwt>, k=<server-pub-b64url>`.
+
+The server's VAPID public key is derived once at construction from the configured private PEM and cached as `vapid_public_b64url()`.
+
+### Payload encryption (RFC 8291 / RFC 8188 aes128gcm)
+
+For each push:
+
+1. Generate a **fresh ephemeral ECDH P-256 keypair** (RFC 8291 §3.3 forbids reuse).
+2. ECDH shared secret = `ECDH(server_ephemeral_priv, subscriber.p256dh)`.
+3. `IKM = HKDF-SHA256(salt=auth, IKM=shared, info="WebPush: info" || 0x00 || subscriber_pub || server_pub, 32)`.
+4. Random 16-byte content-encoding salt.
+5. `CEK   = HKDF-SHA256(salt, IKM, "Content-Encoding: aes128gcm" || 0x00, 16)`.
+6. `NONCE = HKDF-SHA256(salt, IKM, "Content-Encoding: nonce"       || 0x00, 12)`.
+7. Append `0x02` record terminator to plaintext (RFC 8188 §2 single-record encoding).
+8. Encrypt with AES-128-GCM(CEK, NONCE).
+9. Frame as `salt(16) | rs=4096 BE(4) | idlen=65(1) | server_pub(65) | ciphertext||tag(16)`.
+
+The decryption path (`push_crypto::decrypt_payload_for_testing`) is the inverse using the same OpenSSL primitives — test-only.
+
+### Retry / cleanup policy
+
+| HTTP response | Action |
+|---|---|
+| 2xx | Counted as delivered. |
+| 410 Gone | Subscription removed from Mongo (`delete_document` on `push_subscriptions`). No retry. |
+| 503 | Exponential backoff up to `Config::max_retries` (default 3); doubles each retry. `initial_backoff_ms = 0` in tests so they don't sleep. |
+| Anything else | Give up on this subscription; keep iterating others. |
+
+### Public API
+
+```cpp
+class PushSender {
+public:
+  struct Config { /* vapid_private_pem, vapid_subject, jwt_exp_seconds,
+                      max_retries, initial_backoff_ms */ };
+  PushSender(Config, IPushHttpClient&, IMongodbClient&, IClock&);
+
+  int  notify(const std::string& subscriber_id, const std::string& payload);
+  std::string build_vapid_auth(const std::string& origin, std::int64_t now) const;
+  std::string sign_vapid_jwt  (const std::string& origin, std::int64_t now) const;
+  std::string encrypt_payload (const std::string& payload,
+                               const std::string& p256dh_b64url,
+                               const std::string& auth_b64url) const;
+  const std::string& vapid_public_b64url() const;
+};
+
+namespace push_crypto {
+  std::string b64url_encode(const std::string&);
+  std::string b64url_decode(const std::string&);
+  struct P256KeyPair { std::string private_pem, public_uncompressed; };
+  P256KeyPair p256_generate();
+  std::string p256_public_from_pem(const std::string& private_pem);
+  std::string rand_bytes(std::size_t n);
+  std::string decrypt_payload_for_testing(const std::string& private_pem,
+                                          const std::string& auth,
+                                          const std::string& record);
+}
+```
+
+### Behaviour pinned by tests (`test/push_sender_test.cc` — 8 tests)
+
+VAPID: `VapidJwt_HasCorrectAudience` (parsing the signed JWT confirms `aud = endpoint origin`), `VapidJwt_ExpiresIn12hMax` (`exp - now ≤ 12 h`), `BuildVapidAuth_IncludesPublicKeyAndToken` (header value contains `vapid t=…` and `, k=<pub>`).
+
+Encryption: `EncryptsPayloadAes128Gcm` — full round-trip. Generate a "browser" P-256 keypair + 16-byte auth secret, encrypt with `PushSender::encrypt_payload`, decrypt with `push_crypto::decrypt_payload_for_testing`, assert `==` against the original plaintext. Also asserts the wire-format `idlen=65` framing byte.
+
+Retry / cleanup: `RetriesOn503` (FakeHttpClient scripts `[503,503,201]` — observe 3 calls, 1 delivered), `GivesUpAfterMaxRetries` (4 × 503 → 4 calls then give up), `DropsSubscriptionOn410Gone` (410 → no retry, `db.delete_document` called with the right `_id` filter).
+
+Edge: `NoSubscriptions_NotifyReturnsZero`.
+
+---
+
 ## Coming in Layer 1 (last slice)
 
-### `PushSender` (cloud side)
+### Route-wiring patch
 
-VAPID-signed Web Push trigger. Receives `PUSH_NOTIFY` frames from the agent, looks up `push_subscriptions` for the target subscriber, signs a JWT (RFC 8292 audience = push endpoint origin, 12 h cap), encrypts the payload with AES-128-GCM (RFC 8291), and POSTs to each browser's push endpoint with backoff + 410 cleanup.
+A small targeted patch to `webservice.cpp` to route the new URI prefixes (`/api/v1/society`, `/api/v1/subscriber/import`, `/api/v1/cdr`, `/api/v1/push/subscribe`, `/sip-ws`) into the `MicroServicePbx::handle_*` free functions, and to wire the `SipBridge::on_browser_upgrade` hand-off on `/sip-ws`. Brings the `HandoffOrdering` test from TDD-PLAN Layer 1 with it.
 
 ---
 
@@ -241,14 +340,17 @@ pbx/
     sip_frame.hpp             # encode/decode API, op enum, status enum
     sip_bridge.hpp            # SipBridge + TunnelSink + BrowserSink interfaces
     microservice_pbx.hpp      # MicroServicePbx:: REST handlers (namespace API)
+    push_sender.hpp           # PushSender + IPushHttpClient + IClock + push_crypto::
   src/
     sip_frame.cpp             # ~90 lines, hand-rolled big-endian impl
     sip_bridge.cpp            # ~100 lines, in-memory multiplexer
     microservice_pbx.cpp      # ~300 lines, society/subscriber/cdr/push/upgrade
+    push_sender.cpp           # ~400 lines, VAPID JWT + RFC 8291 + retry policy
   test/
     sip_frame_test.cc         # 10 tests
     sip_bridge_test.cc        # 12 tests
     microservice_pbx_test.cc  # 11 tests
+    push_sender_test.cc       #  8 tests
 ```
 
 ## Dependencies
@@ -258,7 +360,7 @@ pbx/
 - [`mongodb/`](../mongodb/README.md) — `IMongodbClient` interface + `MongodbClient::hash_password`.
 - [`webservice/`](../webservice/README.md) — `MicroService::build_response*` helpers (transitive; not yet directly used by MicroServicePbx but lives in the same `offtarget` binary).
 - `nlohmann/json` (single header in `modules/module/thirdparty/`).
-- OpenSSL (`-lcrypto` for `EVP_md5` and `RAND_bytes`).
+- OpenSSL (`-lcrypto`) for `EVP_md5`, `RAND_bytes`, `EVP_aes_128_gcm`, ECDSA/ECDH P-256, HKDF-SHA256.
 - GTest (tests only).
 - **No ACE yet.** SipBridge and MicroServicePbx are intentionally I/O-free; the production wrappers that bind to the ACE reactor land when `webservice/` is patched to route by URI prefix.
 
@@ -266,7 +368,7 @@ pbx/
 
 ```sh
 podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 \
-  --gtest_filter='SipFrame.*:SipBridge.*:MicroServicePbx.*'
+  --gtest_filter='SipFrame.*:SipBridge.*:MicroServicePbx.*:PushSender.*'
 ```
 
-Expected: **33/33 PASSED** (10 SipFrame + 12 SipBridge + 11 MicroServicePbx).
+Expected: **41/41 PASSED** (10 SipFrame + 12 SipBridge + 11 MicroServicePbx + 8 PushSender).

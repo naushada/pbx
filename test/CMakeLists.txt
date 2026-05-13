@@ -44,6 +44,8 @@ file(GLOB SOURCES "*.cc"
     "../modules/module/pbx/test/sip_bridge_test.cc"
     "../modules/module/pbx/src/microservice_pbx.cpp"
     "../modules/module/pbx/test/microservice_pbx_test.cc"
+    "../modules/module/pbx/src/push_sender.cpp"
+    "../modules/module/pbx/test/push_sender_test.cc"
     # ── webservice (xpmile copy, Layer 1) ─────────────────────────────
     "../modules/module/webservice/src/webservice.cpp"
     "../modules/module/webservice/test/webservice_test.cc"
