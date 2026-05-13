@@ -227,14 +227,14 @@ The cloud side runs one container — `pbx-cloud` — pushed to `registry.heroku
 
 ```sh
 # One-time: authenticate the local podman daemon with Heroku's registry.
-HEROKU_APP=pabx-5fbf3550f938 ./deploy-heroku.sh login
+HEROKU_APP=pabx ./deploy-heroku.sh login
 
 # Build + push + release in one shot.
-HEROKU_APP=pabx-5fbf3550f938 ./deploy-heroku.sh deploy
+HEROKU_APP=pabx ./deploy-heroku.sh deploy
 
 # Individual subcommands (same as xpmile's deploy-heroku.sh):
 #   build | push | release | logs | open
-HEROKU_APP=pabx-5fbf3550f938 ./deploy-heroku.sh logs
+HEROKU_APP=pabx ./deploy-heroku.sh logs
 ```
 
 The wrapper is a thin shell around `podman-compose -f docker-compose.heroku.yml build pbx-cloud`, `podman push --format=v2s2`, and `heroku container:release`. The image is the same `docker/Dockerfile.cloud` that produces `localhost/onprem-pbx-cloud:latest` locally, just retagged for Heroku.
@@ -248,7 +248,7 @@ The UI is a separate image (`docker/Dockerfile.ui` — multi-stage `node:16-alpi
 HEROKU_APP_UI=onprem-pbx-ui ./deploy-heroku.sh deploy-ui
 
 # Or build + deploy *both* sides in one shot:
-HEROKU_APP=pabx-5fbf3550f938 HEROKU_APP_UI=onprem-pbx-ui \
+HEROKU_APP=pabx HEROKU_APP_UI=onprem-pbx-ui \
   ./deploy-heroku.sh deploy-all
 
 # Tail UI logs:

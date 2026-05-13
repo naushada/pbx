@@ -31,7 +31,10 @@ services:
       # build host doesn't accidentally push an arm64 image.
       platforms:
         - linux/amd64
-    image: registry.heroku.com/${HEROKU_APP_CLOUD:-${HEROKU_APP:-onprem-pbx}}/web
+    # Single-level default — podman-compose doesn't handle nested ${A:-${B:-…}}
+    # expansion reliably. deploy-heroku.sh exports HEROKU_APP_CLOUD before
+    # invoking us; legacy HEROKU_APP callers should rename the var.
+    image: registry.heroku.com/${HEROKU_APP_CLOUD:-pabx}/web
     container_name: pbx-cloud
     environment:
       # Heroku injects $PORT; for local-test runs we default to 8080.
