@@ -62,6 +62,8 @@ file(GLOB SOURCES "*.cc"
     "../pbx-agent/src/test/cloud_connector_test.cc"
     "../pbx-agent/src/main/ari_client.cpp"
     "../pbx-agent/src/test/ari_client_test.cc"
+    "../pbx-agent/src/main/ace_ssl_transport.cpp"
+    "../pbx-agent/src/test/ace_ssl_transport_test.cc"
     # ── Layer 3 integration ──────────────────────────────────────────
     "integration/tunnel_e2e_test.cc"
     # ── webservice (xpmile copy, Layer 1) ─────────────────────────────

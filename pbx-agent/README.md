@@ -1,6 +1,6 @@
 # pbx-agent — on-prem daemon
 
-> **Status:** 🔄 Layer 2 in progress. ✅ `SipFrameDemux` complete. ✅ `CloudConnector` state machine complete (concrete `AceSslTransport` deferred to Layer 3 integration). ✅ `AriClient` complete (event processor + admission counter + CDR writer; WebSocket subscription glue deferred to Layer 3). ⏳ Real `/sip-ws` hand-off swap next.
+> **Status:** ✅ Layer 2 complete. 🔄 Layer 3 ACE-binding work in progress: `AceSslTransport` (outbound mTLS + WS upgrade dial for `CloudConnector`) shipped; ARI WS-events client + `HandoffOrdering` test remaining.
 
 C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to xpmile's `wsdbagent` (the analog directory in xpmile is `xpmile/onprem/` — same role, different name).
 
@@ -9,7 +9,8 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 | Class             | Source-of-truth file                   | Status | Role |
 |-------------------|----------------------------------------|--------|------|
 | `SipFrameDemux`   | `src/main/sip_frame_demux.{hpp,cpp}`   | ✅ Complete | Receives frames off the cloud tunnel; opens (or reuses) a per-stream local socket to Asterisk's `ws://127.0.0.1:8088/ws`; pipes bytes in both directions. |
-| `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete (state machine) | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops. Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lands with Layer 3 integration. |
+| `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops. Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lives in `src/main/ace_ssl_transport.{hpp,cpp}` (Layer 3). |
+| `AceSslTransport` | `src/main/ace_ssl_transport.{hpp,cpp}` | ✅ Complete (Layer 3) | Concrete `ITransport` for `CloudConnector`. ACE_SSL_Context + ACE_SSL_SOCK_Connector dial; HTTP WebSocket upgrade to `/agent`; post-upgrade WS-frame layer on top of the SSL stream. Includes the matching `AceSslTransportFactory` that plugs into `CloudConnector::ITransportFactory`. |
 | `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
 | `MongoSink`       | (uses [`mongodb/`](../modules/module/mongodb/README.md)) | ⏳ Layer 2 | Persists CDR rows and replicates subscriber records pushed from the cloud over `OPEN` frames. |
 
@@ -173,9 +174,91 @@ Inbound: `OnBytesReceived_ForwardsIntoDemux` (round-trip a PING through both hal
 
 State recorded in a `TransportState` struct that lives in the factory, not the `FakeTransport`, so it survives the `unique_ptr` destruction during disconnect — same fake-side-channel pattern as the SipFrameDemux suite.
 
-### Deferred to Layer 3
+---
 
-The concrete `AceSslTransport` (real `ACE_SSL_SOCK_Connector` + cert presentation + reactor binding + read-handler that calls `on_bytes_received`). Cheaper to verify end-to-end against a real Heroku stub than to mock the entire ACE stack here.
+## AceSslTransport
+
+The concrete `ITransport` that `CloudConnector` uses in production. Lives between `CloudConnector`'s state machine and the actual Heroku TLS socket.
+
+### Dial-out flow
+
+1. `ACE_SSL_Context::instance()` is configured per dial with the caller's CA + client cert + client key. `SSL_VERIFY_PEER` is enabled whenever a CA is supplied so we refuse cloud certs that aren't signed by our trust anchor.
+2. `ACE_SSL_SOCK_Connector::connect(m_stream, addr, &timeout)` with a 10-second timeout (Heroku's router can accept the SYN but never complete TLS if the dyno is wedged — same wedge xpmile's wsdbagent guards against).
+3. Send an HTTP/1.1 WebSocket upgrade request: `GET /agent`, `Host`, `Upgrade: websocket`, `Connection: Upgrade`, random base64 `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`.
+4. Read response headers until `CRLFCRLF`.
+5. Validate via `validate_upgrade_response(headers, key)` — `HTTP/1.x 101 …` status + a `Sec-WebSocket-Accept` value matching `wsframe::accept_key(key)`. Any deviation → `connect_and_handshake` returns `false` and the factory returns nullptr (`CloudConnector` then bumps its backoff and retries).
+
+### Post-upgrade traffic
+
+- `ITransport::send(bytes)` encodes the bytes as a **masked text** WS frame (RFC 6455 §5.2 mandates client-side masking) and `send_n`s. Failure → `notify_disconnect_once()` so `CloudConnector::on_transport_lost` fires; the connector's outbound buffer catches the failed frame.
+- `handle_input` reads chunks into a `vector<uint8_t>` buffer; `drain_frames()` pulls complete frames via `wsframe::decode` and forwards text/binary payloads to the injected `on_bytes` callback (wired to `CloudConnector::on_bytes_received` in production).
+- Inbound `PING` is auto-replied with `wsframe::pong_frame(payload)`. `PONG` is swallowed. `CLOSE` echoes a close frame back and tears down. Unknown opcodes are treated as protocol violations.
+
+### Lifetime
+
+Unlike `BrowserStream`/`AgentStream` (owned by ACE; `delete this` in `handle_close`), `AceSslTransport` is owned by `CloudConnector`'s `unique_ptr<ITransport>`. `handle_close` notifies the connector but does **not** `delete this` — the connector drops the transport when `on_transport_lost` fires, which destroys it cleanly via `unique_ptr::reset()`.
+
+### Public API
+
+```cpp
+class AceSslTransport : public ITransport, public ACE_Event_Handler {
+public:
+  AceSslTransport(std::function<void(const std::string&)> on_bytes,
+                  std::function<void()>                    on_disconnect);
+
+  bool connect_and_handshake(const std::string& host, std::uint16_t port,
+                             const std::string& cert_path,
+                             const std::string& key_path,
+                             const std::string& ca_path,
+                             const std::string& path = "/agent");
+  int  register_with_reactor(ACE_Reactor* reactor);
+
+  // ITransport
+  bool send(const std::string& bytes) override;
+  void close()                       override;
+
+  // ACE_Event_Handler
+  int        handle_input(ACE_HANDLE)                          override;
+  int        handle_close(ACE_HANDLE, ACE_Reactor_Mask)        override;
+  ACE_HANDLE get_handle() const                                override;
+
+  // Pure-logic helpers (public for unit tests).
+  static std::pair<std::string, std::string>
+       build_upgrade_request(const std::string& host, const std::string& path);
+  static bool
+       validate_upgrade_response(const std::string& headers,
+                                  const std::string& sec_websocket_key);
+};
+
+class AceSslTransportFactory : public ITransportFactory {
+public:
+  AceSslTransportFactory(ACE_Reactor*                              reactor,
+                         std::function<void(const std::string&)>   on_bytes,
+                         std::function<void()>                     on_disconnect);
+  std::unique_ptr<ITransport>
+    create_connected(const std::string& host, std::uint16_t port,
+                     const std::string& cert_path,
+                     const std::string& key_path,
+                     const std::string& ca_path) override;
+};
+```
+
+### Behaviour pinned by tests (`src/test/ace_ssl_transport_test.cc` — 10 tests)
+
+The actual SSL handshake happy path is integration territory (OpenSSL is not socketpair-friendly), but the **pure-logic helpers** are fully unit-tested and they're where the protocol correctness lives:
+
+- `BuildUpgradeRequest_HasRequiredHeaders` — every required header is present, request ends in `CRLFCRLF`.
+- `BuildUpgradeRequest_KeyIs24CharsBase64` — 16 raw bytes → 22 base64 chars + 2 `=` padding.
+- `BuildUpgradeRequest_GeneratesUniqueKeys` — 100 sequential builds → 100 unique keys.
+- `BuildUpgradeRequest_RespectsCustomPath` — request line reflects the requested path.
+- `ValidateUpgradeResponse_AcceptsCorrect101` — well-formed 101 with matching `Sec-WebSocket-Accept` passes.
+- `ValidateUpgradeResponse_RejectsNon101` — 400 (or any non-101) is rejected even if the Accept value happens to match.
+- `ValidateUpgradeResponse_RejectsMissingAccept` — 101 without the Accept header is rejected.
+- `ValidateUpgradeResponse_RejectsWrongAccept` — Accept value not matching `wsframe::accept_key(key)` is rejected.
+- `ValidateUpgradeResponse_RejectsGarbage` — empty / non-status-line input is rejected.
+- `FactoryUnreachableHost_ReturnsNullptr` — `127.0.0.1:1` is not listening; factory's `create_connected` returns nullptr cleanly within the 10s timeout (no segfault, no exception leak).
+
+The full TLS-handshake happy path lands in Layer 4 podman-compose integration.
 
 ---
 
