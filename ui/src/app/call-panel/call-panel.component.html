@@ -1,12 +1,27 @@
-<div class="call-panel" *ngIf="visible()" role="region" aria-label="Active call">
+<div class="call-panel" *ngIf="visible()" role="region" aria-label="Active call"
+     [class.incoming]="isIncoming()">
     <div class="info">
         <span class="peer">{{ peerLabel() }}</span>
         <span class="status">{{ statusLabel() }}</span>
     </div>
-    <div class="controls">
+
+    <!-- Incoming: Accept / Reject -->
+    <div class="controls" *ngIf="isIncoming()">
+        <button type="button" class="btn btn-icon btn-success"
+                (click)="onAccept()">
+            Accept
+        </button>
+        <button type="button" class="btn btn-icon btn-outline"
+                (click)="onReject()">
+            Reject
+        </button>
+    </div>
+
+    <!-- Outgoing / In-call: Mute + Hang up -->
+    <div class="controls" *ngIf="!isIncoming()">
         <button type="button" class="btn btn-icon btn-outline"
                 (click)="onToggleMute()"
-                [disabled]="callState.kind !== 'in-call'"
+                [disabled]="!isInCall()"
                 [attr.aria-pressed]="muted">
             {{ muted ? 'Unmute' : 'Mute' }}
         </button>

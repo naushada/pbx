@@ -1,13 +1,14 @@
 import { Injectable } from '@angular/core';
 import {
     UserAgent, Registerer, RegistererState, TransportState,
-    Inviter, Session, SessionState,
+    Inviter, Invitation, Session, SessionState,
 } from 'sip.js';
 import { SessionDescriptionHandler } from 'sip.js/lib/platform/web';
 
 import {
     SipUaFactory, SipUaHandle, SipUaOpts, SipUaState, SipUaStateChange,
     SipCallHandle, SipCallState, SipCallStateChange,
+    IncomingCallHandle, IncomingCallInfo,
 } from './sip-ua';
 
 // Production wrapper around SIP.js's UserAgent + Registerer. Maps
@@ -47,6 +48,7 @@ export class SipJsUaFactory implements SipUaFactory {
 class SipJsUaHandle implements SipUaHandle {
 
     private listeners: Array<(c: SipUaStateChange) => void> = [];
+    private incomingCb?: (h: IncomingCallHandle) => void;
     private registerer?: Registerer;
 
     constructor(private readonly ua: UserAgent) {
@@ -57,10 +59,54 @@ class SipJsUaHandle implements SipUaHandle {
             else if (s === TransportState.Connected) this.emit('started');
             else if (s === TransportState.Disconnected) this.emit('terminated', 'transport_disconnected');
         });
+
+        // sip.js delivers inbound INVITEs through UserAgent.delegate.
+        // Wrap the Invitation in an IncomingCallHandle so SipService
+        // never imports sip.js types directly.
+        this.ua.delegate = {
+            onInvite: (invitation: Invitation) => this.dispatchIncoming(invitation),
+        };
     }
 
     onStateChange(cb: (c: SipUaStateChange) => void): void {
         this.listeners.push(cb);
+    }
+
+    onIncomingCall(cb: (h: IncomingCallHandle) => void): void {
+        this.incomingCb = cb;
+    }
+
+    private dispatchIncoming(invitation: Invitation): void {
+        if (!this.incomingCb) {
+            // Nobody to take the call — auto-busy so the caller doesn't ring forever.
+            invitation.reject({ statusCode: 486 }).catch(() => {});
+            return;
+        }
+
+        const fromUriObj = invitation.remoteIdentity.uri;
+        const info: IncomingCallInfo = {
+            fromUri:  fromUriObj.toString(),
+            fromFlat: fromUriObj.user || '',
+            callId:   invitation.request.callId,
+        };
+
+        const handle: IncomingCallHandle = {
+            info,
+            accept: async (): Promise<SipCallHandle> => {
+                await invitation.accept({
+                    sessionDescriptionHandlerOptions: {
+                        constraints: { audio: true, video: false },
+                    },
+                });
+                return new SipJsCallHandle(invitation);
+            },
+            reject: async (cause?: 'busy' | 'declined'): Promise<void> => {
+                const statusCode = cause === 'declined' ? 603 : 486;
+                try { await invitation.reject({ statusCode }); } catch { /* logged elsewhere */ }
+            },
+        };
+
+        this.incomingCb(handle);
     }
 
     async start(): Promise<void> {

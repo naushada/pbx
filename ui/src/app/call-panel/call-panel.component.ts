@@ -70,6 +70,12 @@ export class CallPanelComponent implements OnInit, OnDestroy, AfterViewInit {
         this.sip.setMute(this.muted);
     }
 
+    async onAccept(): Promise<void> { await this.sip.acceptIncoming(); }
+    async onReject(): Promise<void> { await this.sip.rejectIncoming(); }
+
+    isIncoming(): boolean { return this.callState.kind === 'incoming'; }
+    isInCall():   boolean { return this.callState.kind === 'in-call'; }
+
     private onCallStateChange(s: CallState): void {
         this.callState = s;
         if (s.kind === 'in-call') {

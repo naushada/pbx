@@ -3,9 +3,11 @@ import { Inject, Injectable } from '@angular/core';
 import { environment } from 'src/environments/environment';
 import { AuthService } from './auth.service';
 import { PubsubsvcService } from './pubsubsvc.service';
+import { RingtoneService } from './ringtone.service';
 import {
     SIP_UA_FACTORY, SipUaFactory, SipUaHandle, SipUaStateChange,
     SipCallHandle, SipCallStateChange,
+    IncomingCallHandle,
 } from './sip-ua';
 
 // Front-door for SIP signalling. Drives the injected SipUaFactory and
@@ -24,14 +26,17 @@ export class SipService {
     private handle?: SipUaHandle;
     private stopping = false;
 
-    // Slice 3: active outbound call. Slice 4 adds incoming-call tracking.
+    // Slice 3: active call (either direction once established).
     private call?: { handle: SipCallHandle; peerFlat: string; callId: string };
+    // Slice 4: pending incoming INVITE, before the user accepts/rejects.
+    private incoming?: { handle: IncomingCallHandle };
     private registered = false;
 
     constructor(
         @Inject(SIP_UA_FACTORY) private factory: SipUaFactory,
         private auth: AuthService,
         private pubsub: PubsubsvcService,
+        private ringtone: RingtoneService,
     ) {}
 
     async connect(): Promise<void> {
@@ -56,6 +61,7 @@ export class SipService {
             displayName: sub.displayName,
         });
         this.handle.onStateChange(c => this.onUaState(c));
+        this.handle.onIncomingCall(h => this.onIncoming(h));
 
         try {
             await this.handle.start();
@@ -161,6 +167,61 @@ export class SipService {
 
     getRemoteStream(): MediaStream | undefined {
         return this.call?.handle.getRemoteStream();
+    }
+
+    // ─── Slice 4: inbound call ───────────────────────────────────────
+
+    private onIncoming(h: IncomingCallHandle): void {
+        // One-call-at-a-time policy. A second arrival is auto-rejected
+        // as busy so the caller doesn't ring forever.
+        if (this.call || this.incoming) {
+            void h.reject('busy');
+            return;
+        }
+        this.incoming = { handle: h };
+        this.pubsub.emit_callState({
+            kind:     'incoming',
+            fromFlat: h.info.fromFlat,
+            callId:   h.info.callId,
+        });
+        void this.ringtone.start();
+    }
+
+    async acceptIncoming(): Promise<void> {
+        const inc = this.incoming;
+        if (!inc) return;
+        this.incoming = undefined;
+        this.ringtone.stop();
+
+        let callHandle: SipCallHandle;
+        try {
+            callHandle = await inc.handle.accept();
+        } catch (e) {
+            this.pubsub.emit_callState({
+                kind:   'failed',
+                reason: (e instanceof Error) ? e.message : 'accept_failed',
+            });
+            return;
+        }
+
+        const peerFlat = inc.handle.info.fromFlat;
+        const callId   = inc.handle.info.callId;
+        this.call = { handle: callHandle, peerFlat, callId };
+        this.pubsub.emit_callState({
+            kind: 'in-call', peerFlat, callId, startedAt: Date.now(),
+        });
+        callHandle.onStateChange(c => this.onCallState(c));
+    }
+
+    async rejectIncoming(): Promise<void> {
+        const inc = this.incoming;
+        if (!inc) return;
+        this.incoming = undefined;
+        this.ringtone.stop();
+        try { await inc.handle.reject('declined'); } catch { /* logged */ }
+        this.pubsub.emit_callState(
+            this.registered ? { kind: 'registered' } : { kind: 'idle' },
+        );
     }
 
     private onCallState(c: SipCallStateChange): void {

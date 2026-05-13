@@ -59,6 +59,38 @@ export interface SipUaHandle {
      * Throws if the UA is not yet registered.
      */
     placeCall(targetUri: string): SipCallHandle;
+
+    /**
+     * Register a delegate for inbound INVITEs. The most recent
+     * registration wins (single-callback channel — only SipService
+     * subscribes in production).
+     */
+    onIncomingCall(cb: (incoming: IncomingCallHandle) => void): void;
+}
+
+// ─── Inbound INVITE ──────────────────────────────────────────────────
+//
+// IncomingCallInfo is what the user sees on the lock-screen-style
+// ringing panel; IncomingCallHandle drives the next step.
+
+export interface IncomingCallInfo {
+    fromUri:  string;     // full SIP URI of the caller
+    fromFlat: string;     // user-part extracted ("A-204")
+    callId:   string;     // SIP Call-ID header
+}
+
+export interface IncomingCallHandle {
+    info: IncomingCallInfo;
+
+    /**
+     * Send 200 OK and complete WebRTC negotiation. Resolves with a
+     * SipCallHandle whose state will transition through 'in-call' →
+     * 'ended'/'failed'.
+     */
+    accept(): Promise<SipCallHandle>;
+
+    /** Send 486 Busy Here (default) or another cause-tagged response. */
+    reject(cause?: 'busy' | 'declined'): Promise<void>;
 }
 
 // ─── Per-call lifecycle ───────────────────────────────────────────────

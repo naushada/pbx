@@ -3,11 +3,12 @@ import { Subscription } from 'rxjs';
 
 import { PubsubsvcService, CallState } from 'src/common/pubsubsvc.service';
 import { SipService } from 'src/common/sip.service';
+import { PushService, PushState } from 'src/common/push.service';
 import { Subscriber } from 'src/common/app-globals';
 
-// Slice-2 dashboard: shows the SIP registration state in real time
-// and exposes Connect / Disconnect actions. Calls themselves (slice 3)
-// will surface in a separate dialer view.
+// Dashboard: SIP registration state + connect/disconnect; push-
+// notification toggle so the user can opt-in to wakeup on incoming
+// calls while the tab is backgrounded.
 @Component({
     selector: 'app-dashboard',
     templateUrl: './dashboard.component.html',
@@ -17,14 +18,24 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
     subscriber?: Subscriber;
     callState: CallState = { kind: 'idle' };
+    pushState: PushState = 'disabled';
+    pushBusy   = false;
+    pushError  = '';
 
     private subs: Subscription[] = [];
 
-    constructor(private pubsub: PubsubsvcService, private sip: SipService) {}
+    constructor(
+        private pubsub: PubsubsvcService,
+        private sip:   SipService,
+        private push:  PushService,
+    ) {}
 
     ngOnInit(): void {
         this.subs.push(this.pubsub.onSubscriber.subscribe(s => this.subscriber = s));
         this.subs.push(this.pubsub.onCallState .subscribe(s => this.callState  = s));
+        this.subs.push(this.push.onState.subscribe(s => this.pushState = s));
+        // Resolve actual push state once the view is up.
+        this.push.refresh().catch(() => { /* surfaced via state */ });
     }
 
     ngOnDestroy(): void {
@@ -59,4 +70,30 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
     async onConnect():    Promise<void> { await this.sip.connect(); }
     async onDisconnect(): Promise<void> { await this.sip.disconnect(); }
+
+    canEnablePush():  boolean { return this.pushState === 'disabled'; }
+    canDisablePush(): boolean { return this.pushState === 'enabled'; }
+
+    pushStateLabel(): string {
+        switch (this.pushState) {
+            case 'enabled':     return 'Enabled — you\'ll be alerted of incoming calls.';
+            case 'disabled':    return 'Disabled — incoming calls will only ring while this tab is open.';
+            case 'denied':      return 'Blocked by browser — change the site permission to enable.';
+            case 'unsupported': return 'This browser doesn\'t support Web Push.';
+        }
+    }
+
+    async onEnablePush(): Promise<void> {
+        this.pushBusy = true; this.pushError = '';
+        try { await this.push.enable(); }
+        catch (e) { this.pushError = (e instanceof Error) ? e.message : 'failed to enable push'; }
+        finally   { this.pushBusy = false; }
+    }
+
+    async onDisablePush(): Promise<void> {
+        this.pushBusy = true; this.pushError = '';
+        try { await this.push.disable(); }
+        catch (e) { this.pushError = (e instanceof Error) ? e.message : 'failed to disable push'; }
+        finally   { this.pushBusy = false; }
+    }
 }

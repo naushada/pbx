@@ -35,5 +35,22 @@
 
             &:hover { background: #991b1b; border-color: #991b1b; }
         }
+        .btn-success {
+            background: #166534;
+            border-color: #166534;
+            color: #ffffff;
+
+            &:hover { background: #14532d; border-color: #14532d; }
+        }
     }
+
+    // Incoming-call variant: pulse the border so it grabs attention.
+    &.incoming {
+        animation: pulse-border 1.2s ease-in-out infinite;
+    }
+}
+
+@keyframes pulse-border {
+    0%, 100% { box-shadow: 0 10px 30px rgba(15, 45, 82, 0.25); }
+    50%      { box-shadow: 0 10px 30px rgba(22, 101, 52, 0.55); }
 }

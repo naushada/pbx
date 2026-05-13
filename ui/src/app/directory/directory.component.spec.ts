@@ -11,6 +11,7 @@ import { PubsubsvcService } from 'src/common/pubsubsvc.service';
 import {
     SIP_UA_FACTORY, SipUaFactory, SipUaHandle, SipUaOpts, SipUaStateChange,
     SipCallHandle, SipCallStateChange,
+    IncomingCallHandle,
 } from 'src/common/sip-ua';
 import { DirectoryEntry, UriMap } from 'src/common/app-globals';
 
@@ -23,6 +24,7 @@ class _FakeCall implements SipCallHandle {
 }
 class _FakeUa implements SipUaHandle {
     onStateChange(_: (c: SipUaStateChange) => void): void {}
+    onIncomingCall(_: (h: IncomingCallHandle) => void): void {}
     async start(): Promise<void> {}
     async stop():  Promise<void> {}
     placeCall(_: string): SipCallHandle { return new _FakeCall(); }

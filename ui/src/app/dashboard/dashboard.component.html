@@ -24,5 +24,23 @@
         </div>
     </div>
 
-    <p class="placeholder">Directory + dialer land in slice 3.</p>
+    <div class="push-card">
+        <h3>Incoming-call notifications</h3>
+        <p class="push-state">{{ pushStateLabel() }}</p>
+        <p *ngIf="pushError" class="error" role="alert">{{ pushError }}</p>
+        <div class="actions">
+            <button type="button" class="btn btn-primary"
+                    (click)="onEnablePush()"
+                    [disabled]="!canEnablePush() || pushBusy">
+                Enable
+            </button>
+            <button type="button" class="btn btn-outline"
+                    (click)="onDisablePush()"
+                    [disabled]="!canDisablePush() || pushBusy">
+                Disable
+            </button>
+        </div>
+    </div>
+
+    <p class="placeholder">Call history lands in slice 5.</p>
 </section>

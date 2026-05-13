@@ -6,7 +6,9 @@ import { PubsubsvcService, CallState } from './pubsubsvc.service';
 import {
     SIP_UA_FACTORY, SipUaFactory, SipUaHandle, SipUaOpts, SipUaStateChange,
     SipCallHandle, SipCallStateChange,
+    IncomingCallHandle, IncomingCallInfo,
 } from './sip-ua';
+import { RingtoneService } from './ringtone.service';
 
 // Fake SipUaFactory whose handle exposes a `pump()` for the spec to
 // drive state transitions imperatively. Captures the SipUaOpts so the
@@ -21,6 +23,9 @@ class FakeUaHandle implements SipUaHandle {
     public callTargets: string[] = [];
     public callHandle = new FakeCallHandle();
     public placeCallThrows?: Error;
+
+    // Slice-4 surface.
+    public incomingCb?: (h: IncomingCallHandle) => void;
 
     onStateChange(cb: (c: SipUaStateChange) => void): void { this.listener = cb; }
     async start(): Promise<void> {
@@ -37,6 +42,41 @@ class FakeUaHandle implements SipUaHandle {
         this.callTargets.push(targetUri);
         return this.callHandle;
     }
+    onIncomingCall(cb: (h: IncomingCallHandle) => void): void {
+        this.incomingCb = cb;
+    }
+    /** Test-only: simulate an inbound INVITE arriving. */
+    fireIncoming(info: IncomingCallInfo, h: FakeIncomingHandle): void {
+        h.info = info;
+        this.incomingCb?.(h);
+    }
+}
+
+class FakeIncomingHandle implements IncomingCallHandle {
+    public info: IncomingCallInfo = { fromUri: '', fromFlat: '', callId: '' };
+    public accepted = false;
+    public rejectedCause?: 'busy' | 'declined';
+    public acceptThrows?: Error;
+    public acceptedHandle = new FakeCallHandle();
+
+    async accept(): Promise<SipCallHandle> {
+        if (this.acceptThrows) throw this.acceptThrows;
+        this.accepted = true;
+        return this.acceptedHandle;
+    }
+    async reject(cause?: 'busy' | 'declined'): Promise<void> {
+        this.rejectedCause = cause;
+    }
+}
+
+class FakeRingtone {
+    public starts = 0;
+    public stops  = 0;
+    isActive(): boolean { return this.starts > this.stops; }
+    async start(): Promise<void> { this.starts++; }
+    stop(): void { this.stops++; }
+    // setAudioContextFactory is unused in tests but keep parity.
+    setAudioContextFactory(_: any): void {}
 }
 
 class FakeCallHandle implements SipCallHandle {
@@ -71,15 +111,18 @@ describe('SipService', () => {
     let auth:   AuthService;
     let pubsub: PubsubsvcService;
     let fake:   FakeUaFactory;
+    let ring:   FakeRingtone;
     let states: CallState[];
 
     beforeEach(() => {
         localStorage.clear();
         fake = new FakeUaFactory();
+        ring = new FakeRingtone();
 
         TestBed.configureTestingModule({
             providers: [
-                { provide: SIP_UA_FACTORY, useValue: fake },
+                { provide: SIP_UA_FACTORY,  useValue: fake },
+                { provide: RingtoneService, useValue: ring },
             ],
         });
 
@@ -261,6 +304,89 @@ describe('SipService', () => {
             const before = fake.handle.callTargets.length;
             svc.placeCall('C-44');
             expect(fake.handle.callTargets.length).toBe(before + 1);
+        });
+    });
+
+    // ─── slice 4: incoming calls ────────────────────────────────────
+
+    describe('incoming calls', () => {
+
+        async function makeRegistered(): Promise<void> {
+            authenticate();
+            await svc.connect();
+            fake.handle.pump('registered');
+        }
+
+        function fire(): FakeIncomingHandle {
+            const h = new FakeIncomingHandle();
+            fake.handle.fireIncoming({
+                fromUri: 'sip:C-99@pbx.soc-123', fromFlat: 'C-99', callId: 'call-id-9',
+            }, h);
+            return h;
+        }
+
+        it('emits incoming + starts ringtone when an INVITE arrives', async () => {
+            await makeRegistered();
+            fire();
+            expect(states.at(-1)).toEqual({
+                kind: 'incoming', fromFlat: 'C-99', callId: 'call-id-9',
+            });
+            expect(ring.starts).toBe(1);
+        });
+
+        it('acceptIncoming transitions to in-call and stops the ringtone', async () => {
+            await makeRegistered();
+            const h = fire();
+            await svc.acceptIncoming();
+            expect(h.accepted).toBeTrue();
+            expect(ring.stops).toBe(1);
+            const last = states.at(-1)!;
+            if (last.kind !== 'in-call') fail('expected in-call');
+            else {
+                expect(last.peerFlat).toBe('C-99');
+                expect(last.callId).toBe('call-id-9');
+            }
+        });
+
+        it('rejectIncoming sends 603 Decline and returns to registered', async () => {
+            await makeRegistered();
+            const h = fire();
+            await svc.rejectIncoming();
+            expect(h.rejectedCause).toBe('declined');
+            expect(ring.stops).toBe(1);
+            expect(states.at(-1)).toEqual({ kind: 'registered' });
+        });
+
+        it('after accept, the peer hangup transitions back to registered', async () => {
+            await makeRegistered();
+            const h = fire();
+            await svc.acceptIncoming();
+            h.acceptedHandle.pump('ended');
+            expect(states.at(-1)).toEqual({ kind: 'registered' });
+        });
+
+        it('second incoming while busy is auto-rejected as 486 Busy', async () => {
+            await makeRegistered();
+            const h1 = fire();
+            await svc.acceptIncoming();
+
+            const h2 = new FakeIncomingHandle();
+            fake.handle.fireIncoming({
+                fromUri: 'sip:D-1@pbx.soc-123', fromFlat: 'D-1', callId: 'second',
+            }, h2);
+            expect(h2.rejectedCause).toBe('busy');
+            // First call's in-call state is still the latest emit.
+            const last = states.at(-1)!;
+            expect(last.kind).toBe('in-call');
+        });
+
+        it('accept() throw surfaces as failed CallState and clears ringtone', async () => {
+            await makeRegistered();
+            const h = fire();
+            h.acceptThrows = new Error('mic_denied');
+            await svc.acceptIncoming();
+            expect(states.at(-1)).toEqual({ kind: 'failed', reason: 'mic_denied' });
+            expect(ring.stops).toBe(1);
         });
     });
 });
