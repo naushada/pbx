@@ -72,7 +72,7 @@ public:
 class CloudConnector : public TunnelSink {
 public:
   struct Config {
-    /// Cloud rendezvous address. e.g. host="onprem-pbx.herokuapp.com",
+    /// Cloud rendezvous address. e.g. host="pabx-5fbf3550f938.herokuapp.com",
     /// port=443.
     std::string host;
     std::uint16_t port = 443;

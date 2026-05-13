@@ -29,7 +29,7 @@ heroku config:set \
 
 # UI app
 heroku config:set \
-  BACKEND_ORIGIN=https://onprem-pbx.herokuapp.com \
+  BACKEND_ORIGIN=https://pabx-5fbf3550f938.herokuapp.com \
   --app onprem-pbx-ui
 ```
 
@@ -39,7 +39,7 @@ The VAPID key file ships into the cloud image at build time (multi-stage) or is 
 
 ```sh
 # .env (copied from .env.agent.example, gitignored)
-CLOUD_HOST=onprem-pbx.herokuapp.com
+CLOUD_HOST=pabx-5fbf3550f938.herokuapp.com
 CLOUD_PORT=443
 AGENT_SOCIETY_ID=<mongo ObjectId>
 CERTS_DIR=./certs/agent-deployed

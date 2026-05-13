@@ -46,7 +46,7 @@ Any 401 from a non-login endpoint runs `AuthService.clearSession()` and `Router.
 Browsers can't set `Authorization` on a WebSocket upgrade. The MVP passes the bearer as a query param:
 
 ```
-wss://onprem-pbx.herokuapp.com/sip-ws?token=<bearer>
+wss://pabx-5fbf3550f938.herokuapp.com/sip-ws?token=<bearer>
 ```
 
 This is acceptable because:
@@ -75,7 +75,7 @@ SIP recomputes `MD5(username:realm:password)` on every challenge. We need a tran
 
 ## 3. Agent ↔ cloud — mTLS
 
-The agent dials `wss://onprem-pbx.herokuapp.com/agent` from `AceSslTransport`. Both sides present X.509 certs signed by the same society CA. Configuration:
+The agent dials `wss://pabx-5fbf3550f938.herokuapp.com/agent` from `AceSslTransport`. Both sides present X.509 certs signed by the same society CA. Configuration:
 
 | Side | Key/cert | Mount |
 |---|---|---|

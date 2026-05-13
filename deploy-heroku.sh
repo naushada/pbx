@@ -7,7 +7,7 @@
 #
 #   ./deploy-heroku.sh login            # authenticate with registry.heroku.com
 #
-#   # Cloud (C++ webservice + SIP bridge) — defaults to HEROKU_APP=onprem-pbx
+#   # Cloud (C++ webservice + SIP bridge) — defaults to HEROKU_APP=pabx-5fbf3550f938
 #   ./deploy-heroku.sh build            # build cloud image only
 #   ./deploy-heroku.sh push             # push cloud image
 #   ./deploy-heroku.sh release          # release the cloud image
@@ -25,13 +25,13 @@
 #   ./deploy-heroku.sh open             # open the UI in a browser
 #
 # Environment overrides (set in shell or .env):
-#   HEROKU_APP        cloud app name              (default: onprem-pbx)
+#   HEROKU_APP        cloud app name              (default: pabx-5fbf3550f938)
 #   HEROKU_APP_UI     UI app name                 (default: onprem-pbx-ui)
 #   PROCESS           Heroku process type         (default: web)
 
 set -euo pipefail
 
-HEROKU_APP="${HEROKU_APP:-onprem-pbx}"
+HEROKU_APP="${HEROKU_APP:-pabx-5fbf3550f938}"
 HEROKU_APP_UI="${HEROKU_APP_UI:-onprem-pbx-ui}"
 PROCESS="${PROCESS:-web}"
 COMPOSE_FILE="docker-compose.heroku.yml"

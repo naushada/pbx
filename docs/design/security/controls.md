@@ -94,7 +94,7 @@ The browser passes these into `RTCConfiguration.iceServers`. coturn's `use-auth-
 
 ## 6. mTLS for cloud ↔ agent
 
-**What.** The agent's outbound dial to `wss://onprem-pbx.herokuapp.com/agent` uses ACE_SSL_SOCK_Connector with a society-scoped client cert/key. The cloud verifies the cert against the society CA.
+**What.** The agent's outbound dial to `wss://pabx-5fbf3550f938.herokuapp.com/agent` uses ACE_SSL_SOCK_Connector with a society-scoped client cert/key. The cloud verifies the cert against the society CA.
 
 **Where.**
 - `pbx-agent/src/main/ace_ssl_transport.cpp` — loads `agent.crt` + `agent.key` + `cloud-ca.pem` from CLI paths

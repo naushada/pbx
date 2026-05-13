@@ -10,7 +10,7 @@
 #   podman-compose -f docker-compose.agent.yml up --build -d
 #
 # Required env (set in .env or shell):
-#   CLOUD_HOST          Heroku hostname (e.g. onprem-pbx.herokuapp.com)
+#   CLOUD_HOST          Heroku hostname (e.g. pabx-5fbf3550f938.herokuapp.com)
 #   AGENT_SOCIETY_ID    Society id this agent serves
 #   CERTS_DIR           Path on host containing agent.crt/agent.key/cloud-ca.pem
 #

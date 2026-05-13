@@ -116,7 +116,7 @@ namespace {
 void print_usage(const char *prog) {
   ACE_ERROR((LM_ERROR,
              ACE_TEXT("Usage: %s [OPTIONS]\n\n"
-                      "  --cloud-host        <host>  Heroku hostname (e.g. onprem-pbx.herokuapp.com)\n"
+                      "  --cloud-host        <host>  Heroku hostname (e.g. pabx-5fbf3550f938.herokuapp.com)\n"
                       "  --cloud-port        <n>     Heroku port           (default: 443)\n"
                       "  --tls-cert          <path>  Client cert (PEM) for mTLS to Heroku\n"
                       "  --tls-key           <path>  Client private key (PEM)\n"
