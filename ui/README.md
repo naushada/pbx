@@ -61,6 +61,15 @@ podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-bullseye-slim 
   CHROME_BIN=/usr/bin/chromium \
   npx ng test --watch=false --browsers=ChromeHeadlessCI
 "
+
+# Run Playwright E2E (uses the production bundle served by http-server).
+# The official Playwright image ships Node + Chromium; image tag must
+# match the @playwright/test version pinned in package.json (1.40.1).
+podman run --rm -v "$PWD/ui:/work" -w /work mcr.microsoft.com/playwright:v1.40.1-jammy sh -c "
+  npm install --legacy-peer-deps --no-audit --no-fund
+  npx ng build --configuration development
+  npx playwright test
+"
 ```
 
 ## Notable pinning
@@ -80,7 +89,7 @@ podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-bullseye-slim 
 | 4 | Inbound call surface — seam extended with `IncomingCallHandle` (accept/reject) + `SipUaHandle.onIncomingCall(cb)`; production wraps sip.js `Invitation` via `ua.delegate.onInvite`. `SipService` accepts/rejects, auto-busies a second arrival, and starts/stops a `RingtoneService` (Web Audio 480/620 Hz two-tone burst, 2 s on / 4 s off). `CallPanelComponent` shows pulsing Accept/Reject buttons. `PushService` + `src/sw.js` handle VAPID Web Push wakeup (`Notification.permission` gating, `pushManager.subscribe`, `POST /api/v1/push-subscribe`, SW `'push'` + `'notificationclick'`). Dashboard has Enable/Disable push toggle. **53/53 specs green (17 new — 6 SipService incoming + 5 Ringtone + 6 Push).** | ✅ Complete |
 | 5 | Conference + history + settings — `SipService.joinConference()` dials `sip:conf@pbx.<society>` (Asterisk ConfBridge, one room per society); dashboard gets a one-click Join button. `HistoryComponent` at `/main/history` fetches `GET /api/v1/cdr` and renders newest-first rows with peer flat, direction arrow, mm:ss duration, colour-coded outcome. `SettingsComponent` at `/main/settings` owns the push toggle (moved from dashboard) + mic/speaker pickers backed by a new `DeviceService` (localStorage-persisted). Sidebar adds History + Settings. **61/61 specs green (8 new — 5 history + 3 conference).** | ✅ Complete |
 | 6 | Production image — `docker/Dockerfile.ui` is multi-stage (node:16-alpine build → nginx:1.25-alpine runtime). nginx is templated by `docker/nginx/nginx.conf.template` (rendered at container start via `envsubst`) and uses `$PORT` + `$BACKEND_ORIGIN`. Runtime DNS via `resolver 8.8.8.8 1.1.1.1` so Heroku cold-starts don't fail. Proxies `/api/`, `/sip-ws`, `/ws/db` (WebSocket-aware) to the cloud; SPA fallback for everything else. `docker-compose.heroku.yml` adds a `pbx-ui` service; `deploy-heroku.sh` gains `build-ui` / `push-ui` / `release-ui` / `deploy-ui` / `deploy-all` subcommands. Smoke-built: `HTTP 200` for `/` and `/sw.js`. | ✅ Complete |
-| 7 | Playwright E2E | ⏳ |
+| 7 | Playwright E2E — `e2e/` runs against the production-shape Angular bundle served by `http-server` (SPA fallback). `playwright.config.ts` autostarts the server via `webServer` and uses `page.route()` to mock the cloud REST surface so no real backend is needed. **12/12 specs pass in 5 s** across login, dashboard, directory, history, settings. Caught one prod bug along the way (root-redirect ignored deep links — fixed in `app.component.ts`). | ✅ Complete |
 
 ## Origin
 

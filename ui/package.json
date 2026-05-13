@@ -6,7 +6,8 @@
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test"
+    "test": "ng test",
+    "e2e": "playwright test"
   },
   "private": true,
   "dependencies": {
@@ -44,8 +45,10 @@
     "@angular/cli": "~14.1.0",
     "@angular/compiler-cli": "^14.1.0",
     "@angular/localize": "^14.1.2",
+    "@playwright/test": "^1.40.1",
     "@types/jasmine": "~4.0.0",
     "@types/node": "^16.18.126",
+    "http-server": "^14.1.1",
     "jasmine-core": "~4.2.0",
     "karma": "~6.4.0",
     "karma-chrome-launcher": "~3.1.0",
