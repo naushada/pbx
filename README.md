@@ -30,9 +30,10 @@ See:
 | 3   | `AceSslTransport` + factory — agent-side outbound mTLS + WS upgrade dial. Concrete `ITransport` for `CloudConnector`'s factory | ✅ Complete |
 | 3   | `AriWsClient` — plain-TCP WS client for Asterisk `/ari/events`; HTTP Basic auth; pushes each JSON event into `AriClient::on_event` | ✅ Complete |
 | 3   | `HandoffOrdering` source-invariant test — guards the xpmile-CLAUDE.md `remove_handler → m_handle=INVALID → publish` ordering for all 3 WS upgrade branches (`/sip-ws`, `/agent`, `/ws/db`) | ✅ Complete |
-| 4+  | Angular UI, Playwright E2E, podman-compose Asterisk integration | ⏳ Not started |
+| 4   | Production wiring — `pbx-agent` + `pbx-cloud` binaries, `AsteriskWsFactory` (real chan_pjsip WS), `AriRestClient` (admission `continue`), real `PushSender` (AceHttpsClient + VAPID), `docker-compose.{agent,heroku}.yml`, `Dockerfile.{agent,cloud,ui}`, `deploy-heroku.sh` | ✅ Complete (see [§ Layer 4 detail](#layer-4--production-wiring-complete)) |
+| UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
-### Test totals: **312/312 across 33 suites**
+### Test totals: **425 / 425** (C++ 352 + UI karma 61 + UI Playwright 12)
 
 | Layer | Suites | Tests |
 |-------|--------|------:|
@@ -44,7 +45,13 @@ See:
 | regression | inherited xpmile suites (verbatim copy) | **112** |
 | **Total** | **36 suites** | **352** |
 
-**Layer 3 is feature-complete.** The full cloud + agent control plane has real ACE bindings end-to-end, and the `WebConnection` hand-off ordering is defended against future regressions by a source-invariant test.
+| UI suite | Tests |
+|----------|------:|
+| karma (Jasmine) — `AuthService`, `AuthGuard`, `AuthInterceptor`, `LoginComponent`, `SipService`, `RingtoneService`, `PushService`, `HistoryComponent`, `DirectoryComponent` | **61** |
+| Playwright E2E — login, dashboard, directory, history, settings | **12** |
+| **UI total** | **73** |
+
+**The MVP is feature-complete end-to-end.** Cloud + agent control plane has real ACE bindings; the on-prem stack composes a working Asterisk/coturn/Mongo/agent topology; the Angular softphone can register over SIP-over-WS, dial directory entries, host inbound calls with VAPID push wakeup, and join a society ConfBridge. Production images for both `pbx-cloud` and `pbx-ui` are smoke-built and deployable to Heroku via `./deploy-heroku.sh deploy-all`.
 
 ## Architecture (end of Layer 3)
 
@@ -318,17 +325,21 @@ deploy-heroku.sh            # podman + heroku CLI wrapper (xpmile-style)
 .env.agent.example          # Template for docker-compose.agent.yml env
 
 docs/           # PRD, DESIGN, TDD-PLAN are at the root; sub-design docs land here
-ui/             # Angular softphone — Layer 4 (slice 0 scaffold done)
-                #   angular.json, package.json, tsconfig*.json, karma.conf.js
-                #   src/{main,polyfills,test,styles,index.html,favicon}
-                #   src/common/{app-globals,httpsvc,pubsubsvc}.{ts,d.ts}
-                #   src/app/{app,login,main,dashboard}/*  (login/dashboard are
-                #     placeholders; real components arrive in slices 1–2)
+ui/             # Angular 14 + Clarity softphone — all 7 slices complete
+                #   src/common/   — auth, sip-ua seam, sip-ua-sipjs production wrapper,
+                #                   sip.service, ringtone.service, push.service,
+                #                   device.service, httpsvc, pubsubsvc, app-globals
+                #   src/app/      — login, main (shell + sidebar), dashboard,
+                #                   directory, history, settings, call-panel
+                #   src/sw.js     — Service Worker for push wakeup
+                #   e2e/          — Playwright tests (login, dashboard, directory,
+                #                   history, settings)
+                #   docker/Dockerfile.ui builds the nginx-served production image
 scripts/        # Build/deploy helpers — Layer 4
 certs/          # Local-dev cert material (gitignored except templates)
 ```
 
-## Layer 4 — production wiring (in progress)
+## Layer 4 — production wiring (complete)
 
 Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deployment-and-product surface; none of it changes the tested core.
 
@@ -342,10 +353,11 @@ Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deploym
 | Real `PushSender` wiring on cloud — `AceHttpsClient` for HTTPS POSTs + `SystemClock`; `--vapid-key-path` + `--vapid-subject` CLI flags; both branches of `webservice_main.cpp` patched. If flags unset, log-only stub remains. | ✅ Complete |
 | `docker-compose.agent.yml` — `pbx-mongo` (mongo:7) + `pbx-asterisk` (andrius/asterisk:20, chan_pjsip + ARI configs in `docker/asterisk/`) + `pbx-coturn` (coturn:4.6, `host` net for STUN replies) + `pbx-agent` (multi-stage `docker/Dockerfile.agent`). `pbx-net` bridge isolates inter-service traffic; Asterisk's WS port stays internal. Env via `.env` (template: `.env.agent.example`). | ✅ Complete |
 | `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) — `pbx-cloud` built from `docker/Dockerfile.cloud`, tagged `registry.heroku.com/${HEROKU_APP}/web`. Wrapper has `login`/`build`/`push`/`release`/`deploy`/`logs`/`open` subcommands and uses `podman` + the Heroku CLI exactly as xpmile does. | ✅ Complete |
-| `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker) — Slice 0: scaffold + Clarity/CDS styles + `src/common/{httpsvc,pubsubsvc}.service.ts` + empty routes (`login` / `main` / `dashboard`). `ng build` green inside a `node:16` podman container. Login form, SIP service, directory, call UI, push wakeup land in slices 1–7. | ⚡ Slice 0 done |
-| Playwright E2E | ⏳ |
+| `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker). 7-slice plan documented in [`ui/README.md`](./ui/README.md): scaffold → login (`AuthService` + `AuthGuard` + `AuthInterceptor`) → `SipService` over the sip.js seam → directory + outbound call (`SipCallHandle`, `CallPanelComponent`) → inbound + `RingtoneService` + `PushService` + `src/sw.js` → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx). 61 karma specs cover the core services; `app.component.ts` deep-link bug caught by E2E and fixed. | ✅ Complete |
+| `docker/Dockerfile.ui` + nginx (multi-stage `node:16-alpine` build → `nginx:1.25-alpine` runtime, `envsubst` template, `resolver 8.8.8.8 1.1.1.1` for Heroku cold-starts, `/api/`, `/sip-ws`, `/ws/db` proxied with WS upgrade headers + 86 400 s timeouts, SPA fallback) | ✅ Complete |
+| Playwright E2E (`ui/e2e/`) — 12 specs across login / dashboard / directory / history / settings. Runs against the production-shape bundle served by `http-server`; cloud REST surface mocked via `page.route()` so no backend is needed. | ✅ Complete |
 
-The TDD-style coverage stays the same shape — every Layer 4 piece either has its own GTest suite (where it's pure logic) or an integration test (where it's I/O-bound).
+The TDD-style coverage stays the same shape — every Layer 4 piece either has its own GTest suite (where it's pure logic), an integration test (where it's I/O-bound), or a Playwright spec (UI surfaces).
 
 ## Implementation order
 
