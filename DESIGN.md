@@ -435,7 +435,7 @@ Anything reused is **copied into `onprem-pbx/modules/...` verbatim or near-verba
 | `modules/module/webservice/microservice.{hpp,cpp}` | same | Add `handle_subscriber_*`, `handle_society_*`, `handle_cdr_*`, `handle_push_*`. URI-prefix routing pattern unchanged. |
 | `modules/module/http/inc/message_parser.hpp`<br>`modules/module/http/src/message_parser.cpp` | extracted from xpmile `http_parser.{hpp,cpp}` | New base class. Hosts the protocol-agnostic logic: `message_length` (CRLFCRLF + `Content-Length`), `get_header`, `parse_mime_header`, lowercased `m_tokenMap`, `pct_decode`. ~200 lines lifted unchanged. |
 | `modules/module/http/inc/http_parser.hpp`<br>`modules/module/http/src/http_parser.cpp` | xpmile `http_parser.{hpp,cpp}` | Becomes a thin subclass of `MessageParser`. Keeps `parse_first_line()` (METHOD URI HTTP/1.1), query-string parsing, chunked/gzip body decode. Public API (`uri()`, `method()`, `body()`, `add_element`, `get_element`) preserved so reused xpmile code compiles unchanged. |
-| `modules/module/sip/inc/sip_parser.hpp`<br>`modules/module/sip/src/sip_parser.cpp` *(new)* | inherits from `MessageParser` | SIP-specific bits only: detects request vs status line (`SIP/2.0 …` prefix → status), parses `METHOD Request-URI SIP/2.0` or `SIP/2.0 <code> <reason>`, exposes `is_request()`, `status_code()`, `reason_phrase()`. Owns a compact-header alias table (`l`→`content-length`, `v`→`via`, `i`→`call-id`, `f`→`from`, `t`→`to`, `m`→`contact`, `c`→`content-type`, `s`→`subject`, `k`→`supported`, `e`→`content-encoding`, `o`→`event`). `get_element()` checks canonical key first, then alias. Stores `Via` (and other repeat-allowed headers) in a `vector<string>` alongside the scalar map. Skips chunked/gzip (forbidden by RFC 3261). |
+| `modules/module/sip/inc/sip_parser.hpp`<br>`modules/module/sip/src/sip_parser.cpp` *(new — landed in Layer 0)* | inherits from `MessageParser` | SIP-specific bits only: detects request vs status line (`SIP/2.0 …` prefix → status), parses `METHOD Request-URI SIP/2.0` or `SIP/2.0 <code> <reason>`, exposes `is_request()`, `status_code()`, `reason_phrase()`, `error()`. Compact-header alias table (`l`→`content-length`, `v`→`via`, `i`→`call-id`, `f`→`from`, `t`→`to`, `m`→`contact`, `c`→`content-type`, `s`→`subject`, `k`→`supported`, `e`→`content-encoding`, `o`→`event`); `add_element()` canonicalizes on insert so lookups by either form resolve. Multi-value arrival-ordered storage (`m_multiMap`) for `via`, `record-route`, `route`, `contact`, `proxy-authenticate`, `www-authenticate`; `get_all()` returns the vector, `get_element()` returns the topmost entry. Refuses `Transfer-Encoding: chunked` (RFC 3261 §7.5). |
 | `modules/module/mongodb/*` | `modules/module/mongodb/*` | Verbatim. `MongodbClient` pool; reuse `next_awbno`-style atomic counter for SIP-username generation. |
 | `modules/module/wsdbproxy/*` | same | Verbatim. Cloud reads Mongo through wsdbagent in remote-db mode. |
 | `pbx-agent/cloudconnector.{hpp,cpp}` | `wsdbagent/agent.{hpp,cpp}` | Repurpose the `ACE_SSL_SOCK_Connector` dial-out + WSS upgrade + reconnect loop. Replace BSON message handling with the framing protocol (§7). |
@@ -449,11 +449,11 @@ Anything reused is **copied into `onprem-pbx/modules/...` verbatim or near-verba
 
 **Genuinely new code** (no xpmile counterpart):
 
-- `modules/module/pbx/sipbridge.{hpp,cpp}` — multiplexer (ACE event handler).
-- `modules/module/pbx/sip_frame.{hpp,cpp}` — wire-format parser/serializer (uses ACE CDR streams).
-- `modules/module/pbx/push_sender.{hpp,cpp}` — VAPID + Web Push.
-- `pbx-agent/sip_frame_demux.{hpp,cpp}` — agent-side multiplexer.
-- `pbx-agent/ari_client.{hpp,cpp}` — Asterisk REST/event consumer.
+- `modules/module/pbx/{inc,src}/sip_frame.{hpp,cpp}` — wire-format encode/decode (10-byte big-endian header, op-code whitelist, 1 MiB payload cap, `Status::Ok/NeedMore/Invalid` decode result). **Landed in Layer 0.** Hand-rolled big-endian readers chosen over `ACE_CDR` since the wire format does not match `ACE_CDR`'s default native-byte-order layout and the swap calls add no value at this scale.
+- `modules/module/pbx/sipbridge.{hpp,cpp}` — multiplexer (ACE event handler). Layer 1.
+- `modules/module/pbx/push_sender.{hpp,cpp}` — VAPID + Web Push. Layer 1.
+- `pbx-agent/sip_frame_demux.{hpp,cpp}` — agent-side multiplexer. Layer 2.
+- `pbx-agent/ari_client.{hpp,cpp}` — Asterisk REST/event consumer. Layer 2.
 
 **Where SIP parsing actually runs:** the cloud `SipBridge` and the on-prem `SipFrameDemux` are **byte-faithful** — they multiplex/demux raw SIP-WS frames and do not parse SIP. Asterisk does the runtime parsing. The `sip_parser` lives in two places:
 

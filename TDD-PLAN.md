@@ -14,6 +14,17 @@ Tests are written **before** production code, one slice at a time. The order bel
 
 ## Layer 0 — Wire-format primitives (write first; foundation for everything else)
 
+**Status: ✅ Complete (commit `f45b40a` on `main`). 55/55 green under podman.**
+
+| Sub-layer | Suite | Tests | Status |
+|---|---|---:|---|
+| 0.b regression guard | `HttpParser*` (copied verbatim from xpmile) | 20 | ✅ |
+| 0.b base | `MessageParserBase*` | 8 | ✅ |
+| 0.b SIP | `SipParser*` | 17 | ✅ |
+| 0.a frames | `SipFrame*` | 10 | ✅ |
+
+Run: `podman build -f docker/Dockerfile.test -t onprem-pbx-test:layer0 . && podman run --rm onprem-pbx-test:layer0`
+
 ### 0.a Tunnel frame primitives
 
 **Suite:** `SipFrame*` (in `modules/module/pbx/test/sip_frame_test.cc`)
@@ -217,16 +228,16 @@ Run after every deploy against the live Heroku app + a staging society agent:
 
 ## Order of work (drives the implementation)
 
-1. Copy xpmile skeleton (`modules/`, `ui/`, `CMakeLists.txt`, build/deploy scripts) — green: existing xpmile tests still pass. *(Reuse map in DESIGN.md §11.)*
-2. **Layer 0.b first.** Extract `MessageParser` base, prove copied `Http*` xpmile tests still pass, then add `MessageParserBase*` and `SipParser*` to green. (Done before frames so the SIP-aware test harness for later layers can rely on a working parser.)
-3. Write Layer 0.a (`SipFrame*`). Implement to green.
-4. Write `SipBridge*` and `SipFrameDemux*` together. Implement to green.
-5. Write `CloudConnector*`. Implement to green.
-6. Write `TunnelE2E*`. Wire everything end-to-end with fakes.
-7. Compose Asterisk + coturn locally. Write `MicroServicePbx*` + `AriClient*`. Implement to green.
-8. `PushSender*`.
-9. Angular skeleton + Karma specs; implement components.
-10. Playwright E2E.
-11. Smoke + first society pilot.
+1. ✅ Copy xpmile skeleton — minimal subset shipped in Layer 0 commit (`modules/module/http/*`, `test/CMakeLists.txt`, root `CMakeLists.txt`, `docker/Dockerfile.test`, `docker-compose.test.yml`). Remaining xpmile modules (webservice, mongodb, wsdbproxy, email) land alongside Layer 1 when first needed. *(Reuse map in DESIGN.md §12.)*
+2. ✅ **Layer 0.b.** `MessageParser` base extracted; xpmile `HttpParser*` 20/20 still green; `MessageParserBase*` 8/8 + `SipParser*` 17/17 green.
+3. ✅ Layer 0.a `SipFrame*` 10/10 green.
+4. ⏳ Layer 1 — `SipBridge*` and `SipFrameDemux*` together. Implement to green.
+5. ⏳ Layer 2 — `CloudConnector*`. Implement to green.
+6. ⏳ Layer 3 — `TunnelE2E*`. Wire everything end-to-end with fakes.
+7. ⏳ Compose Asterisk + coturn locally. Write `MicroServicePbx*` + `AriClient*`. Implement to green.
+8. ⏳ `PushSender*`.
+9. ⏳ Angular skeleton + Karma specs; implement components.
+10. ⏳ Playwright E2E.
+11. ⏳ Smoke + first society pilot.
 
 Definition of done for a layer: all tests green on `./offtarget --gtest_filter='<Suite>*'` (or `ng test` / `playwright test`), and CI has caught at least one regression introduced during development of the next layer (proves the test really binds the behaviour).
