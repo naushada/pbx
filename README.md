@@ -26,10 +26,11 @@ See:
 | 2   | `CloudTunnelEndpoint` — accept-side of the cloud↔agent tunnel; wired into `WebServer`; `/agent` WS upgrade branch in `WebConnection`; context-aware `/sip-ws` 503 hint | ✅ Complete (`BrowserStream` + agent WS decoder deferred to Layer 3) |
 | 3   | `TunnelE2E` — paired in-memory transport harness, end-to-end frame plumbing tests (browser ↔ cloud bridge ↔ tunnel ↔ agent demux ↔ fake Asterisk and back) | ✅ Complete |
 | 3   | `BrowserStream` — first concrete ACE binding (ACE_Event_Handler + BrowserSink). Retires the `/sip-ws` 503 stub: real WS hand-off now lives | ✅ Complete |
-| 3   | Cloud-side `AgentStream`, agent-side `AceSslTransport`, Asterisk ARI WS-events client, `HandoffOrdering` test | ⏳ Next |
+| 3   | `AgentStream` — cloud-side ACE binding for `/agent` (ACE_Event_Handler + private TransportAdapter implementing IAgentTransport). Retires the `/agent` stub | ✅ Complete |
+| 3   | Agent-side `AceSslTransport`, Asterisk ARI WS-events client, `HandoffOrdering` test | ⏳ Next |
 | 4+  | Angular UI, Playwright E2E, podman-compose Asterisk integration | ⏳ Not started |
 
-**Test totals: 271/271 passing across 29 suites** — our 159 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 14, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12, TunnelE2E 8, **BrowserStream 8**) + 112 inherited from xpmile (regression guard).
+**Test totals: 280/280 passing across 30 suites** — our 168 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 14, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12, TunnelE2E 8, BrowserStream 8, **AgentStream 9**) + 112 inherited from xpmile (regression guard).
 
 ### Skipped tests
 

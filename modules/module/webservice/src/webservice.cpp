@@ -1,4 +1,5 @@
 #include "webservice.hpp"
+#include "agent_stream.hpp"
 #include "browser_stream.hpp"
 #include "cloud_tunnel_endpoint.hpp"
 #include "emailservice.hpp"
@@ -2041,14 +2042,11 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
                                     "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
         m_stream.send_n(rsp.data(), rsp.size());
 
-        // Hand the raw fd to CloudTunnelEndpoint's owner. The
-        // production reactor binding (an ACE_Event_Handler that wraps
-        // the fd, decodes WS frames, and calls
-        // CloudTunnelEndpoint::on_bytes_received) is the Layer 3
-        // counterpart of the agent's AceSslTransport — same scope
-        // boundary. For now the endpoint is marked "agent connected"
-        // via a small adapter that records the fd; bytes flow once
-        // the Layer 3 binding lands.
+        // Real hand-off: same xpmile-mechanic ordering as /sip-ws and
+        // /ws/db, then construct an AgentStream on the raw fd and
+        // register it with the same reactor. AgentStream's constructor
+        // calls CloudTunnelEndpoint::on_agent_connected(adapter), so
+        // `has_agent()` flips true right after this returns.
         m_handedOff = true;
         ACE_HANDLE raw = m_handle;
         m_stream.set_handle(ACE_INVALID_HANDLE);
@@ -2056,11 +2054,21 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
             ACE_Event_Handler::READ_MASK | ACE_Event_Handler::DONT_CALL);
         m_handle = ACE_INVALID_HANDLE;
 
-        ACE_DEBUG((LM_INFO,
-                   ACE_TEXT("%D [WebConnection:%t] %M %N:%l /agent handoff "
-                            "raw fd %d to CloudTunnelEndpoint (Layer-3 binding "
-                            "pending)\n"),
-                   raw));
+        auto *as = new AgentStream(*parent().cloudTunnelEndpoint(), raw);
+        as->reactor(reactor());
+        if (reactor()->register_handler(as, ACE_Event_Handler::READ_MASK) == -1) {
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l "
+                              "AgentStream register_handler failed; "
+                              "tearing down agent stream\n")));
+          delete as;
+        } else {
+          ACE_DEBUG((LM_INFO,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l /agent "
+                              "handed off raw fd %d -> AgentStream\n"),
+                     raw));
+        }
+
         parent().connectionPool().erase(raw);
         return 0;
       }

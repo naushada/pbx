@@ -11,7 +11,8 @@ Current status:
 | `MicroServicePbx`     | `inc/microservice_pbx.hpp` + `src/microservice_pbx.cpp`         | ✅ Complete (Layer 1, second slice) |
 | `PushSender`          | `inc/push_sender.hpp` + `src/push_sender.cpp`                   | ✅ Complete (Layer 1, third slice) |
 | `CloudTunnelEndpoint` | `inc/cloud_tunnel_endpoint.hpp` + `src/cloud_tunnel_endpoint.cpp` | ✅ Complete (Layer 2, /sip-ws swap slice) |
-| `BrowserStream`       | `inc/browser_stream.hpp` + `src/browser_stream.cpp`             | ✅ Complete (Layer 3, ACE binding — first concrete reactor binding) |
+| `BrowserStream`       | `inc/browser_stream.hpp` + `src/browser_stream.cpp`             | ✅ Complete (Layer 3, ACE binding for `/sip-ws`) |
+| `AgentStream`         | `inc/agent_stream.hpp` + `src/agent_stream.cpp`                 | ✅ Complete (Layer 3, ACE binding for `/agent`) |
 
 ---
 
@@ -445,6 +446,59 @@ The Layer 1 / Layer 2 503 stub is retired. The new flow in `WebConnection::handl
 1. Auth gate (unchanged) — 401 if no `session=` cookie.
 2. If `WebServer::cloudTunnelEndpoint()` is null, `sipBridge()` is null, or the agent isn't connected → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers.
 3. Otherwise: 101 Switching Protocols + xpmile-mechanic hand-off ordering (`remove_handler → m_handle=INVALID`) → construct `BrowserStream` on the raw fd → register on the same reactor → release this WebConnection from the pool.
+
+---
+
+## AgentStream — ACE event handler for the cloud's `/agent` socket
+
+Symmetric mirror of `BrowserStream`. Owns the cloud-side `/agent` fd after the WS upgrade; exposes itself to `CloudTunnelEndpoint` via a private `TransportAdapter` (because the endpoint takes a `std::unique_ptr<IAgentTransport>` while ACE owns the stream's lifetime).
+
+### Adapter lifetime invariant
+
+The `TransportAdapter` lives inside the endpoint's `unique_ptr`. `AgentStream` holds a non-owning back-pointer `m_adapter`. Both release paths null the pointer **before** the adapter is destroyed, so it's never dereferenced after death:
+
+- **Endpoint-initiated release** (e.g. invalid `SipFrame` payload → `bridge.on_tunnel_bytes` returned false → `endpoint.mark_disconnected`): endpoint calls `m_transport->close()` → `adapter.close()` → `AgentStream::close_socket()` which nulls `m_adapter` and closes the fd. Then `endpoint.mark_disconnected` calls `m_transport.reset()` — adapter destroyed.
+- **Peer-initiated release** (close frame or EOF on socket): `AgentStream::notify_disconnect_once()` detaches the adapter (`adapter.m_s = nullptr`), nulls `m_adapter`, then calls `endpoint.on_agent_disconnected()`. The endpoint's own teardown sees a no-op adapter close and resets the unique_ptr.
+
+`m_close_notified` guards `notify_disconnect_once` so it runs at most once across the destructor + `handle_close` + peer-close paths.
+
+### Frame handling
+
+Identical opcode table to `BrowserStream`:
+
+| Inbound WS opcode | Action |
+|---|---|
+| text / binary / continuation | `endpoint.on_bytes_received(payload)` — if endpoint released us mid-loop (`m_handle == INVALID`), bail out with `-1` so ACE calls `handle_close` |
+| ping | reply with `wsframe::pong_frame(payload)` |
+| pong | swallowed |
+| close | echo close frame, `notify_disconnect_once()`, return `-1` |
+| anything else | protocol error; same release path |
+
+Outbound (`write_bytes`, invoked by adapter): encode as WS text (RFC 7118), unmasked.
+
+### Behaviour pinned by tests (`test/agent_stream_test.cc` — 9 tests)
+
+Tests use `socketpair()` so reads come from a real fd; `handle_input` is invoked directly. Coverage:
+
+- `ConstructorAttachesToEndpoint` — endpoint's `has_agent()` flips true on construction, back to false on destruction.
+- `OnInput_ForwardsToEndpoint` — masked WS text frame from peer carries a `SipFrame::DATA` payload; round-trips through the endpoint → bridge → `BrowserSink::send_bytes`.
+- `OnInput_PingTriggersPong` — ping bytes from peer → unmasked PONG (`0x8A`) bytes on the other socket end.
+- `OnInput_CloseFrame_DisconnectsEndpoint` — peer-side WS close → endpoint released.
+- `EndpointSendFrame_WritesWsFrameToSocket` — `endpoint.send_frame(CDR_PUSH, …)` → unmasked WS text frame on the peer side, decoded payload round-trip-matches the original `SipFrame::encode` bytes.
+- `EndpointReleasesTransport_ClosesSocket` — `endpoint.on_agent_disconnected()` → AgentStream's fd is closed (subsequent `recv` on the AgentStream side fails).
+- `MultipleFramesInOneRead`, `PartialFrameAcrossReads` — same boundary cases as the BrowserStream suite.
+- `OnInput_InvalidSipFrame_DropsAgent` — malformed `SipFrame` payload inside a WS text frame triggers the endpoint-initiated release path; `handle_input` returns `-1` so ACE cleans up.
+
+### `/agent` swap in WebConnection
+
+Mirrors the `/sip-ws` swap: on detected `/agent` WS upgrade:
+1. Send `101 Switching Protocols` + `Sec-WebSocket-Accept`.
+2. xpmile-mechanic hand-off (`remove_handler → m_handle=INVALID`).
+3. Construct an `AgentStream` on the raw fd (which immediately calls `endpoint.on_agent_connected`).
+4. `as->reactor(reactor()) + register_handler(READ_MASK)`.
+5. `connectionPool().erase(raw)`.
+
+The previous Layer 2 "info log only" stub is now retired — `has_agent()` flips true the moment the agent's WS upgrade completes.
 
 ---
 

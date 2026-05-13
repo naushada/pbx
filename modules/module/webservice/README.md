@@ -23,16 +23,18 @@ Pinned by **`MicroServiceRouting*`** (7 tests in `modules/module/pbx/test/micros
 - `RoutesSocietyPost`, `RoutesSubscriberImportPost`, `RoutesCdrGet`, `RoutesPushSubscribePost` — each PBX URI fires the right handler.
 - `FallsThroughOnXpmileUri` (`/api/v1/account/login` returns empty), `FallsThroughOnUnknownUri`, `FallsThroughOnWrongMethod` (`GET /api/v1/society`) — xpmile routes stay reachable.
 
-**2. `/agent` WebSocket upgrade hand-off** (Layer 2 addition)
+**2. `/agent` WebSocket upgrade hand-off** (Layer 3)
 
 Mirror of xpmile's existing `/ws/db` upgrade branch. When the on-prem agent dials in to `/agent`, `WebConnection::handle_input`:
 
 1. Detects the WS upgrade (GET `/agent` + `Sec-WebSocket-Key`).
 2. Sends the `101 Switching Protocols` response.
-3. Hands the raw fd over to `WebServer::cloudTunnelEndpoint()` using the **identical ordering** as the `/ws/db` hand-off:
-   `remove_handler → m_handle = INVALID → publish` → `connectionPool().erase(raw)`.
+3. xpmile-mechanic hand-off ordering: `remove_handler → m_handle = INVALID`.
+4. Constructs an [`AgentStream`](../pbx/README.md#agentstream--ace-event-handler-for-the-clouds-agent-socket) on the raw fd. The constructor calls `CloudTunnelEndpoint::on_agent_connected(adapter)` immediately, so `has_agent()` flips true.
+5. `as->reactor(reactor()) + register_handler(READ_MASK)`.
+6. `connectionPool().erase(raw)`.
 
-The production ACE event handler that wraps the agent fd, decodes inbound WS frames, and calls `endpoint.on_bytes_received(payload)` lands with Layer 3 integration (same scope boundary as the agent's `AceSslTransport`). Until then the hand-off logs an info line so monitoring can see that the agent reached us — `endpoint.on_agent_connected` is not yet invoked because the WS-decoding adapter doesn't exist.
+The Layer 2 "info log only" stub is retired. `AgentStream`'s 9-test suite covers WS decode/encode, ping/pong, close handling, frame-boundary edge cases, and the endpoint-initiated release path — all via `socketpair()`, no reactor needed.
 
 **3. `/sip-ws` upgrade — real BrowserStream hand-off** (Layer 3)
 
