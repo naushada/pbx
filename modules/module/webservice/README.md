@@ -1,6 +1,44 @@
 # webservice — ACE reactor + per-socket handler + worker pool
 
-> **Status:** ✅ Copied verbatim from xpmile (Layer 1). Extensions for SIP-WS/agent upgrade hand-off, new route handlers, and the `HandoffOrdering` test land in the upcoming slices.
+> **Status:** ✅ Copied verbatim from xpmile (Layer 1), then patched with two onprem-pbx additions: `MicroService::dispatch_pbx_routes` (REST URI table) and a `/sip-ws` upgrade gate in `WebConnection::handle_input`. The `HandoffOrdering` test from the TDD plan is deferred to Layer 3 TunnelE2E.
+
+## Onprem-pbx patches
+
+**1. `MicroService::dispatch_pbx_routes(req, db) -> string`** (new method)
+
+Intercepts PBX URI prefixes before the xpmile route chain so neither `handle_GET` nor `handle_POST` had to be touched (keeps xpmile's regression tests untouched). Routes:
+
+| URI | Method | Handler |
+|---|---|---|
+| `/api/v1/society` (exact) | `POST` | `MicroServicePbx::handle_society_POST` |
+| `/api/v1/subscriber/import` (prefix) | `POST` | `MicroServicePbx::handle_subscriber_import_POST` |
+| `/api/v1/cdr` (prefix) | `GET` | `MicroServicePbx::handle_cdr_GET` |
+| `/api/v1/push/subscribe` (exact) | `POST` | `MicroServicePbx::handle_push_subscribe_POST` |
+| _anything else_ | — | returns empty → caller falls through to xpmile dispatch |
+
+`process_request` calls `dispatch_pbx_routes` first; only if it returns empty does it consult xpmile's method-based chain.
+
+Pinned by **`MicroServiceRouting*`** (7 tests in `modules/module/pbx/test/microservice_pbx_test.cc`):
+
+- `RoutesSocietyPost`, `RoutesSubscriberImportPost`, `RoutesCdrGet`, `RoutesPushSubscribePost` — each PBX URI fires the right handler.
+- `FallsThroughOnXpmileUri` (`/api/v1/account/login` returns empty), `FallsThroughOnUnknownUri`, `FallsThroughOnWrongMethod` (`GET /api/v1/society`) — xpmile routes stay reachable.
+
+**2. `/sip-ws` upgrade gate in `WebConnection::handle_input`** (added branch)
+
+When a WS upgrade for `/sip-ws` arrives:
+
+1. Call `MicroServicePbx::handle_sipws_upgrade(request)`. Non-empty return = 401 (no `session=…` cookie). Send and close.
+2. Auth ok → send a `503 Service Unavailable` with `X-PBX-Hint: SipBridge tunnel endpoint not yet wired` and close.
+
+Step 2 is a stub: the real `SipBridge::on_browser_upgrade` hand-off needs the cloud-side tunnel endpoint (`CloudTunnelEndpoint`), which lands in Layer 2. The auth-gate behaviour is pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade` / `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
+
+The xpmile `/ws/db` upgrade branch (immediately below the `/sip-ws` branch in the source) is **unchanged** — both upgrades coexist on the same `WebConnection::handle_input` path with identical hand-off mechanics.
+
+## Upcoming (Layer 2)
+
+- Cloud-side `CloudTunnelEndpoint` — the `IPushHttpClient`/`TunnelSink` implementation that actually wraps an `ACE_SSL_SOCK_Stream` to the agent.
+- Replace the `/sip-ws` 503 stub with the real hand-off (`remove_handler → m_handle = INVALID → bridge.on_browser_upgrade(raw)`).
+- `HandoffOrdering` test (works end-to-end against the real reactor; cheaper than reactor mocking).
 
 The cloud's HTTP/WSS-serving spine. Three classes copied near-verbatim from xpmile's `modules/module/webservice/` and then extended:
 

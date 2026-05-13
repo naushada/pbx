@@ -1,6 +1,7 @@
 #include "microservice_pbx.hpp"
 #include "mongodbc.hpp"
 #include "json.hpp"
+#include "webservice.hpp"   // for MicroService::dispatch_pbx_routes routing tests
 #include <gtest/gtest.h>
 #include <regex>
 #include <string>
@@ -352,4 +353,94 @@ TEST(MicroServicePbx, Auth_AllowsSipWsUpgrade_WithSessionCookie)
     std::string rsp = MicroServicePbx::handle_sipws_upgrade(req);
 
     EXPECT_TRUE(rsp.empty()) << "Empty response means 'upgrade may proceed'";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Route-wiring: MicroService::dispatch_pbx_routes() picks the right handler.
+// Asserts the dispatch table only — handler correctness is owned by the
+// MicroServicePbx.* suite above. xpmile URIs (e.g. /api/v1/account/login) must
+// NOT be intercepted here; dispatch_pbx_routes returns empty on those so the
+// xpmile route chain runs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MicroServiceRouting, RoutesSocietyPost)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_post("/api/v1/society",
+                                       R"({"name":"X","code":"X1"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 201 Created"));
+    ASSERT_EQ(1u, db.inserts.size());
+    EXPECT_EQ("societies", db.inserts[0].coll);
+}
+
+TEST(MicroServiceRouting, RoutesSubscriberImportPost)
+{
+    TestDb db;
+    seed_society_and_flats(db);
+    MicroService e;
+    const std::string csv =
+        "flat_number,name,email,phone,role\r\n"
+        "A-101,Asha,asha@x,9999,resident\r\n";
+    const std::string req = make_post(
+        "/api/v1/subscriber/import?societyId=s1", csv, "text/csv");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("Content-Type: text/csv"));
+}
+
+TEST(MicroServiceRouting, RoutesCdrGet)
+{
+    TestDb db;
+    db.getDocs["cdr"].push_back(
+        {R"("societyId":"s1")", R"([{"_id":"c1","societyId":"s1"}])"});
+    MicroService e;
+    const std::string req = make_get("/api/v1/cdr?societyId=s1");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find(R"("societyId":"s1")"));
+}
+
+TEST(MicroServiceRouting, RoutesPushSubscribePost)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_post(
+        "/api/v1/push/subscribe",
+        R"({"subscriberId":"u1","endpoint":"https://x/y","p256dh":"k","auth":"a"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 201 Created"));
+    ASSERT_EQ(1u, db.inserts.size());
+    EXPECT_EQ("push_subscriptions", db.inserts[0].coll);
+}
+
+TEST(MicroServiceRouting, FallsThroughOnXpmileUri)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_post("/api/v1/account/login",
+                                       R"({"userId":"x","password":"y"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_TRUE(rsp.empty())
+        << "xpmile URIs must NOT be intercepted by the PBX dispatch";
+}
+
+TEST(MicroServiceRouting, FallsThroughOnUnknownUri)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_get("/something/random");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_TRUE(rsp.empty());
+}
+
+TEST(MicroServiceRouting, FallsThroughOnWrongMethod)
+{
+    TestDb db;
+    MicroService e;
+    // /api/v1/society is POST-only; GET must fall through.
+    const std::string req = make_get("/api/v1/society");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_TRUE(rsp.empty());
 }

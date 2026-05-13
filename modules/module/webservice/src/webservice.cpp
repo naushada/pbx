@@ -2,6 +2,7 @@
 #include "emailservice.hpp"
 #include "http_parser.hpp"
 #include "json.hpp"
+#include "microservice_pbx.hpp"
 #include "wsframe.hpp"
 #include <algorithm>
 #include <cstring>
@@ -231,6 +232,32 @@ std::string MicroService::handle_DELETE(std::string &in,
   return (build_responseERROR(err_message, err));
 }
 
+std::string MicroService::dispatch_pbx_routes(std::string &req,
+                                               IMongodbClient &dbInst) {
+  Http http(req);
+  const std::string &uri    = http.uri();
+  const std::string &method = http.method();
+
+  // Exact-match: POST /api/v1/society
+  if (method == "POST" && uri == "/api/v1/society")
+    return MicroServicePbx::handle_society_POST(req, dbInst);
+
+  // Prefix-match: POST /api/v1/subscriber/import[?societyId=…]
+  if (method == "POST" && uri.compare(0, 25, "/api/v1/subscriber/import") == 0)
+    return MicroServicePbx::handle_subscriber_import_POST(req, dbInst);
+
+  // Prefix-match: GET /api/v1/cdr[?societyId=…]
+  if (method == "GET" && uri.compare(0, 11, "/api/v1/cdr") == 0)
+    return MicroServicePbx::handle_cdr_GET(req, dbInst);
+
+  // Exact-match: POST /api/v1/push/subscribe
+  if (method == "POST" && uri == "/api/v1/push/subscribe")
+    return MicroServicePbx::handle_push_subscribe_POST(req, dbInst);
+
+  // No PBX route owns this URI — caller falls through to xpmile dispatch.
+  return {};
+}
+
 std::int32_t MicroService::process_request(ACE_HANDLE handle, std::string &req,
                                            IMongodbClient &dbInst) {
   Http http(req);
@@ -238,23 +265,28 @@ std::int32_t MicroService::process_request(ACE_HANDLE handle, std::string &req,
   ACE_DEBUG((LM_DEBUG, ACE_TEXT("%D [Worker:%t] %M %N:%l METHOD:%s URI:%s\n"),
              http.method().c_str(), http.uri().c_str()));
 
-  std::string rsp;
-  if (http.method() == "OPTIONS")
-    rsp = handle_OPTIONS(req);
-  else if (http.method() == "GET")
-    rsp = handle_GET(req, dbInst);
-  else if (http.method() == "POST")
-    rsp = handle_POST(req, dbInst);
-  else if (http.method() == "PUT")
-    rsp = handle_PUT(req, dbInst);
-  else if (http.method() == "DELETE")
-    rsp = handle_DELETE(req, dbInst);
-  else {
-    ACE_DEBUG(
-        (LM_DEBUG,
-         ACE_TEXT("%D [Worker:%t] %M %N:%l unsupported METHOD:%s URI:%s\n"),
-         http.method().c_str(), http.uri().c_str()));
-    return 0;
+  // onprem-pbx routes take precedence over the xpmile method-based chain
+  // so we don't have to patch the legacy handle_GET / handle_POST tables.
+  std::string rsp = dispatch_pbx_routes(req, dbInst);
+
+  if (rsp.empty()) {
+    if (http.method() == "OPTIONS")
+      rsp = handle_OPTIONS(req);
+    else if (http.method() == "GET")
+      rsp = handle_GET(req, dbInst);
+    else if (http.method() == "POST")
+      rsp = handle_POST(req, dbInst);
+    else if (http.method() == "PUT")
+      rsp = handle_PUT(req, dbInst);
+    else if (http.method() == "DELETE")
+      rsp = handle_DELETE(req, dbInst);
+    else {
+      ACE_DEBUG(
+          (LM_DEBUG,
+           ACE_TEXT("%D [Worker:%t] %M %N:%l unsupported METHOD:%s URI:%s\n"),
+           http.method().c_str(), http.uri().c_str()));
+      return 0;
+    }
   }
 
   return http_send(handle, rsp);
@@ -1978,6 +2010,43 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
                ACE_TEXT("%D [WebConnection:%t] %M %N:%l complete request "
                         "(%zu bytes):\n%s"),
                msgLen, request.c_str()));
+
+    // ── /sip-ws WebSocket upgrade gate (onprem-pbx) ────────────────────────
+    // Authenticate the upgrade against the portal session cookie before any
+    // hand-off. Empty return from `handle_sipws_upgrade` means the cookie is
+    // present and the upgrade may proceed; non-empty is a 401 response that
+    // we write back and close the connection.
+    //
+    // The real hand-off to SipBridge (which needs the cloud-side tunnel
+    // endpoint) lands in Layer 2 once `CloudTunnelEndpoint` exists. For now,
+    // an authenticated /sip-ws upgrade is replied to with 503 Service
+    // Unavailable so clients see an explicit "not yet" rather than a hang.
+    {
+      Http ws_http(request);
+      const bool is_sip_ws_upgrade =
+          (ws_http.method() == "GET") &&
+          (ws_http.uri()    == "/sip-ws") &&
+          !ws_http.get_element("sec-websocket-key").empty();
+
+      if (is_sip_ws_upgrade) {
+        const std::string auth_rsp =
+            MicroServicePbx::handle_sipws_upgrade(request);
+        if (!auth_rsp.empty()) {
+          // 401 — no session cookie. Write and close.
+          m_stream.send_n(auth_rsp.data(), auth_rsp.size());
+          return -1;
+        }
+        // Auth ok but bridge not yet wired — stub 503 until the
+        // cloud-side tunnel endpoint lands.
+        static const std::string kStub =
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            "X-PBX-Hint: SipBridge tunnel endpoint not yet wired\r\n\r\n";
+        m_stream.send_n(kStub.data(), kStub.size());
+        return -1;
+      }
+    }
 
     // ── WebSocket upgrade detection ────────────────────────────────────────
     // If this is a WS upgrade to /ws/db and we have a WsDbServer, hand off

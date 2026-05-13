@@ -130,6 +130,22 @@ public:
   std::int32_t process_request(ACE_HANDLE handle, std::string &req,
                                IMongodbClient &dbInst);
 
+  /**
+   * @brief onprem-pbx route table.
+   *
+   * Maps PBX-specific URI prefixes (`/api/v1/society`,
+   * `/api/v1/subscriber/import`, `/api/v1/cdr`,
+   * `/api/v1/push/subscribe`) to the free functions in the
+   * `MicroServicePbx::` namespace. Called by `process_request()`
+   * BEFORE the xpmile method-based dispatch so the xpmile route
+   * chain (handle_GET / handle_POST) stays untouched.
+   *
+   * @return The HTTP response string when a PBX route matches; empty
+   *         string when no PBX route owns the URI (caller falls
+   *         through to the xpmile dispatcher).
+   */
+  std::string dispatch_pbx_routes(std::string &req, IMongodbClient &dbInst);
+
   /** @name HTTP method dispatchers */
   ///@{
   std::string handle_OPTIONS(std::string &in);

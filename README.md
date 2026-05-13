@@ -18,10 +18,11 @@ See:
 | 1   | xpmile module copies — webservice, mongodb, wsdbproxy, security, email, thirdparty | ✅ Verbatim regression-guard copy green |
 | 1   | `MicroServicePbx*` REST handlers (society, subscriber-import, cdr, push, sipws-upgrade) | ✅ Complete |
 | 1   | `PushSender*` — VAPID JWT (RFC 8292) + Web Push encryption (RFC 8291) + retry/410 | ✅ Complete |
-| 1   | Route wiring into `MicroService::process_request` + `HandoffOrdering` test | ⏳ Next |
+| 1   | Route wiring (`MicroService::dispatch_pbx_routes`) + `/sip-ws` upgrade auth gate in `WebConnection` | ✅ Complete |
+| 1   | `HandoffOrdering` test (asserts `remove_handler → m_handle=INVALID → bridge.publish` order in `WebConnection`) | ⏭️ Deferred to Layer 3 TunnelE2E — needs reactor mocking |
 | 2+  | `SipFrameDemux`, `CloudConnector`, tunnel E2E, AriClient, Angular UI, Playwright | ⏳ Not started |
 
-**Test totals: 198/198 passing across 22 suites** — our 86 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 12, MicroServicePbx 11, PushSender 8) + 112 inherited from xpmile (regression guard).
+**Test totals: 205/205 passing across 23 suites** — our 93 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 12, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7) + 112 inherited from xpmile (regression guard).
 
 ### Skipped tests
 
