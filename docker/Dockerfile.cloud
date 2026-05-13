@@ -1,13 +1,20 @@
 # Dockerfile.cloud — production Heroku-side pbx-cloud image.
 #
-# Same multi-stage shape as Dockerfile.agent, builds pbx-cloud.
-# The Angular UI is NOT yet baked in — that's a follow-up slice.
+# Three stages following xpmile's pattern (DESIGN.md §11 — "Angular UI
+# bundled inside cloud image"):
+#   1. cpp-builder — compiles the pbx-cloud binary against the cached
+#                    pbx-cpp-builder:bootstrap toolchain.
+#   2. ui-builder  — runs `ng build` on the Angular sources.
+#   3. runtime     — slim Ubuntu with the binary + UI bundle. The
+#                    webservice serves the SPA from ../webgui/webui/
+#                    (relative to /opt/pbx-cloud) using the static-file
+#                    handler in webservice.cpp (inherited from xpmile).
 #
-# Build:        podman build -f docker/Dockerfile.cloud -t onprem-pbx-cloud:latest .
+# Build:        podman build --platform linux/amd64 -f docker/Dockerfile.cloud -t onprem-pbx-cloud:latest .
 # Heroku push:  see ./deploy-heroku.sh
 
 # ============================================================
-# Stage 1: build the binary using the cached toolchain.
+# Stage 1: C++ binary.
 # ============================================================
 FROM localhost/pbx-cpp-builder:bootstrap AS cpp-builder
 
@@ -21,7 +28,23 @@ RUN cmake -DBUILD_TESTS=OFF -DBUILD_BINARIES=ON .. \
  && make -j"$(nproc)" pbx-cloud
 
 # ============================================================
-# Stage 2: slim runtime.
+# Stage 2: Angular UI bundle (output: /ui/dist/pbxui).
+# ============================================================
+FROM docker.io/library/node:16-alpine AS ui-builder
+
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm install --legacy-peer-deps --no-audit --no-fund
+
+COPY ui/ ./
+# Dev configuration is used so the build fits within podman-machine
+# memory under amd64 emulation; the output JS is identical in shape,
+# only minification/optimisation differs. Switch to `production` once
+# we run on a real x86_64 builder with >=6 GB RAM.
+RUN npx ng build --configuration development
+
+# ============================================================
+# Stage 3: slim runtime — binary + UI bundle.
 # ============================================================
 FROM ubuntu:focal AS runtime
 
@@ -49,8 +72,14 @@ COPY --from=cpp-builder /usr/local/lib/libmongocxx.so*    /usr/local/lib/
 COPY --from=cpp-builder /usr/local/lib/libbsoncxx.so*     /usr/local/lib/
 RUN ldconfig
 
-RUN mkdir -p /opt/pbx-cloud/certs /opt/pbx-cloud/vapid
+RUN mkdir -p /opt/pbx-cloud/certs /opt/pbx-cloud/vapid /opt/webgui/webui
 COPY --from=cpp-builder /src/build/pbx-cloud /opt/pbx-cloud/pbx-cloud
+
+# UI bundle. The webservice's static-file handler resolves to
+# `../webgui/webui/<path>` relative to its WORKDIR (see
+# modules/module/webservice/src/webservice.cpp). This path is inherited
+# verbatim from xpmile so it stays in sync between projects.
+COPY --from=ui-builder /ui/dist/pbxui/ /opt/webgui/webui/
 
 WORKDIR /opt/pbx-cloud
 

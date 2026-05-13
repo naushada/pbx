@@ -13,7 +13,7 @@
 #   ./deploy-heroku.sh release          # release the cloud image
 #   ./deploy-heroku.sh deploy           # build + push + release (cloud)
 #
-#   # UI (nginx + Angular SPA) — defaults to HEROKU_APP_UI=onprem-pbx-ui
+#   # UI (nginx + Angular SPA) — defaults to HEROKU_APP_UI=onprem
 #   ./deploy-heroku.sh build-ui
 #   ./deploy-heroku.sh push-ui
 #   ./deploy-heroku.sh release-ui
@@ -26,13 +26,13 @@
 #
 # Environment overrides (set in shell or .env):
 #   HEROKU_APP        cloud app name              (default: pabx)
-#   HEROKU_APP_UI     UI app name                 (default: onprem-pbx-ui)
+#   HEROKU_APP_UI     UI app name                 (default: onprem)
 #   PROCESS           Heroku process type         (default: web)
 
 set -euo pipefail
 
 HEROKU_APP="${HEROKU_APP:-pabx}"
-HEROKU_APP_UI="${HEROKU_APP_UI:-onprem-pbx-ui}"
+HEROKU_APP_UI="${HEROKU_APP_UI:-onprem}"
 PROCESS="${PROCESS:-web}"
 COMPOSE_FILE="docker-compose.heroku.yml"
 

@@ -1,42 +1,167 @@
-.login-wrapper {
-    max-width: 380px;
-    margin: 5rem auto 0;
-    padding: 2rem 2.25rem 2.5rem;
+// Self-contained login styles. Intentionally NOT using Clarity form
+// components — clr-input-container needs a clr-main-container ancestor
+// to render correctly, which we don't (and shouldn't) provide on the
+// sign-in page. Plain HTML inputs with custom styling sidestep that.
+
+:host {
+    display: block;
+    min-height: 100vh;
+    background:
+        radial-gradient(circle at 20% 20%, rgba(27, 77, 142, 0.18) 0, transparent 55%),
+        radial-gradient(circle at 80% 80%, rgba(15, 45, 82, 0.22) 0, transparent 55%),
+        linear-gradient(135deg, #0a1f3d 0%, #0f2d52 50%, #1e3a5f 100%);
+}
+
+.login-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+}
+
+.login-card {
+    width: 100%;
+    max-width: 420px;
+    padding: 2.5rem 2.25rem 2rem;
     background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-    box-shadow: 0 4px 14px rgba(15, 45, 82, 0.06);
+    border-radius: 14px;
+    box-shadow:
+        0 1px 1px rgba(0, 0, 0, 0.05),
+        0 20px 50px rgba(0, 0, 0, 0.18);
+}
 
-    .brand {
-        text-align: center;
-        margin-bottom: 1.75rem;
+.brand {
+    text-align: center;
+    margin-bottom: 2rem;
 
-        h1 {
-            margin: 0.6rem 0 0.15rem;
-            font-size: 1.35rem;
-            color: #0f2d52;
+    .icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        color: #0f2d52;
+        background: #eff6ff;
+        border-radius: 50%;
+        margin-bottom: 0.85rem;
+    }
+
+    h1 {
+        margin: 0 0 0.3rem;
+        font-size: 1.45rem;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: #0f2d52;
+    }
+
+    .hint {
+        margin: 0;
+        color: #64748b;
+        font-size: 0.88rem;
+    }
+}
+
+.form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+
+    .label {
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: #475569;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+
+    input {
+        padding: 0.65rem 0.85rem;
+        font-size: 0.95rem;
+        font-family: inherit;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #0f2d52;
+        transition: border-color 0.15s, box-shadow 0.15s;
+
+        &::placeholder { color: #94a3b8; }
+
+        &:focus {
+            outline: none;
+            border-color: #1b4d8e;
+            box-shadow: 0 0 0 3px rgba(27, 77, 142, 0.18);
         }
 
-        .hint {
-            color: #64748b;
-            font-size: 0.85rem;
-            margin: 0;
+        &:hover:not(:focus) {
+            border-color: #94a3b8;
         }
     }
 
-    .login-form clr-input-container,
-    .login-form clr-password-container {
-        margin-bottom: 1rem;
-    }
-
-    .error {
+    .field-error {
         color: #b91c1c;
-        font-size: 0.85rem;
-        margin: 0.75rem 0;
+        font-size: 0.78rem;
     }
+}
 
-    .btn-block {
-        width: 100%;
-        margin-top: 0.5rem;
+.alert {
+    margin: 0;
+    padding: 0.65rem 0.85rem;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    color: #991b1b;
+    font-size: 0.85rem;
+}
+
+.submit {
+    margin-top: 0.5rem;
+    padding: 0.8rem;
+    min-height: 44px;
+    font-size: 0.92rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-family: inherit;
+    color: #ffffff;
+    background: #0f2d52;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, transform 0.05s;
+
+    &:hover:not(:disabled) { background: #1e3a5f; }
+    &:active:not(:disabled) { transform: translateY(1px); }
+    &:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
     }
+}
+
+.spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.footer {
+    margin-top: 1.75rem;
+    text-align: center;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
 }

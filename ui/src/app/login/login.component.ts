@@ -2,14 +2,13 @@ import { Component } from '@angular/core';
 import { FormBuilder, FormGroup, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
-import { ClrLoadingState } from '@clr/angular';
 
 import { HttpsvcService } from 'src/common/httpsvc.service';
 import { AuthService } from 'src/common/auth.service';
 
-// Subscriber login form. POSTs to /api/v1/subscriber/login (via
-// HttpsvcService.login) and on success stores the bearer + cached
-// subscriber via AuthService, then routes to /main/dashboard.
+// Plain HTML form (no Clarity directives) — the Clarity form
+// components misbehave outside a clr-main-container ancestor and we
+// intentionally don't wrap the login page in one.
 
 @Component({
     selector: 'app-login',
@@ -19,7 +18,7 @@ import { AuthService } from 'src/common/auth.service';
 export class LoginComponent {
 
     loginForm: FormGroup;
-    submitState: ClrLoadingState = ClrLoadingState.DEFAULT;
+    loading = false;
     errorMessage = '';
 
     constructor(
@@ -42,17 +41,17 @@ export class LoginComponent {
         }
 
         const { societyCode, flatNumber, password } = this.loginForm.value;
-        this.submitState = ClrLoadingState.LOADING;
+        this.loading = true;
         this.errorMessage = '';
 
         this.http.login(societyCode, flatNumber, password).subscribe({
             next: (rsp) => {
                 this.auth.setSession(rsp.token, rsp.subscriber);
-                this.submitState = ClrLoadingState.SUCCESS;
+                this.loading = false;
                 this.router.navigateByUrl('/main/dashboard');
             },
             error: (err: HttpErrorResponse) => {
-                this.submitState = ClrLoadingState.ERROR;
+                this.loading = false;
                 this.errorMessage = err.status === 401
                     ? 'Invalid society code, flat number, or password.'
                     : err.status === 0

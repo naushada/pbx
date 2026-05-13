@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <title>Society Softphone</title>
-  <base href="/">
+  <!-- Webservice serves the SPA from /webui/ (see modules/module/webservice/src/webservice.cpp:1062);
+       Angular's base href must match so asset URLs resolve correctly. -->
+  <base href="/webui/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="alternate icon" type="image/x-icon" href="favicon.ico">

@@ -239,42 +239,32 @@ HEROKU_APP=pabx ./deploy-heroku.sh logs
 
 The wrapper is a thin shell around `podman-compose -f docker-compose.heroku.yml build pbx-cloud`, `podman push --format=v2s2`, and `heroku container:release`. The image is the same `docker/Dockerfile.cloud` that produces `localhost/onprem-pbx-cloud:latest` locally, just retagged for Heroku.
 
-## Deploy the softphone UI to Heroku
+### UI is bundled into the cloud image
 
-The UI is a separate image (`docker/Dockerfile.ui` — multi-stage `node:16-alpine` build → `nginx:1.25-alpine` runtime). It runs as its own Heroku app and reverse-proxies `/api/*` + `/sip-ws` + `/ws/db` to the cloud app over the public hostname.
+`docker/Dockerfile.cloud` is three-stage (matches xpmile's pattern per `DESIGN.md` §11):
 
-```sh
-# Build, push, and release the UI image (independent of the cloud).
-HEROKU_APP_UI=onprem-pbx-ui ./deploy-heroku.sh deploy-ui
+1. `cpp-builder` — compiles `pbx-cloud` against the cached `pbx-cpp-builder:bootstrap` toolchain.
+2. `ui-builder`  — runs `ng build --configuration development` on `ui/`.
+3. `runtime`     — Ubuntu 20.04 slim with the binary at `/opt/pbx-cloud/pbx-cloud` and the SPA at `/opt/webgui/webui/`. The C++ webservice serves the bundle from `../webgui/webui/` (relative to its WORKDIR — inherited from xpmile's `webservice.cpp`).
 
-# Or build + deploy *both* sides in one shot:
-HEROKU_APP=pabx HEROKU_APP_UI=onprem-pbx-ui \
-  ./deploy-heroku.sh deploy-all
+URL surface (single Heroku app, single dyno):
 
-# Tail UI logs:
-./deploy-heroku.sh logs-ui
+| Path                | What                                                                                                     |
+|---------------------|----------------------------------------------------------------------------------------------------------|
+| `/webui/`           | SPA index.html. Browser loads `main.js`, `polyfills.js`, `favicon.svg`, etc., all under `/webui/*`.       |
+| `/webui/<anything>` | SPA fallback — webservice returns `index.html` and Angular Router takes over.                            |
+| `/api/v1/*`         | REST endpoints handled by `MicroService::dispatch_pbx_routes`.                                           |
+| `/sip-ws`           | SIP-over-WebSocket upgrade.                                                                              |
+| `/ws/db`            | Mongo-over-WSS proxy.                                                                                    |
+| `/agent`            | mTLS WS upgrade for the on-prem agent tunnel.                                                            |
 
-# Open the UI in a browser:
-./deploy-heroku.sh open
-```
+The SPA's `<base href>` is set to `/webui/` so all asset paths resolve under the same prefix.
 
-Required Heroku config vars on the UI app:
+Verify a deployment with `./scripts/verify-deploy.sh remote` — probes seven URLs and reports pass/fail.
 
-```sh
-heroku config:set \
-  BACKEND_ORIGIN=https://pabx-5fbf3550f938.herokuapp.com \
-  --app onprem-pbx-ui
-```
+### Optional: standalone UI behind a reverse proxy
 
-`$PORT` is injected by Heroku; nginx listens on it via the templated `nginx.conf`. Runtime DNS (`resolver 8.8.8.8 1.1.1.1`) keeps upstream resolution working on Heroku cold-starts.
-
-For local "production-like" smoke testing the same compose file brings up both services on `pbx-net`:
-
-```sh
-HEROKU_APP_CLOUD=onprem-pbx HEROKU_APP_UI=onprem-pbx-ui \
-  podman-compose -f docker-compose.heroku.yml up --build
-# Browser → http://localhost:8080 (UI), API proxied to pbx-cloud:8080.
-```
+`docker/Dockerfile.ui` + `docker/nginx/nginx.conf.template` are still in the repo if you want to run the UI as a separate process (e.g. on a CDN-fronted host that proxies `/api` to a different cloud). The bundled path above is the recommended default.
 
 ## Repo layout
 

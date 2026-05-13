@@ -3,8 +3,6 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
-import { ClarityModule } from '@clr/angular';
-import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 
 import { LoginComponent } from './login.component';
 import { AuthService } from 'src/common/auth.service';
@@ -26,7 +24,6 @@ describe('LoginComponent', () => {
             declarations: [LoginComponent],
             imports: [
                 ReactiveFormsModule, HttpClientTestingModule,
-                ClarityModule, NoopAnimationsModule,
                 RouterTestingModule.withRoutes([
                     { path: 'main/dashboard', children: [] },
                     { path: 'login',          children: [] },
