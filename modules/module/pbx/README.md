@@ -6,9 +6,10 @@ Current status:
 
 | Component   | File                                         | Status      |
 |-------------|----------------------------------------------|-------------|
-| `SipFrame`  | `inc/sip_frame.hpp` + `src/sip_frame.cpp`    | ✅ Complete (Layer 0) |
-| `SipBridge` | `inc/sip_bridge.hpp` + `src/sip_bridge.cpp`  | ✅ Complete (Layer 1, first slice) |
-| `PushSender`| (not yet)                                    | ⏳ Layer 1, later slice |
+| `SipFrame`          | `inc/sip_frame.hpp` + `src/sip_frame.cpp`                   | ✅ Complete (Layer 0) |
+| `SipBridge`         | `inc/sip_bridge.hpp` + `src/sip_bridge.cpp`                 | ✅ Complete (Layer 1, first slice) |
+| `MicroServicePbx`   | `inc/microservice_pbx.hpp` + `src/microservice_pbx.cpp`     | ✅ Complete (Layer 1, second slice) |
+| `PushSender`        | (not yet)                                                   | ⏳ Layer 1, later slice |
 
 ---
 
@@ -180,7 +181,51 @@ Lifecycle: `OnTunnelDisconnect_ClosesAllBrowserConns`, `OnAgentReconnect_NewStre
 
 ---
 
-## Coming in Layer 1 (later slice)
+---
+
+## MicroServicePbx — REST handlers
+
+Free functions in the `MicroServicePbx::` namespace, each of shape `(const std::string& req, IMongodbClient& db) -> std::string`. They follow xpmile's `MicroService::handle_account_login_POST` style: take a raw HTTP request, return a raw HTTP response. The choice of free functions (vs methods on `MicroService`) keeps the xpmile-copied `webservice/` module untouched and locates all PBX-specific logic in our own module.
+
+Wired into `MicroService::process_request()` by URI prefix when the webservice slice patches it in (a small targeted patch — not part of this commit).
+
+### Handlers
+
+| URI                                      | Method | Function                                  | Behaviour |
+|------------------------------------------|--------|-------------------------------------------|-----------|
+| `/api/v1/society`                        | `POST` | `handle_society_POST`                     | Create society; generates `sipRealm`, `turnSharedSecret`, defaults `maxConcurrentCalls=5`, `ringTimeoutSec=30`. 409 on duplicate `code`. |
+| `/api/v1/subscriber/import?societyId=…`  | `POST` | `handle_subscriber_import_POST`           | CSV body (`flat_number,name,email,phone,role`). Generates `sipUsername`, `sipPassword`, `portalPassword` per row; stores **only** `sipHa1` (MD5(user:realm:pwd)) and `portalPasswordHash` (bcrypt). Returns the plaintexts in a downloadable CSV (one-shot). Idempotent on `(societyId, email)`. 400 with row index if a flat is unknown. |
+| `/api/v1/cdr?societyId=…`                | `GET`  | `handle_cdr_GET`                          | Returns the society's CDR rows as JSON. 400 if `societyId` is missing. |
+| `/api/v1/push/subscribe`                 | `POST` | `handle_push_subscribe_POST`              | Persists a Web Push subscription (`subscriberId`, `endpoint`, `p256dh`, `auth`). 400 on missing fields. |
+| `/sip-ws` (pre-upgrade)                  | `GET`  | `handle_sipws_upgrade`                    | Returns empty string if the request carries a `session=…` cookie (defence in depth — DESIGN.md §5). Returns a 401 response otherwise; caller sends it and closes the socket. |
+
+### Crypto
+
+- **sipHa1**: `MD5(sipUsername : sipRealm : sipPassword)` via OpenSSL `EVP_md5`. Asterisk's `auth_type=md5` consumes this directly; we never store the plaintext SIP password.
+- **portalPasswordHash**: `MongodbClient::hash_password()` (xpmile-provided bcrypt) for the portal login.
+- **Random secrets**: `OPENSSL_RAND_bytes` over a 62-char alphanumeric alphabet (fallback to `std::random_device` if `RAND_bytes` fails). `sipPassword`/`portalPassword` are 16 chars, `sipUsername` is 10 chars prefixed `u_`, `turnSharedSecret` is 32 chars.
+
+### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 11 tests)
+
+`MicroServicePbx.SocietyCreate_201`, `SocietyCreate_DuplicateCode_409`.
+
+`SubscriberImport_GeneratesCreds` — asserts `sipHa1` + `portalPasswordHash` ARE in the inserted doc, plaintext `sipPassword` and `portalPassword` are NOT.
+
+`SubscriberImport_RejectsBadFlat` — error body names the offending row index and flat number.
+
+`SubscriberImport_Idempotent` — re-importing a row whose email already exists adds a `skipped` line and does not insert again.
+
+`CdrList_FiltersBySociety`, `CdrList_MissingSocietyId_400`.
+
+`PushSubscribe_PersistsEndpoint`, `PushSubscribe_RejectsMissingFields`.
+
+`Auth_RejectsAnonymousSipWsUpgrade`, `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
+
+Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collection, query-fragment)` to a canned response — small extension over xpmile's single-result `MockMongodbClient` because MicroServicePbx handlers issue several different queries per call (society lookup + flat lookup + duplicate-email check).
+
+---
+
+## Coming in Layer 1 (last slice)
 
 ### `PushSender` (cloud side)
 
@@ -195,26 +240,33 @@ pbx/
   inc/
     sip_frame.hpp             # encode/decode API, op enum, status enum
     sip_bridge.hpp            # SipBridge + TunnelSink + BrowserSink interfaces
+    microservice_pbx.hpp      # MicroServicePbx:: REST handlers (namespace API)
   src/
     sip_frame.cpp             # ~90 lines, hand-rolled big-endian impl
     sip_bridge.cpp            # ~100 lines, in-memory multiplexer
+    microservice_pbx.cpp      # ~300 lines, society/subscriber/cdr/push/upgrade
   test/
     sip_frame_test.cc         # 10 tests
     sip_bridge_test.cc        # 12 tests
+    microservice_pbx_test.cc  # 11 tests
 ```
 
 ## Dependencies
 
-- `<cstdint>`, `<cstring>`, `<string>`, `<unordered_map>` — standard library only.
-- [`sip_frame`](#sipframe--multiplex-tunnel-wire-format) — internal to this module.
+- C++20 standard library (`<cstdint>`, `<string>`, `<unordered_map>`, `<sstream>`, …).
+- [`http/`](../http/README.md) — `Http` parser for REST handlers.
+- [`mongodb/`](../mongodb/README.md) — `IMongodbClient` interface + `MongodbClient::hash_password`.
+- [`webservice/`](../webservice/README.md) — `MicroService::build_response*` helpers (transitive; not yet directly used by MicroServicePbx but lives in the same `offtarget` binary).
+- `nlohmann/json` (single header in `modules/module/thirdparty/`).
+- OpenSSL (`-lcrypto` for `EVP_md5` and `RAND_bytes`).
 - GTest (tests only).
-- **No ACE yet.** The bridge is intentionally I/O-free; the production wrapper that owns the `ACE_Event_Handler` reactor binding lands when [`webservice/`](../webservice/README.md) is copied.
+- **No ACE yet.** SipBridge and MicroServicePbx are intentionally I/O-free; the production wrappers that bind to the ACE reactor land when `webservice/` is patched to route by URI prefix.
 
 ## Build & test
 
 ```sh
-podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer0 \
-  --gtest_filter='SipFrame.*:SipBridge.*'
+podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 \
+  --gtest_filter='SipFrame.*:SipBridge.*:MicroServicePbx.*'
 ```
 
-Expected: **22/22 PASSED** (10 SipFrame + 12 SipBridge).
+Expected: **33/33 PASSED** (10 SipFrame + 12 SipBridge + 11 MicroServicePbx).
