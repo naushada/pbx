@@ -1,0 +1,45 @@
+<section class="history">
+    <div class="header">
+        <h2>Call history</h2>
+        <button type="button" class="btn btn-sm btn-outline"
+                (click)="refresh()" [disabled]="loading">
+            Refresh
+        </button>
+    </div>
+
+    <p *ngIf="loading"  class="loading">Loading…</p>
+    <p *ngIf="errorMsg" class="error" role="alert">{{ errorMsg }}</p>
+    <p *ngIf="!loading && !errorMsg && rows.length === 0" class="empty">
+        No calls yet.
+    </p>
+
+    <table class="table history-table" *ngIf="rows.length > 0">
+        <thead>
+            <tr>
+                <th></th>
+                <th>Peer</th>
+                <th>Type</th>
+                <th>Duration</th>
+                <th>Outcome</th>
+                <th>When</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr *ngFor="let row of rows">
+                <td class="arrow">
+                    <span *ngIf="row.direction === 'inbound'"  title="inbound">←</span>
+                    <span *ngIf="row.direction === 'outbound'" title="outbound">→</span>
+                </td>
+                <td>{{ peerOf(row) }}</td>
+                <td>
+                    <span class="type">{{ row.type === 'conference' ? 'Conference' : 'P2P' }}</span>
+                </td>
+                <td>{{ durationLabel(row) }}</td>
+                <td>
+                    <span [class]="causeClass(row)">{{ row.hangupCause }}</span>
+                </td>
+                <td>{{ row.startedAt | date:'short' }}</td>
+            </tr>
+        </tbody>
+    </table>
+</section>

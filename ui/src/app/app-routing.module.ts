@@ -5,6 +5,8 @@ import { LoginComponent } from './login/login.component';
 import { MainComponent } from './main/main.component';
 import { DashboardComponent } from './dashboard/dashboard.component';
 import { DirectoryComponent } from './directory/directory.component';
+import { HistoryComponent } from './history/history.component';
+import { SettingsComponent } from './settings/settings.component';
 import { AuthGuard } from 'src/common/auth.guard';
 
 // /main and its children require a valid session. Slice-1 surface is
@@ -19,6 +21,8 @@ const routes: Routes = [
             { path: '',          redirectTo: 'dashboard', pathMatch: 'full' },
             { path: 'dashboard', component: DashboardComponent },
             { path: 'directory', component: DirectoryComponent },
+            { path: 'history',   component: HistoryComponent },
+            { path: 'settings',  component: SettingsComponent },
         ],
     },
     { path: '**', redirectTo: '/login' },

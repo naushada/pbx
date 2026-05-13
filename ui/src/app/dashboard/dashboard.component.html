@@ -24,23 +24,15 @@
         </div>
     </div>
 
-    <div class="push-card">
-        <h3>Incoming-call notifications</h3>
-        <p class="push-state">{{ pushStateLabel() }}</p>
-        <p *ngIf="pushError" class="error" role="alert">{{ pushError }}</p>
-        <div class="actions">
-            <button type="button" class="btn btn-primary"
-                    (click)="onEnablePush()"
-                    [disabled]="!canEnablePush() || pushBusy">
-                Enable
-            </button>
-            <button type="button" class="btn btn-outline"
-                    (click)="onDisablePush()"
-                    [disabled]="!canDisablePush() || pushBusy">
-                Disable
-            </button>
-        </div>
+    <div class="conf-card">
+        <h3>Society conference</h3>
+        <p class="hint">
+            Join the shared room (Asterisk ConfBridge). Anyone else in the society
+            who dials the same room joins automatically.
+        </p>
+        <button type="button" class="btn btn-primary"
+                (click)="onJoinConference()" [disabled]="!canJoinConference()">
+            Join conference
+        </button>
     </div>
-
-    <p class="placeholder">Call history lands in slice 5.</p>
 </section>

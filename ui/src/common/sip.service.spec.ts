@@ -389,4 +389,42 @@ describe('SipService', () => {
             expect(ring.stops).toBe(1);
         });
     });
+
+    // ─── slice 5: joinConference ────────────────────────────────────
+
+    describe('joinConference', () => {
+
+        async function makeRegistered(): Promise<void> {
+            authenticate();
+            await svc.connect();
+            fake.handle.pump('registered');
+        }
+
+        it('refuses when not registered', () => {
+            authenticate();
+            svc.joinConference();
+            expect(states.at(-1)).toEqual({ kind: 'failed', reason: 'not_connected' });
+            expect(fake.handle.callTargets).toEqual([]);
+        });
+
+        it('builds sip:conf@pbx.<society> and tags peer as "Conference"', async () => {
+            await makeRegistered();
+            svc.joinConference();
+
+            expect(fake.handle.callTargets).toEqual(['sip:conf@pbx.soc-123']);
+            const last = states.at(-1)!;
+            if (last.kind !== 'outgoing') fail('expected outgoing');
+            else expect(last.toFlat).toBe('Conference');
+        });
+
+        it('transitions to in-call with peerFlat="Conference" on answer', async () => {
+            await makeRegistered();
+            svc.joinConference();
+            fake.handle.callHandle.pump('in-call');
+
+            const last = states.at(-1)!;
+            if (last.kind !== 'in-call') fail('expected in-call');
+            else expect(last.peerFlat).toBe('Conference');
+        });
+    });
 });

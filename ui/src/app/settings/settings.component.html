@@ -1,0 +1,52 @@
+<section class="settings">
+    <h2>Settings</h2>
+
+    <div class="card">
+        <h3>Incoming-call notifications</h3>
+        <p class="state">{{ pushStateLabel() }}</p>
+        <p *ngIf="pushError" class="error" role="alert">{{ pushError }}</p>
+        <div class="actions">
+            <button type="button" class="btn btn-primary"
+                    (click)="onEnablePush()"
+                    [disabled]="!canEnablePush() || pushBusy">
+                Enable
+            </button>
+            <button type="button" class="btn btn-outline"
+                    (click)="onDisablePush()"
+                    [disabled]="!canDisablePush() || pushBusy">
+                Disable
+            </button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Audio devices</h3>
+        <p *ngIf="devicesError" class="error" role="alert">{{ devicesError }}</p>
+
+        <div class="device-row">
+            <label for="mic-pick">Microphone</label>
+            <select id="mic-pick" [ngModel]="selectedMic"
+                    (ngModelChange)="onMicChange($event)">
+                <option value="">System default</option>
+                <option *ngFor="let d of mics" [value]="d.deviceId">
+                    {{ d.label || 'Microphone' }}
+                </option>
+            </select>
+        </div>
+
+        <div class="device-row">
+            <label for="speaker-pick">Speaker</label>
+            <select id="speaker-pick" [ngModel]="selectedSpeaker"
+                    (ngModelChange)="onSpeakerChange($event)">
+                <option value="">System default</option>
+                <option *ngFor="let d of speakers" [value]="d.deviceId">
+                    {{ d.label || 'Speaker' }}
+                </option>
+            </select>
+        </div>
+
+        <p class="hint">
+            Selections persist locally; they take effect on the next call you place.
+        </p>
+    </div>
+</section>

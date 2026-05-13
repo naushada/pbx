@@ -116,7 +116,16 @@ export class SipService {
      * be `registered`; otherwise emits a failed CallState and returns.
      * Idempotent — if a call is already up, the new request is ignored.
      */
-    placeCall(targetFlat: string): void {
+    placeCall(targetFlat: string): void { this.dial(targetFlat, targetFlat); }
+
+    /**
+     * Join the society's shared conference room (Asterisk ConfBridge,
+     * one room per society reached via the well-known user `conf`).
+     * Other residents join the same URI to be merged in.
+     */
+    joinConference(): void { this.dial('conf', 'Conference'); }
+
+    private dial(sipUser: string, displayLabel: string): void {
         if (this.call)        return;                          // already on a call
         if (!this.handle)     {
             this.pubsub.emit_callState({ kind: 'failed', reason: 'not_connected' });
@@ -129,7 +138,7 @@ export class SipService {
         const sub = this.auth.getSubscriber();
         if (!sub) return;
 
-        const targetUri = `sip:${targetFlat}@pbx.${sub.societyId}`;
+        const targetUri = `sip:${sipUser}@pbx.${sub.societyId}`;
         const callId    = newCallId();
 
         let callHandle: SipCallHandle;
@@ -143,8 +152,8 @@ export class SipService {
             return;
         }
 
-        this.call = { handle: callHandle, peerFlat: targetFlat, callId };
-        this.pubsub.emit_callState({ kind: 'outgoing', toFlat: targetFlat, callId });
+        this.call = { handle: callHandle, peerFlat: displayLabel, callId };
+        this.pubsub.emit_callState({ kind: 'outgoing', toFlat: displayLabel, callId });
 
         callHandle.onStateChange(c => this.onCallState(c));
     }

@@ -13,6 +13,8 @@ import { LoginComponent } from './login/login.component';
 import { MainComponent } from './main/main.component';
 import { DashboardComponent } from './dashboard/dashboard.component';
 import { DirectoryComponent } from './directory/directory.component';
+import { HistoryComponent } from './history/history.component';
+import { SettingsComponent } from './settings/settings.component';
 import { CallPanelComponent } from './call-panel/call-panel.component';
 import { AuthInterceptor } from 'src/common/auth.interceptor';
 import { SIP_UA_FACTORY } from 'src/common/sip-ua';
@@ -25,6 +27,8 @@ import { SipJsUaFactory } from 'src/common/sip-ua-sipjs';
         MainComponent,
         DashboardComponent,
         DirectoryComponent,
+        HistoryComponent,
+        SettingsComponent,
         CallPanelComponent,
     ],
     imports: [
