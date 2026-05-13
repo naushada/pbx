@@ -11,6 +11,7 @@ Current status:
 | `MicroServicePbx`     | `inc/microservice_pbx.hpp` + `src/microservice_pbx.cpp`         | ✅ Complete (Layer 1, second slice) |
 | `PushSender`          | `inc/push_sender.hpp` + `src/push_sender.cpp`                   | ✅ Complete (Layer 1, third slice) |
 | `CloudTunnelEndpoint` | `inc/cloud_tunnel_endpoint.hpp` + `src/cloud_tunnel_endpoint.cpp` | ✅ Complete (Layer 2, /sip-ws swap slice) |
+| `BrowserStream`       | `inc/browser_stream.hpp` + `src/browser_stream.cpp`             | ✅ Complete (Layer 3, ACE binding — first concrete reactor binding) |
 
 ---
 
@@ -397,6 +398,53 @@ Browser end-to-end: `BrowserDataRoundTripsThroughBridgeAndAgent` — a browser r
 ### Deferred to Layer 3
 
 The concrete ACE event handler that wraps the agent fd, decodes the inbound WS frames, calls `endpoint.on_bytes_received(payload)`, and exposes an `IAgentTransport` that encodes outbound WS frames. Same scope boundary as the agent's `AceSslTransport` — both are cheap to verify end-to-end against a real ACE reactor.
+
+---
+
+## BrowserStream — ACE event handler for the browser's `/sip-ws` socket
+
+The first concrete reactor binding. Lives between the browser's WebSocket and the cloud's `SipBridge`. Inherits both `ACE_Event_Handler` (so the reactor delivers read events) and `BrowserSink` (so the bridge can write back).
+
+### Construction & lifetime
+
+```cpp
+// In WebConnection::handle_input, after the WS 101 response is sent:
+auto *bs = new BrowserStream(*bridge, raw_fd, open_meta);
+bs->reactor(reactor());
+reactor()->register_handler(bs, ACE_Event_Handler::READ_MASK);
+```
+
+- Constructor calls `bridge.on_browser_upgrade(this, open_meta)` and stores the returned stream-id.
+- ACE owns the lifetime once registered. `handle_close` calls `bridge.on_browser_close(...)` and `delete this`.
+- `close()` (called by the bridge to release the stream) sends a WS close frame, closes the socket, and marks the stream as already-notified so the eventual `handle_close` doesn't double-call into the bridge map.
+
+### Frame handling
+
+Uses xpmile's `wsframe::{encode, decode, pong_frame, close_frame}`. On `handle_input`:
+
+| Inbound WS opcode | Action |
+|---|---|
+| `0x1` (text) / `0x2` (binary) / `0x0` (continuation) | `bridge.on_browser_data(stream_id, payload)` |
+| `0x9` (ping) | reply with `wsframe::pong_frame(payload)` |
+| `0xA` (pong) | swallowed (heartbeat ack) |
+| `0x8` (close) | echo a close frame back, `bridge.on_browser_close(stream_id, "browser_closed")`, return `-1` so ACE calls `handle_close` |
+| anything else | protocol violation; same close path with reason `"ws_protocol_error"` |
+
+Outbound (`send_bytes`): encode as a WS **text** frame (RFC 7118 §2 mandates text for SIP-over-WS), unmasked (server→client), and `send_n` to the socket.
+
+### Behaviour pinned by tests (`test/browser_stream_test.cc` — 8 tests)
+
+Tests use `socketpair(AF_UNIX, SOCK_STREAM)` so `ACE_SOCK_Stream::recv` reads from a real fd. No reactor needed — `handle_input` is invoked directly by the test driver.
+
+- `ConstructorRegistersStreamWithBridge`, `OnInput_DecodesAndDispatches`, `OnInput_PingTriggersPong`, `OnInput_CloseFrame_TellsBridge`, `SendBytes_EncodesWsFrame`, `Close_SendsWsCloseFrame`, `MultipleFramesInOneRead`, `PartialFrameAcrossReads`.
+
+### `/sip-ws` swap in WebConnection
+
+The Layer 1 / Layer 2 503 stub is retired. The new flow in `WebConnection::handle_input`:
+
+1. Auth gate (unchanged) — 401 if no `session=` cookie.
+2. If `WebServer::cloudTunnelEndpoint()` is null, `sipBridge()` is null, or the agent isn't connected → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers.
+3. Otherwise: 101 Switching Protocols + xpmile-mechanic hand-off ordering (`remove_handler → m_handle=INVALID`) → construct `BrowserStream` on the raw fd → register on the same reactor → release this WebConnection from the pool.
 
 ---
 

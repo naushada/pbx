@@ -1,4 +1,5 @@
 #include "webservice.hpp"
+#include "browser_stream.hpp"
 #include "cloud_tunnel_endpoint.hpp"
 #include "emailservice.hpp"
 #include "http_parser.hpp"
@@ -2091,21 +2092,74 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
           m_stream.send_n(auth_rsp.data(), auth_rsp.size());
           return -1;
         }
-        // Auth ok. Report connection state in the 503 hint header.
-        auto *cte = parent().cloudTunnelEndpoint();
-        const bool agent_up = cte && cte->has_agent();
-        const std::string hint =
-            agent_up
-                ? "agent connected; BrowserStream binding pending (Layer 3)"
-                : "no agent connected yet";
-        const std::string stub =
-            "HTTP/1.1 503 Service Unavailable\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n"
-            "X-PBX-AgentConnected: " + std::string(agent_up ? "yes" : "no") + "\r\n"
-            "X-PBX-Hint: " + hint + "\r\n\r\n";
-        m_stream.send_n(stub.data(), stub.size());
-        return -1;
+
+        auto *cte    = parent().cloudTunnelEndpoint();
+        auto *bridge = parent().sipBridge();
+        if (!cte || !bridge || !cte->has_agent()) {
+          // The control plane isn't up yet — surface the reason so monitoring
+          // can distinguish "no bridge configured" from "no agent connected".
+          const bool agent_up = cte && cte->has_agent();
+          const std::string hint =
+              agent_up
+                  ? "SipBridge not wired"
+                  : "no agent connected yet";
+          const std::string stub =
+              "HTTP/1.1 503 Service Unavailable\r\n"
+              "Content-Length: 0\r\n"
+              "Connection: close\r\n"
+              "X-PBX-AgentConnected: " + std::string(agent_up ? "yes" : "no") + "\r\n"
+              "X-PBX-Hint: " + hint + "\r\n\r\n";
+          m_stream.send_n(stub.data(), stub.size());
+          return -1;
+        }
+
+        // Real hand-off: complete the WS handshake, then transfer the raw
+        // fd to a freshly-constructed BrowserStream. ACE owns the stream
+        // lifetime from there.
+        const std::string key    = ws_http.get_element("sec-websocket-key");
+        const std::string accept = wsframe::accept_key(key);
+        const std::string rsp    = "HTTP/1.1 101 Switching Protocols\r\n"
+                                    "Upgrade: websocket\r\n"
+                                    "Connection: Upgrade\r\n"
+                                    "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+        m_stream.send_n(rsp.data(), rsp.size());
+
+        // Open metadata for the bridge: identify the subscriber from the
+        // session cookie if we can. Today's placeholder just stamps the
+        // raw fd; the cookie/session lookup lands when we wire portal
+        // session storage in Mongo.
+        const std::string meta = "{\"sourceFd\":" + std::to_string(
+                                     static_cast<int>(m_handle)) + "}";
+
+        m_handedOff = true;
+        ACE_HANDLE raw = m_handle;
+        m_stream.set_handle(ACE_INVALID_HANDLE);
+
+        // Remove THIS WebConnection from the reactor BEFORE clearing
+        // m_handle (xpmile CLAUDE.md hand-off mechanics — same ordering).
+        reactor()->remove_handler(this,
+            ACE_Event_Handler::READ_MASK | ACE_Event_Handler::DONT_CALL);
+        m_handle = ACE_INVALID_HANDLE;
+
+        // Construct + register the BrowserStream on the same reactor.
+        auto *bs = new BrowserStream(*bridge, raw, meta);
+        bs->reactor(reactor());
+        if (reactor()->register_handler(bs, ACE_Event_Handler::READ_MASK) == -1) {
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l "
+                              "BrowserStream register_handler failed; "
+                              "tearing down browser stream sid=%u\n"),
+                     bs->stream_id()));
+          delete bs;
+        } else {
+          ACE_DEBUG((LM_INFO,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l /sip-ws "
+                              "handed off raw fd %d -> BrowserStream sid=%u\n"),
+                     raw, bs->stream_id()));
+        }
+
+        parent().connectionPool().erase(raw);
+        return 0;
       }
     }
 

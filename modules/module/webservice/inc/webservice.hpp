@@ -28,6 +28,7 @@
 
 #include "mongodbc.hpp"
 #include "cloud_tunnel_endpoint.hpp"
+#include "sip_bridge.hpp"
 #include "wsdbproxy.hpp"
 
 /* Forward declarations */
@@ -357,6 +358,13 @@ public:
     m_cloudTunnelEndpoint = std::move(ep);
   }
 
+  /// Cloud-side SipBridge, or null if onprem-pbx isn't enabled here.
+  /// Wired to `cloudTunnelEndpoint()` as its `TunnelSink` at startup.
+  SipBridge *sipBridge() { return m_sipBridge.get(); }
+  void setSipBridge(std::unique_ptr<SipBridge> b) {
+    m_sipBridge = std::move(b);
+  }
+
   /// Return the semaphore used to gate concurrent database access.
   ACE_Semaphore &semaphore() const { return (*m_semaphore.get()); }
 
@@ -371,6 +379,7 @@ private:
   std::unique_ptr<IMongodbClient> mMongodbc;
   std::unique_ptr<WsDbServer>     m_wsDbServer;
   std::unique_ptr<CloudTunnelEndpoint> m_cloudTunnelEndpoint;
+  std::unique_ptr<SipBridge>           m_sipBridge;
   std::unique_ptr<ACE_Semaphore>  m_semaphore;
 };
 

@@ -34,26 +34,26 @@ Mirror of xpmile's existing `/ws/db` upgrade branch. When the on-prem agent dial
 
 The production ACE event handler that wraps the agent fd, decodes inbound WS frames, and calls `endpoint.on_bytes_received(payload)` lands with Layer 3 integration (same scope boundary as the agent's `AceSslTransport`). Until then the hand-off logs an info line so monitoring can see that the agent reached us — `endpoint.on_agent_connected` is not yet invoked because the WS-decoding adapter doesn't exist.
 
-**3. `/sip-ws` upgrade gate** (Layer 1 added, Layer 2 enriched)
+**3. `/sip-ws` upgrade — real BrowserStream hand-off** (Layer 3)
 
 When a WS upgrade for `/sip-ws` arrives:
 
 1. Call `MicroServicePbx::handle_sipws_upgrade(request)`. Non-empty return = 401 (no `session=…` cookie). Send and close.
-2. Auth ok → return a context-aware 503:
-   - `X-PBX-AgentConnected: yes|no` indicates whether `cloudTunnelEndpoint()->has_agent()` is true.
-   - `X-PBX-Hint:` reads either `"no agent connected yet"` or `"agent connected; BrowserStream binding pending (Layer 3)"`.
+2. If the control plane isn't fully wired (`cloudTunnelEndpoint()` / `sipBridge()` null, or no agent connected) → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers so monitoring can distinguish the failure modes.
+3. Otherwise: complete the WS handshake (`101 Switching Protocols` + `Sec-WebSocket-Accept`), perform the xpmile-mechanic hand-off (`remove_handler → m_handle = INVALID → publish raw fd`), construct a [`BrowserStream`](../pbx/README.md#browserstream--ace-event-handler-for-the-browsers-sip-ws-socket) on the raw fd, register it with the same reactor, and release this WebConnection from the pool.
 
-The real `SipBridge::on_browser_upgrade` hand-off needs the `BrowserStream` ACE event handler (decodes inbound WS frames from the browser, encodes outbound bytes to the browser's WS). That's genuine Layer 3 reactor work — same scope as the agent's `AceSslTransport` and the cloud's WS-decoder for `/agent`.
+`BrowserStream` (in the `pbx/` module) owns the socket lifetime from there. Its 8-test suite covers WS decode/encode, ping/pong, close handling, and frame-boundary edge cases via `socketpair()` — no reactor needed for unit tests.
 
 Auth-gate behaviour is still pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade` / `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
 
 The xpmile `/ws/db` upgrade branch is **unchanged** — three upgrades (`/ws/db`, `/agent`, `/sip-ws`) now coexist on the same `WebConnection::handle_input` path with the same hand-off mechanics.
 
-## Upcoming (Layer 3)
+## Upcoming (rest of Layer 3)
 
-- Browser-side `BrowserStream` ACE event handler — owns a `/sip-ws` socket, decodes inbound WS frames and feeds them into `SipBridge::on_browser_data`, encodes outbound bytes from `SipBridge::send_bytes` into WS frames. Implements `BrowserSink`. Retires the `/sip-ws` 503 stub.
-- Agent-side `AgentStream` ACE event handler — equivalent for `/agent`. Decodes inbound WS frames, calls `CloudTunnelEndpoint::on_bytes_received`. Implements `IAgentTransport`.
-- `HandoffOrdering` test — verifies the `remove_handler → m_handle = INVALID → publish to bridge` ordering for `/sip-ws` end-to-end. Easiest against a real reactor.
+- Cloud-side `AgentStream` ACE event handler — decodes inbound WS frames from the agent, calls `CloudTunnelEndpoint::on_bytes_received`. Implements `IAgentTransport`. Retires the `/agent` hand-off's "info log only" stub.
+- Agent-side `AceSslTransport` — `ACE_SSL_SOCK_Connector` outbound dial for `CloudConnector::ITransportFactory`.
+- Asterisk ARI WS-events client — reads `/ari/events`, calls `AriClient::on_event` per parsed event.
+- `HandoffOrdering` test — verifies the WebConnection ordering end-to-end against a real reactor.
 
 The cloud's HTTP/WSS-serving spine. Three classes copied near-verbatim from xpmile's `modules/module/webservice/` and then extended:
 

@@ -51,6 +51,8 @@ file(GLOB SOURCES "*.cc"
     "../modules/module/pbx/test/microservice_pbx_test.cc"
     "../modules/module/pbx/src/push_sender.cpp"
     "../modules/module/pbx/test/push_sender_test.cc"
+    "../modules/module/pbx/src/browser_stream.cpp"
+    "../modules/module/pbx/test/browser_stream_test.cc"
     # ── pbx-agent (Layer 2) ───────────────────────────────────────────
     "../pbx-agent/src/main/sip_frame_demux.cpp"
     "../pbx-agent/src/test/sip_frame_demux_test.cc"
