@@ -14,10 +14,11 @@ See:
 |---|---|---|
 | 0.b | `MessageParser` base + `Http` subclass refactor + `Sip` subclass | ✅ Complete (commit `f45b40a`) |
 | 0.a | `SipFrame` wire-format primitives | ✅ Complete (commit `f45b40a`) |
-| 1   | `SipBridge` (cloud) + `SipFrameDemux` (agent) | ⏳ Not started |
-| 2+  | `CloudConnector`, tunnel E2E, MicroServicePbx, AriClient, Angular UI, Playwright | ⏳ Not started |
+| 1   | `SipBridge` cloud-side multiplexer | ✅ Complete (first slice) |
+| 1   | `MicroServicePbx*`, `PushSender*` route handlers + xpmile webservice/mongodb/wsdbproxy/email copies | ⏳ Next |
+| 2+  | `SipFrameDemux`, `CloudConnector`, tunnel E2E, AriClient, Angular UI, Playwright | ⏳ Not started |
 
-**Test totals: 55/55 passing** (20 HttpParser regression + 8 MessageParserBase + 17 SipParser + 10 SipFrame).
+**Test totals: 67/67 passing** (20 HttpParser regression + 8 MessageParserBase + 17 SipParser + 10 SipFrame + 12 SipBridge).
 
 ## Build & run (Layer 0)
 

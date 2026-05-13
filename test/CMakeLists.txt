@@ -23,6 +23,8 @@ file(GLOB SOURCES "*.cc"
     "../modules/module/sip/test/sip_parser_test.cc"
     "../modules/module/pbx/src/sip_frame.cpp"
     "../modules/module/pbx/test/sip_frame_test.cc"
+    "../modules/module/pbx/src/sip_bridge.cpp"
+    "../modules/module/pbx/test/sip_bridge_test.cc"
 )
 
 enable_testing()
