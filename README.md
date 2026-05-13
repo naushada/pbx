@@ -194,6 +194,26 @@ Asterisk config files (`docker/asterisk/*.conf`) are minimal but functional:
 
 coturn (`docker/coturn/turnserver.conf`) uses `use-auth-secret` so the cloud's `GET /api/v1/turn-credentials` endpoint can mint time-limited credentials with a shared HMAC-SHA1 secret (RFC 5766 §5). The bundled `static-auth-secret` is dev-only — overwrite before production.
 
+## Run the softphone UI
+
+Angular 14 + Clarity, scaffolded under `ui/` (mirrors `xpmile/ui/` shape). All toolchain ops run inside a `node:16-alpine` podman container:
+
+```sh
+# One-time install (writes ui/node_modules + ui/package-lock.json).
+podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-alpine \
+  npm install --legacy-peer-deps --no-audit --no-fund
+
+# Production build (output: ui/dist/pbxui/)
+podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-alpine \
+  npx ng build --configuration production
+
+# Dev server on :4200
+podman run --rm -p 4200:4200 -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-alpine \
+  npx ng serve --host 0.0.0.0
+```
+
+See [`ui/README.md`](./ui/README.md) for slice plan and dependency pinning notes.
+
 ## Deploy the cloud to Heroku
 
 The cloud side runs one container — `pbx-cloud` — pushed to `registry.heroku.com`:
@@ -261,7 +281,12 @@ deploy-heroku.sh            # podman + heroku CLI wrapper (xpmile-style)
 .env.agent.example          # Template for docker-compose.agent.yml env
 
 docs/           # PRD, DESIGN, TDD-PLAN are at the root; sub-design docs land here
-ui/             # Angular softphone — Layer 4
+ui/             # Angular softphone — Layer 4 (slice 0 scaffold done)
+                #   angular.json, package.json, tsconfig*.json, karma.conf.js
+                #   src/{main,polyfills,test,styles,index.html,favicon}
+                #   src/common/{app-globals,httpsvc,pubsubsvc}.{ts,d.ts}
+                #   src/app/{app,login,main,dashboard}/*  (login/dashboard are
+                #     placeholders; real components arrive in slices 1–2)
 scripts/        # Build/deploy helpers — Layer 4
 certs/          # Local-dev cert material (gitignored except templates)
 ```
@@ -280,7 +305,7 @@ Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deploym
 | Real `PushSender` wiring on cloud — `AceHttpsClient` for HTTPS POSTs + `SystemClock`; `--vapid-key-path` + `--vapid-subject` CLI flags; both branches of `webservice_main.cpp` patched. If flags unset, log-only stub remains. | ✅ Complete |
 | `docker-compose.agent.yml` — `pbx-mongo` (mongo:7) + `pbx-asterisk` (andrius/asterisk:20, chan_pjsip + ARI configs in `docker/asterisk/`) + `pbx-coturn` (coturn:4.6, `host` net for STUN replies) + `pbx-agent` (multi-stage `docker/Dockerfile.agent`). `pbx-net` bridge isolates inter-service traffic; Asterisk's WS port stays internal. Env via `.env` (template: `.env.agent.example`). | ✅ Complete |
 | `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) — `pbx-cloud` built from `docker/Dockerfile.cloud`, tagged `registry.heroku.com/${HEROKU_APP}/web`. Wrapper has `login`/`build`/`push`/`release`/`deploy`/`logs`/`open` subcommands and uses `podman` + the Heroku CLI exactly as xpmile does. | ✅ Complete |
-| `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker) | ⏳ |
+| `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker) — Slice 0: scaffold + Clarity/CDS styles + `src/common/{httpsvc,pubsubsvc}.service.ts` + empty routes (`login` / `main` / `dashboard`). `ng build` green inside a `node:16` podman container. Login form, SIP service, directory, call UI, push wakeup land in slices 1–7. | ⚡ Slice 0 done |
 | Playwright E2E | ⏳ |
 
 The TDD-style coverage stays the same shape — every Layer 4 piece either has its own GTest suite (where it's pure logic) or an integration test (where it's I/O-bound).
