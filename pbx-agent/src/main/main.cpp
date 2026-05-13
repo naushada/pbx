@@ -17,6 +17,7 @@
 
 #include "ace_ssl_transport.hpp"
 #include "ari_client.hpp"
+#include "ari_rest_client.hpp"
 #include "ari_ws_client.hpp"
 #include "asterisk_ws_factory.hpp"
 #include "cloud_connector.hpp"
@@ -45,42 +46,6 @@ class AceSystemClock : public IClock {
 public:
   std::int64_t now_unix() const override {
     return static_cast<std::int64_t>(std::time(nullptr));
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// NoopAriRest — Layer-4 placeholder until a real ARI REST client lands.
-//
-// AriClient takes IAriRest& in its constructor. We need a concrete one for
-// the binary to even instantiate. This stub logs every call and returns a
-// non-zero status so admission-denial paths surface visibly. Replaced in
-// the next slice by an AceHttpsClient-backed implementation that POSTs to
-// `/ari/applications/.../subscription` and `/ari/channels/.../continue`.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class NoopAriRest : public IAriRest {
-public:
-  Response subscribe(const std::string &app,
-                      const std::vector<std::string> &sources) override {
-    std::string srcs;
-    for (const auto &s : sources) { srcs += s; srcs += ","; }
-    ACE_DEBUG((LM_WARNING,
-               ACE_TEXT("%D [pbx-agent] NoopAriRest::subscribe(app=%s, "
-                        "sources=%s) — REST client not yet wired; "
-                        "admission control will not function until next "
-                        "Layer-4 slice\n"),
-               app.c_str(), srcs.c_str()));
-    return {500, "{\"error\":\"NoopAriRest\"}"};
-  }
-  Response continue_in_dialplan(const std::string &channel_id,
-                                 const std::string &ctx,
-                                 const std::string &ext, int prio) override {
-    ACE_ERROR((LM_WARNING,
-               ACE_TEXT("%D [pbx-agent] NoopAriRest::continue(ch=%s, "
-                        "%s,%s,%d) — REST client not yet wired; 6th+ "
-                        "concurrent call will not be routed to busy\n"),
-               channel_id.c_str(), ctx.c_str(), ext.c_str(), prio));
-    return {500, "{\"error\":\"NoopAriRest\"}"};
   }
 };
 
@@ -244,18 +209,19 @@ int main(int argc, char *argv[]) {
   // ── MongoDB ────────────────────────────────────────────────────────────
   auto db = std::make_unique<MongodbClient>(mongo_uri);
 
-  // ── AriClient + AriWsClient ────────────────────────────────────────────
-  // TODO(layer-4-rest): replace NoopAriRest with an AceHttpsClient-style
-  // implementation that POSTs to Asterisk's
-  //   POST /ari/applications/{app}/subscription
-  //   POST /ari/channels/{cid}/continue
-  // The CDR path through ChannelDestroyed is already real — only the
-  // admission-busy redirect needs the REST client.
-  NoopAriRest noop_rest;
+  // ── AriClient + AriRestClient + AriWsClient ────────────────────────────
+  AriRestClient::Config ari_rest_cfg;
+  ari_rest_cfg.host     = ast_host;
+  ari_rest_cfg.port     = static_cast<std::uint16_t>(ast_port);
+  ari_rest_cfg.username = ari_user;
+  ari_rest_cfg.password = ari_pass;
+  AriRestClient ari_rest(ari_rest_cfg);
+
   AriClient::Config ari_cfg;
   ari_cfg.society_id = society_id;
   ari_cfg.app_name   = ari_app;
-  AriClient ari_client(ari_cfg, noop_rest, *db);
+  AriClient ari_client(ari_cfg, ari_rest, *db);
+  ari_client.start();  // POSTs the subscription to Asterisk
 
   AriWsClient::Config ari_ws_cfg;
   ari_ws_cfg.host     = ast_host;
