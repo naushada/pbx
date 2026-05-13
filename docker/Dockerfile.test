@@ -1,0 +1,20 @@
+# Dockerfile.test — Layer 0 test build for onprem-pbx.
+#
+# Uses the cached `pbx-cpp-builder:bootstrap` image (a tagged snapshot of
+# xpmile's cpp-builder stage with ACE/TAO 7.0.0 and googletest already built
+# under /usr/local). This shaves ~30 min off the first build during Layer 0
+# bring-up. A from-scratch Dockerfile mirroring xpmile's full cpp-builder is
+# added in a later layer per DESIGN.md §12.
+FROM localhost/pbx-cpp-builder:bootstrap
+
+WORKDIR /src
+COPY CMakeLists.txt /src/
+COPY modules/      /src/modules/
+COPY test/         /src/test/
+
+WORKDIR /src/build
+RUN cmake -DBUILD_TESTS=ON .. \
+ && make -j"$(nproc)" offtarget
+
+WORKDIR /src/build/test
+CMD ["./offtarget", "--gtest_color=yes"]

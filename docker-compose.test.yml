@@ -1,0 +1,10 @@
+version: "3.8"
+
+# Layer 0 test harness — build the offtarget binary and run GTest.
+# Usage: podman-compose -f docker-compose.test.yml run --rm offtarget
+services:
+  offtarget:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    command: ["./offtarget", "--gtest_color=yes"]
