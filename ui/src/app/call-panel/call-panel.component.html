@@ -1,0 +1,22 @@
+<div class="call-panel" *ngIf="visible()" role="region" aria-label="Active call">
+    <div class="info">
+        <span class="peer">{{ peerLabel() }}</span>
+        <span class="status">{{ statusLabel() }}</span>
+    </div>
+    <div class="controls">
+        <button type="button" class="btn btn-icon btn-outline"
+                (click)="onToggleMute()"
+                [disabled]="callState.kind !== 'in-call'"
+                [attr.aria-pressed]="muted">
+            {{ muted ? 'Unmute' : 'Mute' }}
+        </button>
+        <button type="button" class="btn btn-icon btn-danger"
+                (click)="onHangup()">
+            Hang up
+        </button>
+    </div>
+
+    <!-- Hidden remote-audio sink. autoplay/muted policies vary per
+         browser; explicit .play() in code path covers Chrome/Edge. -->
+    <audio #remoteAudio autoplay></audio>
+</div>

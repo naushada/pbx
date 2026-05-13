@@ -5,6 +5,7 @@ import { AuthService } from './auth.service';
 import { PubsubsvcService, CallState } from './pubsubsvc.service';
 import {
     SIP_UA_FACTORY, SipUaFactory, SipUaHandle, SipUaOpts, SipUaStateChange,
+    SipCallHandle, SipCallStateChange,
 } from './sip-ua';
 
 // Fake SipUaFactory whose handle exposes a `pump()` for the spec to
@@ -16,6 +17,11 @@ class FakeUaHandle implements SipUaHandle {
     public stopped = false;
     public startError?: Error;
 
+    // Slice-3 surface.
+    public callTargets: string[] = [];
+    public callHandle = new FakeCallHandle();
+    public placeCallThrows?: Error;
+
     onStateChange(cb: (c: SipUaStateChange) => void): void { this.listener = cb; }
     async start(): Promise<void> {
         this.started = true;
@@ -24,6 +30,28 @@ class FakeUaHandle implements SipUaHandle {
     async stop(): Promise<void> { this.stopped = true; }
     /** Test-only: drive a state transition through to the listener. */
     pump(state: SipUaStateChange['state'], detail?: string): void {
+        this.listener?.(detail ? { state, detail } : { state });
+    }
+    placeCall(targetUri: string): SipCallHandle {
+        if (this.placeCallThrows) throw this.placeCallThrows;
+        this.callTargets.push(targetUri);
+        return this.callHandle;
+    }
+}
+
+class FakeCallHandle implements SipCallHandle {
+    public listener?: (c: SipCallStateChange) => void;
+    public hungup     = false;
+    public muteCalls: boolean[] = [];
+    public remoteStream?: MediaStream;
+
+    onStateChange(cb: (c: SipCallStateChange) => void): void { this.listener = cb; }
+    async hangup(): Promise<void> { this.hungup = true; }
+    setMute(m: boolean): void { this.muteCalls.push(m); }
+    getRemoteStream(): MediaStream | undefined { return this.remoteStream; }
+
+    /** Test-only: drive call state through to the listener. */
+    pump(state: SipCallStateChange['state'], detail?: string): void {
         this.listener?.(detail ? { state, detail } : { state });
     }
 }
@@ -130,5 +158,109 @@ describe('SipService', () => {
         const firstHandle = fake.lastOpts;
         await svc.connect();
         expect(fake.lastOpts).toBe(firstHandle);
+    });
+
+    // ─── placeCall / hangup / mute ───────────────────────────────────
+
+    describe('placeCall', () => {
+
+        async function makeRegistered(): Promise<void> {
+            authenticate();
+            await svc.connect();
+            fake.handle.pump('registered');
+        }
+
+        it('refuses when not connected', () => {
+            authenticate();
+            svc.placeCall('B-12');
+            expect(states.at(-1)).toEqual({ kind: 'failed', reason: 'not_connected' });
+            expect(fake.handle.callTargets).toEqual([]);
+        });
+
+        it('refuses when connected but not yet registered', async () => {
+            authenticate();
+            await svc.connect();
+            svc.placeCall('B-12');
+            expect(states.at(-1)).toEqual({ kind: 'failed', reason: 'not_registered' });
+            expect(fake.handle.callTargets).toEqual([]);
+        });
+
+        it('builds the correct target URI from society + flat', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            expect(fake.handle.callTargets).toEqual(['sip:B-12@pbx.soc-123']);
+        });
+
+        it('emits outgoing → in-call as the SIP call progresses', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            const cb = fake.handle.callHandle;
+            cb.pump('calling');
+            cb.pump('in-call');
+
+            // The first state after placeCall is outgoing; later 'calling'
+            // pumps remain outgoing; 'in-call' transitions to in-call.
+            const recent = states.slice(-3).map(s => s.kind);
+            expect(recent).toEqual(['outgoing', 'outgoing', 'in-call']);
+            const last = states.at(-1)!;
+            if (last.kind !== 'in-call') fail('expected in-call');
+            else                          expect(last.peerFlat).toBe('B-12');
+        });
+
+        it('after the peer hangs up emission returns to registered', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            fake.handle.callHandle.pump('in-call');
+            fake.handle.callHandle.pump('ended');
+            expect(states.at(-1)).toEqual({ kind: 'registered' });
+        });
+
+        it('hangup() asks the call handle and re-emits registered', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            fake.handle.callHandle.pump('in-call');
+
+            await svc.hangup();
+            expect(fake.handle.callHandle.hungup).toBeTrue();
+            expect(states.at(-1)).toEqual({ kind: 'registered' });
+        });
+
+        it('setMute forwards the boolean through to the call handle', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            svc.setMute(true);
+            svc.setMute(false);
+            expect(fake.handle.callHandle.muteCalls).toEqual([true, false]);
+        });
+
+        it('placeCall is idempotent — second call while one is up is ignored', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            svc.placeCall('C-44');
+            expect(fake.handle.callTargets).toEqual(['sip:B-12@pbx.soc-123']);
+        });
+
+        it('placeCall throw surfaces as failed CallState', async () => {
+            await makeRegistered();
+            fake.handle.placeCallThrows = new Error('mic permission denied');
+            svc.placeCall('B-12');
+            expect(states.at(-1)).toEqual({
+                kind: 'failed', reason: 'mic permission denied',
+            });
+        });
+
+        it('call-handle failure (e.g. ICE failure) is surfaced and clears the call', async () => {
+            await makeRegistered();
+            svc.placeCall('B-12');
+            fake.handle.callHandle.pump('failed', 'ice_disconnected');
+            expect(states.at(-1)).toEqual({
+                kind: 'failed', reason: 'ice_disconnected',
+            });
+
+            // Subsequent placeCall is now allowed (no active call).
+            const before = fake.handle.callTargets.length;
+            svc.placeCall('C-44');
+            expect(fake.handle.callTargets.length).toBe(before + 1);
+        });
     });
 });

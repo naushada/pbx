@@ -1,0 +1,34 @@
+.directory {
+    padding: 1.5rem 2rem;
+
+    h2  { color: #0f2d52; margin: 0 0 0.25rem; }
+    .hint  { color: #64748b; font-size: 0.85rem; margin: 0 0 1.25rem; }
+
+    .searchbar {
+        display: flex; align-items: center; gap: 1rem;
+        max-width: 480px; margin-bottom: 1rem;
+
+        clr-input-container { flex: 1; margin: 0; }
+        .loading { color: #64748b; font-size: 0.82rem; }
+    }
+
+    .error { color: #b91c1c; font-size: 0.85rem; }
+    .empty { color: #64748b; font-size: 0.85rem; }
+
+    .directory-table {
+        width: 100%; max-width: 720px; margin-top: 0.5rem;
+
+        th, td { padding: 0.6rem 0.85rem; vertical-align: middle; }
+        th     { color: #475569; font-size: 0.82rem; }
+        td     { color: #0f2d52; }
+        .action { text-align: right; }
+
+        .presence {
+            display: inline-block;
+            padding: 2px 8px; border-radius: 999px;
+            font-size: 0.75rem; font-weight: 600; letter-spacing: 0.02em;
+        }
+        .presence.online  { background: #dcfce7; color: #166534; }
+        .presence.offline { background: #f1f5f9; color: #64748b; }
+    }
+}

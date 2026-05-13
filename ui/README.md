@@ -76,7 +76,7 @@ podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-bullseye-slim 
 | 0 | Project scaffold + Clarity/CDS styles + common services + empty routes | ✅ Complete |
 | 1 | Login flow — `AuthService` (localStorage session, rehydrate on load) + `AuthInterceptor` (Bearer + 401 → /login) + `AuthGuard` on /main + real `LoginComponent` (Clarity form, error states) + logout in header/dashboard. **15/15 specs green.** | ✅ Complete |
 | 2 | `SipService` — high-level state machine (idle / registering / registered / failed) emitting through `PubsubsvcService.onCallState`. Sits on a seam: `SipUaFactory` interface + `SipJsUaFactory` production wrapper around SIP.js's `UserAgent` + `Registerer`; tests inject a fake. Dashboard shows live status with Connect/Disconnect actions. **22/22 specs green (7 new).** | ✅ Complete |
-| 3 | Directory search + outgoing call (P2P) UI | ⏳ |
+| 3 | Outbound call surface — seam extended with `SipUaHandle.placeCall` + `SipCallHandle` (hangup/setMute/getRemoteStream); production wraps sip.js `Inviter` + `Session`. `SipService.placeCall` builds `sip:<flat>@pbx.<society>`, drives the `outgoing → in-call → registered` lifecycle, and exposes the remote audio stream to a shell-level `CallPanelComponent` overlay. Sidebar nav (Dashboard / Directory); `DirectoryComponent` does debounced `searchDirectory` calls and click-to-call gated on `registered`. **36/36 specs green (14 new — 10 SipService + 4 Directory).** | ✅ Complete |
 | 4 | Incoming call wakeup: VAPID push + Service Worker + ringtone | ⏳ |
 | 5 | Conference (ConfBridge) + call history (CDR list) + settings | ⏳ |
 | 6 | `docker/Dockerfile.ui` (multi-stage: node-build → nginx-serve) + integration with `docker-compose.heroku.yml` | ⏳ |

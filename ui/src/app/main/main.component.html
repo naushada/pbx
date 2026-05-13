@@ -16,8 +16,17 @@
     </clr-header>
 
     <div class="content-container">
+        <clr-vertical-nav>
+            <a clrVerticalNavLink routerLink="dashboard" routerLinkActive="active">Dashboard</a>
+            <a clrVerticalNavLink routerLink="directory" routerLinkActive="active">Directory</a>
+        </clr-vertical-nav>
+
         <div class="content-area">
             <router-outlet></router-outlet>
         </div>
     </div>
+
+    <!-- Active-call overlay lives at the shell level so the audio
+         keeps playing as the user navigates between child routes. -->
+    <app-call-panel></app-call-panel>
 </clr-main-container>

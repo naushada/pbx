@@ -12,6 +12,8 @@ import { AppComponent } from './app.component';
 import { LoginComponent } from './login/login.component';
 import { MainComponent } from './main/main.component';
 import { DashboardComponent } from './dashboard/dashboard.component';
+import { DirectoryComponent } from './directory/directory.component';
+import { CallPanelComponent } from './call-panel/call-panel.component';
 import { AuthInterceptor } from 'src/common/auth.interceptor';
 import { SIP_UA_FACTORY } from 'src/common/sip-ua';
 import { SipJsUaFactory } from 'src/common/sip-ua-sipjs';
@@ -22,6 +24,8 @@ import { SipJsUaFactory } from 'src/common/sip-ua-sipjs';
         LoginComponent,
         MainComponent,
         DashboardComponent,
+        DirectoryComponent,
+        CallPanelComponent,
     ],
     imports: [
         BrowserModule,

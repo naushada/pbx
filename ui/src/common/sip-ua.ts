@@ -52,6 +52,46 @@ export interface SipUaHandle {
     stop():  Promise<void>;
     /** Subscribe to state changes (multi-subscriber). */
     onStateChange(cb: (change: SipUaStateChange) => void): void;
+
+    /**
+     * Place an outbound INVITE to `targetUri`. Returns immediately with
+     * a SipCallHandle whose state stream tracks INVITE → answer → BYE.
+     * Throws if the UA is not yet registered.
+     */
+    placeCall(targetUri: string): SipCallHandle;
+}
+
+// ─── Per-call lifecycle ───────────────────────────────────────────────
+//
+//   calling      — INVITE sent, awaiting any non-100 response
+//   progressing  — provisional response (180 ringing, 183 early media)
+//   in-call      — 200 OK received, ACK sent
+//   ended        — clean BYE (either side)
+//   failed       — 4xx/5xx/6xx, transport drop, ICE failure, etc.
+export type SipCallState =
+    | 'calling' | 'progressing' | 'in-call' | 'ended' | 'failed';
+
+export interface SipCallStateChange {
+    state:  SipCallState;
+    detail?: string;
+}
+
+export interface SipCallHandle {
+    /** Subscribe to call-state transitions. */
+    onStateChange(cb: (c: SipCallStateChange) => void): void;
+
+    /** Send BYE / CANCEL; tears down the session. Always resolves. */
+    hangup(): Promise<void>;
+
+    /** Mute / unmute the local mic. */
+    setMute(mute: boolean): void;
+
+    /**
+     * Remote audio stream once SDP negotiation completes. May be
+     * `undefined` while the call is still ringing — callers should
+     * re-check on state transitions to 'in-call'.
+     */
+    getRemoteStream(): MediaStream | undefined;
 }
 
 export interface SipUaFactory {

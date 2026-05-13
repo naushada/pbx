@@ -1,0 +1,48 @@
+<section class="directory">
+    <h2>Directory</h2>
+    <p class="hint">Type any part of a flat number to find a neighbour. Click <strong>Call</strong> to dial.</p>
+
+    <div class="searchbar">
+        <clr-input-container>
+            <label class="clr-sr-only">Search by flat</label>
+            <input type="text" name="search" clrInput
+                   placeholder="e.g. A-204"
+                   [formControl]="search" />
+        </clr-input-container>
+        <span class="loading" *ngIf="loading">Searching…</span>
+    </div>
+
+    <p *ngIf="errorMsg" class="error" role="alert">{{ errorMsg }}</p>
+    <p *ngIf="!loading && results.length === 0 && !errorMsg" class="empty">
+        No matches. Try a shorter prefix.
+    </p>
+
+    <table class="table directory-table" *ngIf="results.length > 0">
+        <thead>
+            <tr>
+                <th>Flat</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th class="action">Call</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr *ngFor="let row of results">
+                <td><strong>{{ row.flatNumber }}</strong></td>
+                <td>{{ row.displayName }}</td>
+                <td>
+                    <span [class.online]="row.online" [class.offline]="!row.online" class="presence">
+                        {{ row.online ? 'Online' : 'Offline' }}
+                    </span>
+                </td>
+                <td class="action">
+                    <button type="button" class="btn btn-sm btn-primary"
+                            (click)="onCall(row)"
+                            [disabled]="!canCall() || !row.online">
+                        Call
+                    </button>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
