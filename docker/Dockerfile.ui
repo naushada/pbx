@@ -1,0 +1,48 @@
+# ─── Build stage ────────────────────────────────────────────────────
+#
+# Builds the Angular bundle (ng build --configuration production) the
+# same way the dev workflow does locally — node:16-alpine + the locked
+# package-lock.json. The whole bundle ends up at /build/dist/pbxui.
+#
+FROM docker.io/library/node:16-alpine AS ui-builder
+
+WORKDIR /build
+
+# Copy package metadata first so `npm install` is cacheable independently
+# of source changes.
+COPY ui/package.json ui/package-lock.json ./
+RUN npm install --legacy-peer-deps --no-audit --no-fund
+
+# Source files come next.
+COPY ui/ ./
+
+RUN npx ng build --configuration production
+
+# ─── Runtime stage ──────────────────────────────────────────────────
+#
+# nginx:alpine serves the static bundle and reverse-proxies the cloud
+# REST + SIP-over-WS endpoints. The actual listen port and backend
+# origin are env vars (PORT, BACKEND_ORIGIN) so the same image works
+# on Heroku (dynamic $PORT, public cloud hostname) and in local
+# podman-compose (fixed :8080, internal service DNS).
+#
+FROM docker.io/library/nginx:1.25-alpine AS runtime
+
+# nginx.conf is rendered from a template by entrypoint.sh.
+COPY docker/nginx/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/nginx/entrypoint.sh /docker-entrypoint.d/40-render-template.sh
+RUN chmod +x /docker-entrypoint.d/40-render-template.sh
+
+# The static bundle.
+COPY --from=ui-builder /build/dist/pbxui/ /usr/share/nginx/html/
+
+# Reasonable defaults; overrideable from compose or `heroku config:set`.
+ENV PORT=8080
+ENV BACKEND_ORIGIN="http://pbx-cloud:8080"
+
+EXPOSE 8080
+
+# nginx:alpine's stock CMD invokes /docker-entrypoint.sh which runs
+# all scripts in /docker-entrypoint.d in lexical order — our 40-…
+# script lands between the built-in DNS-resolver step (10-…) and
+# `nginx -g 'daemon off;'`.

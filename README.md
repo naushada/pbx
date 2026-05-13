@@ -232,6 +232,43 @@ HEROKU_APP=onprem-pbx ./deploy-heroku.sh logs
 
 The wrapper is a thin shell around `podman-compose -f docker-compose.heroku.yml build pbx-cloud`, `podman push --format=v2s2`, and `heroku container:release`. The image is the same `docker/Dockerfile.cloud` that produces `localhost/onprem-pbx-cloud:latest` locally, just retagged for Heroku.
 
+## Deploy the softphone UI to Heroku
+
+The UI is a separate image (`docker/Dockerfile.ui` — multi-stage `node:16-alpine` build → `nginx:1.25-alpine` runtime). It runs as its own Heroku app and reverse-proxies `/api/*` + `/sip-ws` + `/ws/db` to the cloud app over the public hostname.
+
+```sh
+# Build, push, and release the UI image (independent of the cloud).
+HEROKU_APP_UI=onprem-pbx-ui ./deploy-heroku.sh deploy-ui
+
+# Or build + deploy *both* sides in one shot:
+HEROKU_APP=onprem-pbx HEROKU_APP_UI=onprem-pbx-ui \
+  ./deploy-heroku.sh deploy-all
+
+# Tail UI logs:
+./deploy-heroku.sh logs-ui
+
+# Open the UI in a browser:
+./deploy-heroku.sh open
+```
+
+Required Heroku config vars on the UI app:
+
+```sh
+heroku config:set \
+  BACKEND_ORIGIN=https://onprem-pbx.herokuapp.com \
+  --app onprem-pbx-ui
+```
+
+`$PORT` is injected by Heroku; nginx listens on it via the templated `nginx.conf`. Runtime DNS (`resolver 8.8.8.8 1.1.1.1`) keeps upstream resolution working on Heroku cold-starts.
+
+For local "production-like" smoke testing the same compose file brings up both services on `pbx-net`:
+
+```sh
+HEROKU_APP_CLOUD=onprem-pbx HEROKU_APP_UI=onprem-pbx-ui \
+  podman-compose -f docker-compose.heroku.yml up --build
+# Browser → http://localhost:8080 (UI), API proxied to pbx-cloud:8080.
+```
+
 ## Repo layout
 
 ```

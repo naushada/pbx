@@ -1,15 +1,24 @@
 # docker-compose.heroku.yml
 #
-# Heroku-side image for `pbx-cloud`. Builds the multi-arch image
-# tagged for the Heroku container registry; `./deploy-heroku.sh`
-# logs in, pushes, and releases it.
+# Builds the two Heroku-bound images:
 #
-# This compose file is build-only — running locally requires a Mongo
-# (use --remote-db with the on-prem agent stack, or point the cloud
-# at a local mongo via MONGO_DB_URI for testing).
+#   pbx-cloud — C++ webservice + ACE-based SIP bridge (slice-1 .. 4).
+#               Tagged registry.heroku.com/${HEROKU_APP_CLOUD}/web.
+#   pbx-ui    — nginx + Angular SPA, proxies REST/WS to the cloud.
+#               Tagged registry.heroku.com/${HEROKU_APP_UI}/web.
 #
-# Usage:
-#   HEROKU_APP=onprem-pbx ./deploy-heroku.sh deploy
+# `./deploy-heroku.sh` logs in, pushes, and releases either side
+# independently (`deploy`, `deploy-ui`, or `deploy-all`).
+#
+# This compose file is also runnable locally for a production-like
+# smoke test:
+#
+#   HEROKU_APP_CLOUD=onprem-pbx HEROKU_APP_UI=onprem-pbx-ui \
+#     podman-compose -f docker-compose.heroku.yml up --build
+#
+# Then point a browser at http://localhost:8080 — nginx will reverse-
+# proxy /api/* and /sip-ws into the cloud container over the compose
+# network.
 
 services:
 
@@ -22,7 +31,7 @@ services:
       # build host doesn't accidentally push an arm64 image.
       platforms:
         - linux/amd64
-    image: registry.heroku.com/${HEROKU_APP:-onprem-pbx}/web
+    image: registry.heroku.com/${HEROKU_APP_CLOUD:-${HEROKU_APP:-onprem-pbx}}/web
     container_name: pbx-cloud
     environment:
       # Heroku injects $PORT; for local-test runs we default to 8080.
@@ -38,3 +47,25 @@ services:
       TLS_CA:         ${TLS_CA:-}
       VAPID_KEY_PATH: ${VAPID_KEY_PATH:-}
       VAPID_SUBJECT:  ${VAPID_SUBJECT:-}
+
+  pbx-ui:
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ui
+      platforms:
+        - linux/amd64
+    image: registry.heroku.com/${HEROKU_APP_UI:-onprem-pbx-ui}/web
+    container_name: pbx-ui
+    depends_on:
+      - pbx-cloud
+    ports:
+      - "${UI_PUBLIC_PORT:-8080}:8080"
+    environment:
+      # nginx listens on $PORT; Heroku injects this at runtime, locally
+      # we default to 8080 so docker-compose can publish it 1:1.
+      PORT:           ${UI_PORT:-8080}
+      # Backend reachability. For local podman-compose the cloud is
+      # reachable on its compose service-name; for Heroku the UI app
+      # talks to the cloud's public hostname over HTTPS.
+      BACKEND_ORIGIN: ${BACKEND_ORIGIN:-http://pbx-cloud:8080}

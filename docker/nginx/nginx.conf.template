@@ -1,0 +1,87 @@
+# Rendered by /docker-entrypoint.d/40-render-template.sh before nginx starts.
+# Variables expanded by `envsubst`:
+#   $PORT             — nginx listen port (Heroku-assigned or compose-supplied)
+#   $BACKEND_ORIGIN   — full URL of the pbx-cloud webservice (no trailing slash)
+
+server {
+    listen      $PORT default_server;
+    server_name _;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    # Defer upstream hostname resolution to request-time. nginx's default
+    # behaviour is to resolve at config-load, which fails on Heroku
+    # cold-starts and inside any compose network whose service DNS
+    # isn't fully ready by the time nginx -t runs. The `resolver` line
+    # plus a variable in proxy_pass forces runtime resolution.
+    # 8.8.8.8 / 1.1.1.1 are reachable from Heroku and from typical
+    # local-dev networks; podman / compose service DNS still works
+    # because nginx falls back to the standard resolver on private
+    # hostnames once those public ones time out.
+    resolver 8.8.8.8 1.1.1.1 valid=30s ipv6=off;
+    resolver_timeout 5s;
+    set $backend_origin "$BACKEND_ORIGIN";
+
+    # Long-lived assets get aggressive caching; index.html does not so
+    # released builds replace cached versions immediately.
+    location ~* \.(?:js|css|woff2?|svg|png|ico)$ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # REST API → cloud.
+    location /api/ {
+        proxy_pass         $backend_origin;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # SIP-over-WS upgrade → cloud. Requires the Upgrade/Connection
+    # headers per RFC 6455 §1.3.
+    location /sip-ws {
+        proxy_pass         $backend_origin/sip-ws;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        # Keep the tunnel open indefinitely; SIP keep-alives flow on
+        # this socket.
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+
+    # Mongo-over-WSS proxy (xpmile inheritance) — same WS upgrade
+    # treatment. Useful when the agent's wsdbagent talks via the public
+    # cloud edge in some deployments.
+    location /ws/db {
+        proxy_pass         $backend_origin/ws/db;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   Host              $host;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+
+    # The service worker has to be served from the origin root so its
+    # scope covers the whole app; nothing else lives at /sw.js so the
+    # default static-file rule already handles it. Explicit no-cache
+    # so updates ship immediately.
+    location = /sw.js {
+        try_files $uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    # SPA fallback — every unknown path serves index.html so the
+    # Angular Router can take over.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
