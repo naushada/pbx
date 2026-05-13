@@ -1,0 +1,89 @@
+# Dockerfile.cloud — production Heroku-side pbx-cloud image.
+#
+# Same multi-stage shape as Dockerfile.agent, builds pbx-cloud.
+# The Angular UI is NOT yet baked in — that's a follow-up slice.
+#
+# Build:        podman build -f docker/Dockerfile.cloud -t onprem-pbx-cloud:latest .
+# Heroku push:  see ./deploy-heroku.sh
+
+# ============================================================
+# Stage 1: build the binary using the cached toolchain.
+# ============================================================
+FROM localhost/pbx-cpp-builder:bootstrap AS cpp-builder
+
+WORKDIR /src
+COPY CMakeLists.txt /src/
+COPY modules/      /src/modules/
+COPY test/         /src/test/
+
+WORKDIR /src/build
+RUN cmake -DBUILD_TESTS=OFF -DBUILD_BINARIES=ON .. \
+ && make -j"$(nproc)" pbx-cloud
+
+# ============================================================
+# Stage 2: slim runtime.
+# ============================================================
+FROM ubuntu:focal AS runtime
+
+ENV TZ=Asia/Calcutta DEBIAN_FRONTEND=noninteractive
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl1.1 \
+        libboost-filesystem1.71.0 \
+        libboost-system1.71.0 \
+        libboost-thread1.71.0 \
+        libzstd1 \
+        libsasl2-2 \
+        zlib1g \
+        libicu66 \
+        tini \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=cpp-builder /usr/local/ACE_TAO-7.0.0/lib/   /usr/local/ACE_TAO-7.0.0/lib/
+RUN echo "/usr/local/ACE_TAO-7.0.0/lib" > /etc/ld.so.conf.d/ace-tao.conf
+COPY --from=cpp-builder /usr/local/lib/libmongoc-1.0.so*  /usr/local/lib/
+COPY --from=cpp-builder /usr/local/lib/libbson-1.0.so*    /usr/local/lib/
+COPY --from=cpp-builder /usr/local/lib/libmongocxx.so*    /usr/local/lib/
+COPY --from=cpp-builder /usr/local/lib/libbsoncxx.so*     /usr/local/lib/
+RUN ldconfig
+
+RUN mkdir -p /opt/pbx-cloud/certs /opt/pbx-cloud/vapid
+COPY --from=cpp-builder /src/build/pbx-cloud /opt/pbx-cloud/pbx-cloud
+
+WORKDIR /opt/pbx-cloud
+
+# Heroku injects $PORT at runtime; we default to 8080 for local dev.
+# The cloud server is a single binary that takes everything via flags.
+# REMOTE_DB selects wsdbagent-tunneled Mongo (the production mode);
+# leave blank for local Mongo via --mongo-db-uri.
+ENV PORT="8080" \
+    SERVER_WORKER="5" \
+    DB_URI="" \
+    DB_POOL="50" \
+    DB_NAME="pbx" \
+    REMOTE_DB="" \
+    AGENT_PORT="" \
+    TLS_CERT="" \
+    TLS_KEY="" \
+    TLS_CA="" \
+    VAPID_KEY_PATH="" \
+    VAPID_SUBJECT=""
+
+ENTRYPOINT ["tini", "--"]
+CMD ["/bin/sh", "-c", "\
+  /opt/pbx-cloud/pbx-cloud \
+    --server-port ${PORT} \
+    --server-worker ${SERVER_WORKER} \
+    ${DB_URI:+--mongo-db-uri \"$DB_URI\"} \
+    ${DB_POOL:+--mongo-db-connection-pool \"$DB_POOL\"} \
+    ${DB_NAME:+--mongo-db-name \"$DB_NAME\"} \
+    ${REMOTE_DB:+--remote-db} \
+    ${AGENT_PORT:+--agent-port \"$AGENT_PORT\"} \
+    ${TLS_CERT:+--tls-cert \"$TLS_CERT\"} \
+    ${TLS_KEY:+--tls-key \"$TLS_KEY\"} \
+    ${TLS_CA:+--tls-ca \"$TLS_CA\"} \
+    ${VAPID_KEY_PATH:+--vapid-key-path \"$VAPID_KEY_PATH\"} \
+    ${VAPID_SUBJECT:+--vapid-subject \"$VAPID_SUBJECT\"} \
+"]

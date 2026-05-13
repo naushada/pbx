@@ -447,9 +447,38 @@ Third-party processes co-located on the same host (not built or shipped by this 
 
 `CloudConnector` repurposes the xpmile pattern at `xpmile/modules/module/wsdbagent/`. The dial-out + WSS upgrade + reconnect loop is identical; only the per-frame handler changes (BSON DB-call payload → [`sip_frame`](../modules/module/pbx/README.md) multiplex).
 
-## Build & run (when populated)
+## Build & run
 
-The agent ships as a separate container alongside Asterisk + coturn + MongoDB via `docker-compose.agent.yml`. See `xpmile/docker-compose.agent.yml` as the template.
+The agent ships as a separate container alongside Asterisk + coturn + MongoDB via `docker-compose.agent.yml` at the repo root.
+
+```sh
+# From the repo root.
+cp .env.agent.example .env
+$EDITOR .env                          # set CLOUD_HOST, AGENT_SOCIETY_ID, CERTS_DIR
+podman-compose -f docker-compose.agent.yml up --build -d
+```
+
+The `pbx-agent` container is built from [`docker/Dockerfile.agent`](../docker/Dockerfile.agent) — multi-stage, `FROM pbx-cpp-builder:bootstrap` for the build stage, `FROM ubuntu:focal` for the runtime stage with only ACE/TAO + mongocxx + OpenSSL shared libs copied across. CLI flags are passed via env vars expanded in the container `CMD`:
+
+| Env var              | CLI flag           | Default                 | Note |
+|----------------------|--------------------|--------------------------|------|
+| `CLOUD_HOST`         | `--cloud-host`     | _(required)_             | Heroku hostname for `/agent` WS upgrade. |
+| `CLOUD_PORT`         | `--cloud-port`     | `443`                    | |
+| `TLS_CERT`           | `--tls-cert`       | `/opt/pbx-agent/certs/agent.crt` | Mounted via `CERTS_DIR` bind. |
+| `TLS_KEY`            | `--tls-key`        | `/opt/pbx-agent/certs/agent.key` | |
+| `TLS_CA`             | `--tls-ca`         | `/opt/pbx-agent/certs/cloud-ca.pem` | |
+| `MONGO_URI`          | `--mongo-uri`      | `mongodb://pbx-mongo:27017/pbx` | Service DNS via the `pbx-net` bridge. |
+| `AGENT_SOCIETY_ID`   | `--society-id`     | _(required)_             | Mongo ObjectId or short code matching the society document. |
+| `ASTERISK_HOST`/`_PORT` | `--asterisk-host`/`-port` | `pbx-asterisk:8088` | chan_pjsip WS endpoint. |
+| `ARI_APP`            | `--ari-app`        | `pbx`                    | Stasis app name in `extensions.conf`. |
+| `ARI_USER`/`ARI_PASS`| `--ari-user`/`-pass` | `asterisk`/`asterisk` | **Override in prod.** |
+
+Smoke test once the stack is up:
+
+```sh
+podman-compose -f docker-compose.agent.yml logs -f pbx-agent
+# expect: TLS handshake, /agent upgrade 101, "tunnel ready"
+```
 
 ## Tests (Layer 2)
 

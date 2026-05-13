@@ -1,0 +1,93 @@
+# Dockerfile.agent — production on-prem pbx-agent image.
+#
+# Builds the pbx-agent binary using the cached pbx-cpp-builder:bootstrap
+# image (ACE/TAO 7.0.0 + mongo-cxx-driver + googletest pre-installed),
+# then assembles a slim Ubuntu focal runtime with only the libraries the
+# binary actually needs at runtime.
+#
+# Build:    podman-compose -f docker-compose.agent.yml build pbx-agent
+# Run via:  podman-compose -f docker-compose.agent.yml up -d pbx-agent
+
+# ============================================================
+# Stage 1: build the binary using the cached toolchain.
+# ============================================================
+FROM localhost/pbx-cpp-builder:bootstrap AS cpp-builder
+
+WORKDIR /src
+COPY CMakeLists.txt /src/
+COPY modules/      /src/modules/
+COPY pbx-agent/    /src/pbx-agent/
+COPY test/         /src/test/
+
+WORKDIR /src/build
+RUN cmake -DBUILD_TESTS=OFF -DBUILD_BINARIES=ON .. \
+ && make -j"$(nproc)" pbx-agent
+
+# ============================================================
+# Stage 2: slim runtime.
+# ============================================================
+FROM ubuntu:focal AS runtime
+
+ENV TZ=Asia/Calcutta DEBIAN_FRONTEND=noninteractive
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl1.1 \
+        libboost-filesystem1.71.0 \
+        libboost-system1.71.0 \
+        libboost-thread1.71.0 \
+        libzstd1 \
+        libsasl2-2 \
+        zlib1g \
+        libicu66 \
+        tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# ACE/TAO shared libraries (installed at non-standard prefix in the
+# builder).
+COPY --from=cpp-builder /usr/local/ACE_TAO-7.0.0/lib/ /usr/local/ACE_TAO-7.0.0/lib/
+RUN echo "/usr/local/ACE_TAO-7.0.0/lib" > /etc/ld.so.conf.d/ace-tao.conf
+
+# MongoDB C/C++ driver shared libraries.
+COPY --from=cpp-builder /usr/local/lib/libmongoc-1.0.so*   /usr/local/lib/
+COPY --from=cpp-builder /usr/local/lib/libbson-1.0.so*     /usr/local/lib/
+COPY --from=cpp-builder /usr/local/lib/libmongocxx.so*     /usr/local/lib/
+COPY --from=cpp-builder /usr/local/lib/libbsoncxx.so*      /usr/local/lib/
+RUN ldconfig
+
+# Binary + a place for mTLS material the operator mounts at runtime.
+RUN mkdir -p /opt/pbx-agent/certs
+COPY --from=cpp-builder /src/build/pbx-agent /opt/pbx-agent/pbx-agent
+
+WORKDIR /opt/pbx-agent
+
+# Env-driven CLI. Override any of these via `environment:` in compose
+# or `-e` on the CLI. CLOUD_HOST + MONGO_URI + AGENT_SOCIETY_ID are
+# required — `pbx-agent --help` will reject startup if they're empty.
+ENV CLOUD_HOST="" \
+    CLOUD_PORT="443" \
+    TLS_CERT="/opt/pbx-agent/certs/agent.crt" \
+    TLS_KEY="/opt/pbx-agent/certs/agent.key" \
+    TLS_CA="/opt/pbx-agent/certs/cloud-ca.pem" \
+    MONGO_URI="mongodb://pbx-mongo:27017/pbx" \
+    AGENT_SOCIETY_ID="" \
+    ASTERISK_HOST="pbx-asterisk" \
+    ASTERISK_PORT="8088" \
+    ARI_APP="pbx" \
+    ARI_USER="asterisk" \
+    ARI_PASS="asterisk"
+
+ENTRYPOINT ["tini", "--", "/opt/pbx-agent/pbx-agent"]
+CMD ["--cloud-host",     "${CLOUD_HOST}", \
+     "--cloud-port",     "${CLOUD_PORT}", \
+     "--tls-cert",       "${TLS_CERT}", \
+     "--tls-key",        "${TLS_KEY}", \
+     "--tls-ca",         "${TLS_CA}", \
+     "--mongo-uri",      "${MONGO_URI}", \
+     "--society-id",     "${AGENT_SOCIETY_ID}", \
+     "--asterisk-host",  "${ASTERISK_HOST}", \
+     "--asterisk-port",  "${ASTERISK_PORT}", \
+     "--ari-app",        "${ARI_APP}", \
+     "--ari-user",       "${ARI_USER}", \
+     "--ari-pass",       "${ARI_PASS}"]

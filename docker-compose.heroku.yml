@@ -1,0 +1,40 @@
+# docker-compose.heroku.yml
+#
+# Heroku-side image for `pbx-cloud`. Builds the multi-arch image
+# tagged for the Heroku container registry; `./deploy-heroku.sh`
+# logs in, pushes, and releases it.
+#
+# This compose file is build-only — running locally requires a Mongo
+# (use --remote-db with the on-prem agent stack, or point the cloud
+# at a local mongo via MONGO_DB_URI for testing).
+#
+# Usage:
+#   HEROKU_APP=onprem-pbx ./deploy-heroku.sh deploy
+
+services:
+
+  pbx-cloud:
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cloud
+      # Heroku runs amd64 dynos; build for that explicitly so a Mac
+      # build host doesn't accidentally push an arm64 image.
+      platforms:
+        - linux/amd64
+    image: registry.heroku.com/${HEROKU_APP:-onprem-pbx}/web
+    container_name: pbx-cloud
+    environment:
+      # Heroku injects $PORT; for local-test runs we default to 8080.
+      PORT:           ${PORT:-8080}
+      SERVER_WORKER:  ${SERVER_WORKER:-5}
+      DB_URI:         ${DB_URI:-}
+      DB_POOL:        ${DB_POOL:-50}
+      DB_NAME:        ${DB_NAME:-pbx}
+      REMOTE_DB:      ${REMOTE_DB:-}
+      AGENT_PORT:     ${AGENT_PORT:-}
+      TLS_CERT:       ${TLS_CERT:-}
+      TLS_KEY:        ${TLS_KEY:-}
+      TLS_CA:         ${TLS_CA:-}
+      VAPID_KEY_PATH: ${VAPID_KEY_PATH:-}
+      VAPID_SUBJECT:  ${VAPID_SUBJECT:-}

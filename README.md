@@ -152,6 +152,66 @@ from-scratch Dockerfile mirroring xpmile's full cpp-builder is at
 [`docker/Dockerfile.test`](./docker/Dockerfile.test) and rebuilds the
 toolchain in ~30 min.
 
+## Run the on-prem agent stack
+
+The on-prem deployment runs four containers — `pbx-mongo`, `pbx-asterisk`,
+`pbx-coturn`, and `pbx-agent` — composed by `docker-compose.agent.yml`.
+
+```sh
+# One-time: copy the env template and fill in real values
+# (CLOUD_HOST, AGENT_SOCIETY_ID, CERTS_DIR pointing at agent.crt/key + cloud-ca.pem).
+cp .env.agent.example .env
+$EDITOR .env
+
+# Bring the stack up (builds pbx-agent from docker/Dockerfile.agent on first run).
+podman-compose -f docker-compose.agent.yml up --build -d
+
+# Tail logs.
+podman-compose -f docker-compose.agent.yml logs -f pbx-agent
+
+# Tear down (keeps the mongo data volume).
+podman-compose -f docker-compose.agent.yml down
+
+# Tear down + drop the mongo volume.
+podman-compose -f docker-compose.agent.yml down -v
+```
+
+Topology:
+
+| Container | Network | Why |
+|---|---|---|
+| `pbx-mongo` | `pbx-net` (internal bridge) | Subscribers + CDR + push subscriptions. Not exposed to host. |
+| `pbx-asterisk` | `pbx-net` (internal bridge) | chan_pjsip WS on `:8088` (agent reaches via service DNS). NOT host-exposed — auth lives in SIP digest, not at the WS layer. |
+| `pbx-coturn` | host networking | TURN needs the real public IP in STUN replies. The society opens one UDP port (`TURN_PUBLIC_PORT`, default 3478) and DNATs it to coturn. |
+| `pbx-agent`  | `pbx-net` (internal bridge) | Dials the Heroku `/agent` endpoint over mTLS using the `CERTS_DIR` material. |
+
+Asterisk config files (`docker/asterisk/*.conf`) are minimal but functional:
+
+- `pjsip.conf` — WS transport, WebRTC-enabled endpoint template (`webrtc=yes`, `auth_type=md5`, `realm=pbx.local`), sample `alice` / `bob` endpoints. Replace with society-specific endpoints in production.
+- `extensions.conf` — Stasis app `pbx` (admission gate) + `pbx-busy` busy-signal context for over-cap calls.
+- `ari.conf` — single ARI user `asterisk:asterisk`; **override via `ARI_USER` / `ARI_PASS`** in `.env` before any non-local deployment.
+- `http.conf` — listens on `0.0.0.0:8088`, scoped to the internal bridge network.
+
+coturn (`docker/coturn/turnserver.conf`) uses `use-auth-secret` so the cloud's `GET /api/v1/turn-credentials` endpoint can mint time-limited credentials with a shared HMAC-SHA1 secret (RFC 5766 §5). The bundled `static-auth-secret` is dev-only — overwrite before production.
+
+## Deploy the cloud to Heroku
+
+The cloud side runs one container — `pbx-cloud` — pushed to `registry.heroku.com`:
+
+```sh
+# One-time: authenticate the local podman daemon with Heroku's registry.
+HEROKU_APP=onprem-pbx ./deploy-heroku.sh login
+
+# Build + push + release in one shot.
+HEROKU_APP=onprem-pbx ./deploy-heroku.sh deploy
+
+# Individual subcommands (same as xpmile's deploy-heroku.sh):
+#   build | push | release | logs | open
+HEROKU_APP=onprem-pbx ./deploy-heroku.sh logs
+```
+
+The wrapper is a thin shell around `podman-compose -f docker-compose.heroku.yml build pbx-cloud`, `podman push --format=v2s2`, and `heroku container:release`. The image is the same `docker/Dockerfile.cloud` that produces `localhost/onprem-pbx-cloud:latest` locally, just retagged for Heroku.
+
 ## Repo layout
 
 ```
@@ -189,8 +249,17 @@ test/
   main.cc       # GTest entrypoint
   CMakeLists.txt
 
-docker/         # Dockerfile.test (only Dockerfile today; multi-stage
-                # production images come with Layer 4)
+docker/         # Container build context
+                #   Dockerfile.test   — runs all GTest suites
+                #   Dockerfile.agent  — production pbx-agent image (multi-stage)
+                #   Dockerfile.cloud  — production pbx-cloud image (multi-stage)
+                #   asterisk/         — minimal chan_pjsip + ARI + Stasis config
+                #   coturn/           — minimal use-auth-secret turnserver.conf
+docker-compose.agent.yml    # On-prem stack: mongo + asterisk + coturn + pbx-agent
+docker-compose.heroku.yml   # Cloud stack: pbx-cloud, tagged for registry.heroku.com
+deploy-heroku.sh            # podman + heroku CLI wrapper (xpmile-style)
+.env.agent.example          # Template for docker-compose.agent.yml env
+
 docs/           # PRD, DESIGN, TDD-PLAN are at the root; sub-design docs land here
 ui/             # Angular softphone — Layer 4
 scripts/        # Build/deploy helpers — Layer 4
@@ -209,8 +278,8 @@ Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deploym
 | Real `AsteriskWsFactory` (replaces `StubAsteriskFactory`) — plain-TCP + WS upgrade to `ws://127.0.0.1:8088/ws` (chan_pjsip transport) with `Sec-WebSocket-Protocol: sip` per RFC 7118 §4 | ✅ Complete |
 | Real `IAriRest` impl — `AriRestClient` POSTs to `/ari/applications/{app}/subscription` and `/ari/channels/{cid}/continue` (HTTP Basic auth, URL-encoded path + query) | ✅ Complete |
 | Real `PushSender` wiring on cloud — `AceHttpsClient` for HTTPS POSTs + `SystemClock`; `--vapid-key-path` + `--vapid-subject` CLI flags; both branches of `webservice_main.cpp` patched. If flags unset, log-only stub remains. | ✅ Complete |
-| `docker-compose.agent.yml` — Asterisk LTS + coturn + MongoDB + `pbx-agent` binary | ⏳ |
-| `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) | ⏳ |
+| `docker-compose.agent.yml` — `pbx-mongo` (mongo:7) + `pbx-asterisk` (andrius/asterisk:20, chan_pjsip + ARI configs in `docker/asterisk/`) + `pbx-coturn` (coturn:4.6, `host` net for STUN replies) + `pbx-agent` (multi-stage `docker/Dockerfile.agent`). `pbx-net` bridge isolates inter-service traffic; Asterisk's WS port stays internal. Env via `.env` (template: `.env.agent.example`). | ✅ Complete |
+| `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) — `pbx-cloud` built from `docker/Dockerfile.cloud`, tagged `registry.heroku.com/${HEROKU_APP}/web`. Wrapper has `login`/`build`/`push`/`release`/`deploy`/`logs`/`open` subcommands and uses `podman` + the Heroku CLI exactly as xpmile does. | ✅ Complete |
 | `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker) | ⏳ |
 | Playwright E2E | ⏳ |
 

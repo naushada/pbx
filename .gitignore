@@ -46,6 +46,11 @@ certs/*.crt
 *.log
 logs/
 
+# Docker-compose env (real values; only the .example is committed)
+.env
+.env.local
+!.env.agent.example
+
 # MongoDB data volumes (if a dev brings up locally outside compose)
 data/
 mongo-data/

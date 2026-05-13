@@ -1,0 +1,120 @@
+# docker-compose.agent.yml
+#
+# On-prem pbx-agent stack: MongoDB + Asterisk + coturn + pbx-agent.
+# Mirrors xpmile's `docker-compose.agent.yml` shape but for the VoIP
+# control plane.
+#
+# Usage (production):
+#   cp .env.agent.example .env
+#   # …edit .env (CLOUD_HOST, AGENT_SOCIETY_ID, etc.)…
+#   podman-compose -f docker-compose.agent.yml up --build -d
+#
+# Required env (set in .env or shell):
+#   CLOUD_HOST          Heroku hostname (e.g. onprem-pbx.herokuapp.com)
+#   AGENT_SOCIETY_ID    Society id this agent serves
+#   CERTS_DIR           Path on host containing agent.crt/agent.key/cloud-ca.pem
+#
+# Optional env (sensible defaults):
+#   CLOUD_PORT          Heroku port                  (default: 443)
+#   MONGO_DB_NAME       Mongo database name          (default: pbx)
+#   ARI_USER / ARI_PASS Asterisk REST creds          (default: asterisk/asterisk)
+#   TURN_PUBLIC_PORT    Society's public TURN UDP    (default: 3478)
+#
+# Networks:
+#   pbx-net  — internal bridge for service-to-service traffic.
+#   Asterisk's WS port (8088) is NOT exposed to the host.
+#   coturn's port is exposed via TURN_PUBLIC_PORT for off-LAN browsers.
+#
+
+services:
+
+  # ──────────────────────────────────────────────────────────────────
+  # MongoDB — persistent store: subscribers, cdr, push_subscriptions.
+  # ──────────────────────────────────────────────────────────────────
+  pbx-mongo:
+    image: mongo:7
+    container_name: pbx-mongo
+    restart: unless-stopped
+    volumes:
+      - pbx_mongo_data:/data/db
+    networks:
+      - pbx-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ──────────────────────────────────────────────────────────────────
+  # Asterisk — chan_pjsip SIP-over-WS transport + ARI events/REST.
+  # ──────────────────────────────────────────────────────────────────
+  pbx-asterisk:
+    image: andrius/asterisk:20
+    container_name: pbx-asterisk
+    restart: unless-stopped
+    volumes:
+      - ./docker/asterisk/asterisk.conf:/etc/asterisk/asterisk.conf:ro
+      - ./docker/asterisk/http.conf:/etc/asterisk/http.conf:ro
+      - ./docker/asterisk/ari.conf:/etc/asterisk/ari.conf:ro
+      - ./docker/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./docker/asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
+    networks:
+      - pbx-net
+    # The agent reaches us at pbx-asterisk:8088 over the compose
+    # network. NOT exposed to the host — chan_pjsip's WS transport
+    # has no auth at the WS layer (SIP digest handles auth), so the
+    # port stays internal.
+
+  # ──────────────────────────────────────────────────────────────────
+  # coturn — STUN + TURN for browser↔browser ICE.
+  # ──────────────────────────────────────────────────────────────────
+  pbx-coturn:
+    image: coturn/coturn:4.6
+    container_name: pbx-coturn
+    restart: unless-stopped
+    network_mode: host           # coturn needs the real public IP
+    # in its STUN replies. host networking is the simplest way; trade
+    # off is no isolation from the host network namespace.
+    volumes:
+      - ./docker/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+  # ──────────────────────────────────────────────────────────────────
+  # pbx-agent — the on-prem control-plane daemon.
+  # ──────────────────────────────────────────────────────────────────
+  pbx-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    image: localhost/onprem-pbx-agent:latest
+    container_name: pbx-agent
+    restart: unless-stopped
+    depends_on:
+      pbx-mongo:
+        condition: service_healthy
+      pbx-asterisk:
+        condition: service_started
+    networks:
+      - pbx-net
+    environment:
+      CLOUD_HOST:        ${CLOUD_HOST:?CLOUD_HOST required}
+      CLOUD_PORT:        ${CLOUD_PORT:-443}
+      TLS_CERT:          /opt/pbx-agent/certs/agent.crt
+      TLS_KEY:           /opt/pbx-agent/certs/agent.key
+      TLS_CA:            /opt/pbx-agent/certs/cloud-ca.pem
+      MONGO_URI:         mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pbx}
+      AGENT_SOCIETY_ID:  ${AGENT_SOCIETY_ID:?AGENT_SOCIETY_ID required}
+      ASTERISK_HOST:     pbx-asterisk
+      ASTERISK_PORT:     "8088"
+      ARI_APP:           pbx
+      ARI_USER:          ${ARI_USER:-asterisk}
+      ARI_PASS:          ${ARI_PASS:-asterisk}
+    volumes:
+      - ${CERTS_DIR:?CERTS_DIR required}:/opt/pbx-agent/certs:ro
+
+volumes:
+  pbx_mongo_data:
+
+networks:
+  pbx-net:
+    driver: bridge
