@@ -196,20 +196,24 @@ scripts/        # Build/deploy helpers — Layer 4
 certs/          # Local-dev cert material (gitignored except templates)
 ```
 
-## What's left to ship (Layer 4)
+## Layer 4 — production wiring (in progress)
 
-Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deployment-and-product surface — none of it changes the tested core. Roughly:
+Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deployment-and-product surface; none of it changes the tested core.
 
-| Component | Why it's Layer 4 |
+| Component | Status |
 |---|---|
-| `pbx-agent/src/main/main.cpp` | Wires the ACE reactor, `CloudConnector` + `AceSslTransportFactory`, `SipFrameDemux` with a real Asterisk factory, `AriClient` + `AriWsClient` (with a tiny reconnect supervisor), `MongodbClient`. Pure glue — no new logic. |
-| Production cloud bootstrap | Instantiate `SipBridge` + `CloudTunnelEndpoint`; wire `bridge.set_push_notify_handler` → `PushSender::notify`; wire `bridge.set_cdr_push_handler` → a Mongo writer in the `cdr` collection. |
-| `docker-compose.agent.yml` | Real Asterisk LTS + coturn + MongoDB + agent binary in one compose. The integration tests for `AceSslTransport`'s real TLS path and `AriWsClient`'s real Asterisk path land here. |
-| `docker-compose.heroku.yml` + `deploy-heroku.sh` | Multi-stage production image with the Angular UI baked in; clone of xpmile's deploy script. |
-| `ui/` (Angular softphone) | SIP.js + WebRTC client, Clarity UI per xpmile conventions, Service Worker for Web Push wake-up. The state machines on the cloud side are already wired for the events; this is the client. |
-| Playwright E2E | Real browser hits real Heroku (or local compose); two browsers register; one dials the other; assert audio path + signaling. Verifies the end-to-end design from `DESIGN.md §6` against a deployed system. |
+| `pbx-agent/src/main/main.cpp` — agent reactor + CloudConnector + AceSslTransportFactory + SipFrameDemux + AriClient + AriWsClient + tiny reconnect supervisor + MongodbClient | ✅ Linked + `--help` clean. Two placeholders documented inline: `NoopAriRest` (the admission `continue` REST call is not wired yet) and `StubAsteriskFactory` (the per-stream WS connection to local Asterisk's `chan_pjsip` is not wired yet). Both placeholders log loudly and the rest of the agent works around them. |
+| Cloud bootstrap in `webservice_main.cpp` — instantiate `SipBridge` + `CloudTunnelEndpoint`; wire `bridge.set_push_notify_handler` (placeholder: log only — `PushSender` not yet wired); wire `bridge.set_cdr_push_handler` → `MongodbClient::create_document("cdr", payload)` | ✅ Both `--remote-db` and local-Mongo modes patched; cloud binary `pbx-cloud` builds + `--help` clean. |
+| CMake `pbx-agent` + `pbx-cloud` build targets | ✅ Both binaries link; `BUILD_BINARIES=ON` is on by default. `docker/Dockerfile.test` builds them alongside `offtarget`. |
+| Real `AsteriskWsFactory` (replaces `StubAsteriskFactory`) — plain-TCP + WS upgrade to `ws://127.0.0.1:8088/ws` (chan_pjsip transport). Same pattern as `AriWsClient`. | ⏳ Next |
+| Real `IAriRest` impl — REST POSTs to `/ari/applications/.../subscription` and `/ari/channels/.../continue` (admission-busy redirect). | ⏳ |
+| Real `PushSender` wiring on cloud — instantiate with VAPID keys from env, pass into the bridge's push handler | ⏳ |
+| `docker-compose.agent.yml` — Asterisk LTS + coturn + MongoDB + `pbx-agent` binary | ⏳ |
+| `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) | ⏳ |
+| `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker) | ⏳ |
+| Playwright E2E | ⏳ |
 
-The TDD-style coverage stays the same shape — every Layer 4 piece either has its own GTest suite (where it's pure logic, like the `pbx-agent/main` startup sequence) or an integration test (where it's I/O-bound, like the docker-compose tunnel test).
+The TDD-style coverage stays the same shape — every Layer 4 piece either has its own GTest suite (where it's pure logic) or an integration test (where it's I/O-bound).
 
 ## Implementation order
 

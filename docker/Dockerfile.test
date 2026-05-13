@@ -14,8 +14,8 @@ COPY pbx-agent/    /src/pbx-agent/
 COPY test/         /src/test/
 
 WORKDIR /src/build
-RUN cmake -DBUILD_TESTS=ON .. \
- && make -j"$(nproc)" offtarget
+RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
+ && make -j"$(nproc)" offtarget pbx-agent pbx-cloud
 
 WORKDIR /src/build/test
 # Three inherited xpmile tests depend on a live MongoDB or have drifted

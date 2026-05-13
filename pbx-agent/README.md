@@ -1,6 +1,6 @@
 # pbx-agent — on-prem daemon
 
-> **Status:** ✅ Layer 2 complete. 🔄 Layer 3 ACE-binding work in progress: `AceSslTransport` (outbound mTLS dial for `CloudConnector`) ✅. `AriWsClient` (Asterisk ARI events feed) ✅. `HandoffOrdering` test remaining.
+> **Status:** ✅ Layer 2 complete. ✅ Layer 3 ACE bindings complete (`AceSslTransport`, `AriWsClient`, plus the cloud-side `BrowserStream`/`AgentStream` and `HandoffOrdering` source-invariant test). 🔄 Layer 4 wiring in progress: `pbx-agent/src/main/main.cpp` ships + `--help` works; `pbx-agent` binary links with two documented placeholders (`NoopAriRest`, `StubAsteriskFactory`) that the next slices replace.
 
 C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to xpmile's `wsdbagent` (the analog directory in xpmile is `xpmile/onprem/` — same role, different name).
 

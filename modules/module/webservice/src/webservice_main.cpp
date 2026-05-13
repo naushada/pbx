@@ -1,4 +1,7 @@
+#include "cloud_tunnel_endpoint.hpp"
 #include "emailservice.hpp"
+#include "json.hpp"
+#include "sip_bridge.hpp"
 #include "webservice.hpp"
 #include "wsdbproxy.hpp"
 
@@ -164,12 +167,79 @@ int main(int argc, char *argv[]) {
     auto proxy = std::make_unique<WsMongodbProxy>(*wsServer);
     WebServer inst(opt[idx(Arg::SERVER_IP)], port, worker,
                    std::move(proxy), std::move(wsServer));
+
+    // ── onprem-pbx control plane bootstrap (remote-db mode) ─────────────
+    // CloudTunnelEndpoint accepts the on-prem agent's /agent WS upgrade
+    // (see WebConnection::handle_input). SipBridge multiplexes every
+    // browser /sip-ws session onto that single tunnel. They share the
+    // WebServer's MongoDB client for cdr/push-subscriptions writes.
+    auto endpoint = std::make_unique<CloudTunnelEndpoint>();
+    auto bridge   = std::make_unique<SipBridge>(endpoint.get());
+    endpoint->attach_bridge(bridge.get());
+
+    // Wire bridge → cloud-side dispatch hooks.
+    //
+    // TODO(layer-4-push): swap this for `PushSender::notify(subscriberId,
+    // payload)` once VAPID keys + IPushHttpClient are wired from config.
+    bridge->set_push_notify_handler(
+        [](const std::string &payload) {
+          ACE_DEBUG((LM_INFO,
+                     ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY received "
+                              "(PushSender not yet wired): %s\n"),
+                     payload.c_str()));
+        });
+
+    // CDR_PUSH: the agent finalized a CDR doc and is shipping it up.
+    // Write into the `cdr` collection via the WebServer's MongodbClient.
+    {
+      IMongodbClient *db_ptr = inst.mongodbcInst();
+      bridge->set_cdr_push_handler(
+          [db_ptr](const std::string &payload) {
+            if (!db_ptr) return;
+            // The agent ships the doc as JSON (CDR document, not BSON —
+            // BSON conversion happens in MongodbClient::create_document).
+            db_ptr->create_document(db_ptr->get_database(), "cdr", payload);
+          });
+    }
+
+    inst.setCloudTunnelEndpoint(std::move(endpoint));
+    inst.setSipBridge(std::move(bridge));
+
     inst.start();
   } else {
     WebServer inst(opt[idx(Arg::SERVER_IP)], port, worker,
                    opt[idx(Arg::DB_URI)],
                    opt[idx(Arg::DB_CONN_POOL)],
                    opt[idx(Arg::DB_NAME)]);
+
+    // ── onprem-pbx control plane bootstrap (local-db mode) ──────────────
+    // Mirror of the block above. The agent dial-in path is the same in
+    // both modes — what differs is where the cloud's Mongo data lives
+    // (local Mongo vs. remote on-prem Mongo via wsdbagent).
+    auto endpoint = std::make_unique<CloudTunnelEndpoint>();
+    auto bridge   = std::make_unique<SipBridge>(endpoint.get());
+    endpoint->attach_bridge(bridge.get());
+
+    bridge->set_push_notify_handler(
+        [](const std::string &payload) {
+          ACE_DEBUG((LM_INFO,
+                     ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY received "
+                              "(PushSender not yet wired): %s\n"),
+                     payload.c_str()));
+        });
+
+    {
+      IMongodbClient *db_ptr = inst.mongodbcInst();
+      bridge->set_cdr_push_handler(
+          [db_ptr](const std::string &payload) {
+            if (!db_ptr) return;
+            db_ptr->create_document(db_ptr->get_database(), "cdr", payload);
+          });
+    }
+
+    inst.setCloudTunnelEndpoint(std::move(endpoint));
+    inst.setSipBridge(std::move(bridge));
+
     inst.start();
   }
   return 0;
