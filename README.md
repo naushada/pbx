@@ -28,10 +28,11 @@ See:
 | 3   | `BrowserStream` — first concrete ACE binding (ACE_Event_Handler + BrowserSink). Retires the `/sip-ws` 503 stub: real WS hand-off now lives | ✅ Complete |
 | 3   | `AgentStream` — cloud-side ACE binding for `/agent` (ACE_Event_Handler + private TransportAdapter implementing IAgentTransport). Retires the `/agent` stub | ✅ Complete |
 | 3   | `AceSslTransport` + factory — agent-side outbound mTLS + WS upgrade dial. Concrete `ITransport` for `CloudConnector`'s factory | ✅ Complete |
-| 3   | Asterisk ARI WS-events client, `HandoffOrdering` test | ⏳ Next |
+| 3   | `AriWsClient` — plain-TCP WS client for Asterisk `/ari/events`; HTTP Basic auth; pushes each JSON event into `AriClient::on_event` | ✅ Complete |
+| 3   | `HandoffOrdering` test | ⏳ Next |
 | 4+  | Angular UI, Playwright E2E, podman-compose Asterisk integration | ⏳ Not started |
 
-**Test totals: 290/290 passing across 31 suites** — our 178 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 14, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12, TunnelE2E 8, BrowserStream 8, AgentStream 9, **AceSslTransport 10**) + 112 inherited from xpmile (regression guard).
+**Test totals: 304/304 passing across 32 suites** — our 192 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 14, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12, TunnelE2E 8, BrowserStream 8, AgentStream 9, AceSslTransport 10, **AriWsClient 14**) + 112 inherited from xpmile (regression guard).
 
 ### Skipped tests
 

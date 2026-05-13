@@ -1,6 +1,6 @@
 # pbx-agent — on-prem daemon
 
-> **Status:** ✅ Layer 2 complete. 🔄 Layer 3 ACE-binding work in progress: `AceSslTransport` (outbound mTLS + WS upgrade dial for `CloudConnector`) shipped; ARI WS-events client + `HandoffOrdering` test remaining.
+> **Status:** ✅ Layer 2 complete. 🔄 Layer 3 ACE-binding work in progress: `AceSslTransport` (outbound mTLS dial for `CloudConnector`) ✅. `AriWsClient` (Asterisk ARI events feed) ✅. `HandoffOrdering` test remaining.
 
 C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to xpmile's `wsdbagent` (the analog directory in xpmile is `xpmile/onprem/` — same role, different name).
 
@@ -11,6 +11,7 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 | `SipFrameDemux`   | `src/main/sip_frame_demux.{hpp,cpp}`   | ✅ Complete | Receives frames off the cloud tunnel; opens (or reuses) a per-stream local socket to Asterisk's `ws://127.0.0.1:8088/ws`; pipes bytes in both directions. |
 | `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops. Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lives in `src/main/ace_ssl_transport.{hpp,cpp}` (Layer 3). |
 | `AceSslTransport` | `src/main/ace_ssl_transport.{hpp,cpp}` | ✅ Complete (Layer 3) | Concrete `ITransport` for `CloudConnector`. ACE_SSL_Context + ACE_SSL_SOCK_Connector dial; HTTP WebSocket upgrade to `/agent`; post-upgrade WS-frame layer on top of the SSL stream. Includes the matching `AceSslTransportFactory` that plugs into `CloudConnector::ITransportFactory`. |
+| `AriWsClient`     | `src/main/ari_ws_client.{hpp,cpp}`     | ✅ Complete (Layer 3) | Plain-TCP WS client to Asterisk `/ari/events`. HTTP Basic auth in the upgrade request (kept out of the URL so the password doesn't end up in webserver logs). Pushes each inbound JSON text frame to `AriClient::on_event`. Reconnect is the caller's concern. |
 | `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
 | `MongoSink`       | (uses [`mongodb/`](../modules/module/mongodb/README.md)) | ⏳ Layer 2 | Persists CDR rows and replicates subscriber records pushed from the cloud over `OPEN` frames. |
 
@@ -259,6 +260,99 @@ The actual SSL handshake happy path is integration territory (OpenSSL is not soc
 - `FactoryUnreachableHost_ReturnsNullptr` — `127.0.0.1:1` is not listening; factory's `create_connected` returns nullptr cleanly within the 10s timeout (no segfault, no exception leak).
 
 The full TLS-handshake happy path lands in Layer 4 podman-compose integration.
+
+---
+
+## AriWsClient
+
+Plain-TCP WebSocket client for Asterisk's `/ari/events` push stream. Asterisk's ARI port is loopback-only on the on-prem host, so no TLS — but **authentication is still required**. The client uses HTTP Basic in the upgrade request (kept out of the URL so the password doesn't land in webserver logs).
+
+### Dial-out flow
+
+1. `ACE_SOCK_Connector::connect` (plain TCP) to `127.0.0.1:8088` with a 10-second timeout.
+2. Send an HTTP/1.1 GET request:
+   ```
+   GET /ari/events?app=pbx HTTP/1.1
+   Host: 127.0.0.1
+   Upgrade: websocket
+   Connection: Upgrade
+   Sec-WebSocket-Key: <random base64>
+   Sec-WebSocket-Version: 13
+   Authorization: Basic <base64(user:pass)>
+   ```
+3. Read response headers until `CRLFCRLF`.
+4. `validate_upgrade_response`: HTTP/1.x 101 + matching `Sec-WebSocket-Accept`.
+
+### Post-upgrade traffic
+
+The wire is read-only from the cloud's standpoint — Asterisk pushes events, we don't write anything except PONG/CLOSE replies. Each text frame is one JSON event ready for `AriClient::on_event(payload)`.
+
+### Lifetime
+
+`AriWsClient` is owned by the caller (typically the `pbx-agent` main loop), not by ACE. `handle_close` cleans up but does NOT `delete this`. Reconnect on Asterisk restart is the caller's concern — a tiny supervisor loop in `main` checks `connected()` and calls `connect_and_handshake()` again. Keeping reconnect out of `AriWsClient` keeps the class surface small and testable.
+
+### Public API
+
+```cpp
+class AriWsClient : public ACE_Event_Handler {
+public:
+  struct Config {
+    std::string   host     = "127.0.0.1";
+    std::uint16_t port     = 8088;
+    std::string   app_name = "pbx";
+    std::string   username = "asterisk";
+    std::string   password = "asterisk";
+  };
+
+  // Production
+  AriWsClient(Config, std::function<void(const std::string&)> on_event,
+              std::function<void()> on_disconnect = {});
+  // Test — takes a pre-connected fd; skips connect + reactor registration
+  AriWsClient(ACE_HANDLE, std::function<void(const std::string&)> on_event,
+              std::function<void()> on_disconnect = {});
+
+  bool connect_and_handshake();
+  int  register_with_reactor(ACE_Reactor*);
+
+  // ACE_Event_Handler
+  int        handle_input(ACE_HANDLE)                          override;
+  int        handle_close(ACE_HANDLE, ACE_Reactor_Mask)        override;
+  ACE_HANDLE get_handle() const                                override;
+
+  void close();
+  bool connected() const;
+
+  // Pure-logic (public for unit tests)
+  static std::pair<std::string, std::string>
+       build_upgrade_request(const std::string& host, const std::string& app,
+                              const std::string& user, const std::string& pass);
+  static bool
+       validate_upgrade_response(const std::string& headers,
+                                  const std::string& sec_websocket_key);
+  static std::string base64_encode(const std::string&);
+};
+```
+
+### Behaviour pinned by tests (`src/test/ari_ws_client_test.cc` — 14 tests)
+
+Pure logic:
+- `Base64Encode_KnownVectors` — RFC 4648 §10 vectors (`""`, `"f"`, `"fo"`, …, `"foobar"`).
+- `Base64Encode_BasicAuthString` — `asterisk:asterisk` → `YXN0ZXJpc2s6YXN0ZXJpc2s=`.
+- `BuildUpgradeRequest_IncludesAppParam` — request line includes `?app=pbx`.
+- `BuildUpgradeRequest_IncludesBasicAuth` — `Authorization: Basic …` header present.
+- `BuildUpgradeRequest_HasRequiredWsHeaders` — `Upgrade`, `Connection`, `Sec-WebSocket-Version: 13`, key echoed.
+- `BuildUpgradeRequest_GeneratesUniqueKeys` — 100 sequential builds, all unique.
+- `ValidateUpgradeResponse_AcceptsCorrect101`, `…Rejects401`.
+
+socketpair-driven dispatch:
+- `OnInput_TextFrame_DispatchesToOnEvent` — masked WS text containing a real ARI JSON event hits the callback.
+- `OnInput_PingTriggersPong` — auto-reply.
+- `OnInput_CloseFrame_DisconnectsClient` — disconnect callback fires; `handle_input` returns `-1`.
+- `MultipleFramesInOneRead` — two consecutive `BridgeCreated` / `BridgeDestroyed` events.
+- `PartialFrameAcrossReads` — frame split across two `handle_input` calls reassembles.
+
+Smoke:
+- `ConnectUnreachable_ReturnsFalse` — `127.0.0.1:1` not listening; clean nullptr.
 
 ---
 
