@@ -32,9 +32,78 @@ See:
 | 3   | `HandoffOrdering` source-invariant test — guards the xpmile-CLAUDE.md `remove_handler → m_handle=INVALID → publish` ordering for all 3 WS upgrade branches (`/sip-ws`, `/agent`, `/ws/db`) | ✅ Complete |
 | 4+  | Angular UI, Playwright E2E, podman-compose Asterisk integration | ⏳ Not started |
 
-**Test totals: 312/312 passing across 33 suites** — our 200 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 14, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14, CloudConnector 11, AriClient 11, CloudTunnelEndpoint 12, TunnelE2E 8, BrowserStream 8, AgentStream 9, AceSslTransport 10, AriWsClient 14, **HandoffOrdering 8**) + 112 inherited from xpmile (regression guard).
+### Test totals: **312/312 across 33 suites**
 
-**Layer 3 is feature-complete.** The full agent + cloud control plane has real ACE bindings end-to-end, and the WebConnection hand-off ordering is defended against future regressions.
+| Layer | Suites | Tests |
+|-------|--------|------:|
+| 0     | HttpParser 20 + MessageParserBase 8 + SipParser 17 + SipFrame 10 | **55** |
+| 1     | SipBridge 14 + MicroServicePbx 11 + MicroServiceRouting 7 + PushSender 8 | **40** |
+| 2     | SipFrameDemux 14 + CloudConnector 11 + AriClient 11 + CloudTunnelEndpoint 12 | **48** |
+| 3     | TunnelE2E 8 + BrowserStream 8 + AgentStream 9 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 | **57** |
+| regression | inherited xpmile suites (verbatim copy) | **112** |
+| **Total** | **33 suites** | **312** |
+
+**Layer 3 is feature-complete.** The full cloud + agent control plane has real ACE bindings end-to-end, and the `WebConnection` hand-off ordering is defended against future regressions by a source-invariant test.
+
+## Architecture (end of Layer 3)
+
+```
+Heroku cloud (C++ / ACE)                  pbx-agent (C++ / ACE) — on-prem
+────────────────────────                  ──────────────────────────────
+                                                                       
+WebServer                                                              
+  ├─ WebConnection (per inbound socket)                                
+  │    ├─ /sip-ws upgrade ─► BrowserStream ◄──┐                        
+  │    ├─ /agent  upgrade ─► AgentStream  ◄──┐│                        
+  │    ├─ /ws/db  upgrade ─► WsDbServer       ││ (xpmile, unchanged)   
+  │    └─ REST/portal     ─► MicroService     ││                       
+  │                          ├─ xpmile routes ││                       
+  │                          └─ dispatch_pbx_routes ─► MicroServicePbx 
+  │                                            ││                       
+  ├─ SipBridge       ◄──────TunnelSink────► CloudTunnelEndpoint        
+  │   ├─ set_push_notify_handler ──────► (PushSender::notify hook)     
+  │   └─ set_cdr_push_handler    ──────► (Mongo CDR writer hook)       
+  │                                                                    
+  └─ MongoDB ◄──── wsdbproxy ─── wsdbagent ──── on-prem Mongo          
+                                                                       
+                                                              ┌───────►│ AceSslTransport
+                                                              │        │   ↑      ↓
+                              WS over mTLS (Heroku /agent) ◄──┴────────┤   │      │
+                                                                       │ CloudConnector
+                                                                       │   ↓      ↑
+                                                                       │ SipFrameDemux
+                                                                       │   ↓
+                                                                       │ IAsteriskFactory
+                                                                       │    │
+                                                                       │    └► Asterisk WS
+                                                                       │       (chan_pjsip,
+                                                                       │        ws://127:8088)
+                                                                       │
+                                                                       │ AriClient ◄── AriWsClient
+                                                                       │  ├─ admission counter
+                                                                       │  ├─ CDR ─► Mongo
+                                                                       │  └─ PUSH_NOTIFY ────┐
+                                                                       │                     │
+                                                                       │  CloudConnector ◄───┘
+                                                                       │  .send_frame(…)
+                                                                       │       ↑
+                                                                       │       └── (also from
+                                                                       │              SipFrameDemux
+                                                                       │              upstream
+                                                                       │              answers)
+                                                                       └───────────────────────
+```
+
+### How traffic flows
+
+**Browser INVITE → Asterisk:**
+`Browser WSS → /sip-ws upgrade → BrowserStream.handle_input → SipBridge.on_browser_data → CloudTunnelEndpoint.send_frame → AgentStream WS → AceSslTransport ← (wire) → CloudConnector.on_bytes_received → SipFrameDemux → local Asterisk WS`
+
+**Asterisk reply / events → Browser:**
+`Asterisk WS → SipFrameDemux.on_asterisk_data → CloudConnector.send_frame → AceSslTransport (wire) → AgentStream.handle_input → CloudTunnelEndpoint.on_bytes_received → SipBridge → BrowserStream.send_bytes → Browser WSS`
+
+**Asterisk hangup → Mongo CDR + push:**
+`Asterisk → AriWsClient → AriClient.on_event(ChannelDestroyed) → CDR written locally + PUSH_NOTIFY frame → CloudConnector → AgentStream → SipBridge → bridge.cdr_push_handler / push_notify_handler hooks`
 
 ### Skipped tests
 
@@ -52,64 +121,95 @@ Override the filter to include them once a Mongo fixture is wired up:
 podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 --gtest_filter='*'
 ```
 
-## Build & run (Layer 0)
+## Build & run
 
 All container operations use **podman** (not docker). Same toolchain as xpmile.
 
 ```sh
 # Build the test image. Reuses the cached `pbx-cpp-builder:bootstrap`
 # image (a tagged snapshot of xpmile's cpp-builder stage with ACE/TAO 7.0.0,
-# googletest, and mongo-cxx-driver already installed under /usr/local).
-# Build time: ~30–60 s.
-podman build -f docker/Dockerfile.test -t onprem-pbx-test:layer1 .
+# googletest, mongo-cxx-driver, and OpenSSL already installed under /usr/local).
+# Build time: ~60 s.
+podman build -f docker/Dockerfile.test -t onprem-pbx-test:latest .
 
-# Run all GTest suites.
-podman run --rm onprem-pbx-test:layer1
+# Run all GTest suites (3 inherited xpmile tests skipped by default — see
+# §Skipped tests below).
+podman run --rm onprem-pbx-test:latest
 
 # Filter to a specific suite (override the entrypoint to pass flags).
-podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 \
-  --gtest_filter='SipParser.*'
+podman run --rm --entrypoint ./offtarget onprem-pbx-test:latest \
+  --gtest_filter='SipBridge.*:TunnelE2E.*'
+
+# Filter by layer (rough — every suite name maps to a layer in the totals
+# table above):
+podman run --rm --entrypoint ./offtarget onprem-pbx-test:latest \
+  --gtest_filter='HandoffOrdering.*:BrowserStream.*:AgentStream.*:AceSslTransport.*:AriWsClient.*:TunnelE2E.*'
 ```
 
-If `pbx-cpp-builder:bootstrap` is not present locally (e.g. on a fresh
-machine), see [`docker/Dockerfile.test`](./docker/Dockerfile.test) — a
-from-scratch Dockerfile mirroring xpmile's full cpp-builder lands with
-Layer 1 when we need the rest of the toolchain.
+If `pbx-cpp-builder:bootstrap` is not present locally (fresh machine), the
+from-scratch Dockerfile mirroring xpmile's full cpp-builder is at
+[`docker/Dockerfile.test`](./docker/Dockerfile.test) and rebuilds the
+toolchain in ~30 min.
 
 ## Repo layout
 
 ```
 modules/module/
   http/         # MessageParser base + Http subclass (xpmile origin, refactored)
-                #   inc/  message_parser.hpp, http_parser.hpp
-                #   src/  message_parser.cpp,  http_parser.cpp
-                #   test/ httpparser_test.{cc,hpp} (regression),
-                #         message_parser_test.cc
+                #   inc:  message_parser.hpp, http_parser.hpp
+                #   src:  message_parser.cpp, http_parser.cpp
+                #   test: httpparser_test (regression), message_parser_test
   sip/          # Sip subclass + compact-header alias table (new)
-                #   inc/  sip_parser.hpp
-                #   src/  sip_parser.cpp
-                #   test/ sip_parser_test.cc
-  pbx/          # Cloud-side tunnel framing + (later) SipBridge, PushSender
-                #   inc/  sip_frame.hpp
-                #   src/  sip_frame.cpp
-                #   test/ sip_frame_test.cc
-  webservice/   # ACE WebServer / WebConnection / MicroService — Layer 1
-  mongodb/      # MongodbClient pool — copied with Layer 2
-  wsdbproxy/    # cloud-side Mongo-over-WSS proxy — copied with Layer 2
-  email/        # CSV-import credential emails — copied with Layer 1
+                #   inc/sip_parser.hpp  src/sip_parser.cpp  test/sip_parser_test
+  pbx/          # Cloud-side PBX components — the project's biggest module
+                #   inc:  sip_frame, sip_bridge, tunnel_sink,
+                #         microservice_pbx, push_sender,
+                #         cloud_tunnel_endpoint, browser_stream,
+                #         agent_stream
+                #   src:  matching .cpp files
+                #   test: matching _test.cc files
+  webservice/   # ACE WebServer / WebConnection / MicroService
+                # (xpmile copy, patched: dispatch_pbx_routes,
+                #  /sip-ws + /agent upgrades, BrowserStream + AgentStream
+                #  + CloudTunnelEndpoint wiring, sipBridge() accessor)
+  mongodb/      # MongodbClient pool (xpmile copy, verbatim)
+  wsdbproxy/    # Cloud-side Mongo-over-WSS proxy (xpmile copy, verbatim)
+  email/        # SMTP FSM (xpmile copy, verbatim)
+  security/     # innertls.cpp — transitively needed by wsdbproxy (xpmile copy)
+  thirdparty/   # nlohmann/json.hpp
 
-pbx-agent/      # On-prem daemon (ACE_SSL_SOCK_Connector dial-out,
-                # SipFrameDemux, AriClient) — Layer 2.
+pbx-agent/      # On-prem daemon — Layer 2 + Layer 3 ACE bindings.
+  src/main/     # sip_frame_demux, cloud_connector, ari_client,
+                # ace_ssl_transport, ari_ws_client
+  src/test/     # matching _test.cc files
 
-ui/             # Angular softphone (Clarity + SIP.js + Service Worker)
-                # — Layer 5.
+test/
+  integration/  # Layer 3: tunnel_e2e, handoff_ordering (source-invariant)
+  main.cc       # GTest entrypoint
+  CMakeLists.txt
 
-docker/         # Dockerfiles. Today: Dockerfile.test (Layer 0 fast path).
-docs/           # Long-form design docs and security analysis.
-test/           # offtarget binary scaffolding (CMakeLists.txt, main.cc).
-scripts/        # Build/deploy helpers.
-certs/          # Local-dev cert material (gitignored except templates).
+docker/         # Dockerfile.test (only Dockerfile today; multi-stage
+                # production images come with Layer 4)
+docs/           # PRD, DESIGN, TDD-PLAN are at the root; sub-design docs land here
+ui/             # Angular softphone — Layer 4
+scripts/        # Build/deploy helpers — Layer 4
+certs/          # Local-dev cert material (gitignored except templates)
 ```
+
+## What's left to ship (Layer 4)
+
+Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deployment-and-product surface — none of it changes the tested core. Roughly:
+
+| Component | Why it's Layer 4 |
+|---|---|
+| `pbx-agent/src/main/main.cpp` | Wires the ACE reactor, `CloudConnector` + `AceSslTransportFactory`, `SipFrameDemux` with a real Asterisk factory, `AriClient` + `AriWsClient` (with a tiny reconnect supervisor), `MongodbClient`. Pure glue — no new logic. |
+| Production cloud bootstrap | Instantiate `SipBridge` + `CloudTunnelEndpoint`; wire `bridge.set_push_notify_handler` → `PushSender::notify`; wire `bridge.set_cdr_push_handler` → a Mongo writer in the `cdr` collection. |
+| `docker-compose.agent.yml` | Real Asterisk LTS + coturn + MongoDB + agent binary in one compose. The integration tests for `AceSslTransport`'s real TLS path and `AriWsClient`'s real Asterisk path land here. |
+| `docker-compose.heroku.yml` + `deploy-heroku.sh` | Multi-stage production image with the Angular UI baked in; clone of xpmile's deploy script. |
+| `ui/` (Angular softphone) | SIP.js + WebRTC client, Clarity UI per xpmile conventions, Service Worker for Web Push wake-up. The state machines on the cloud side are already wired for the events; this is the client. |
+| Playwright E2E | Real browser hits real Heroku (or local compose); two browsers register; one dials the other; assert audio path + signaling. Verifies the end-to-end design from `DESIGN.md §6` against a deployed system. |
+
+The TDD-style coverage stays the same shape — every Layer 4 piece either has its own GTest suite (where it's pure logic, like the `pbx-agent/main` startup sequence) or an integration test (where it's I/O-bound, like the docker-compose tunnel test).
 
 ## Implementation order
 
