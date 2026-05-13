@@ -72,7 +72,8 @@ if(BUILD_BINARIES)
        "modules/module/pbx/src/browser_stream.cpp"
        "modules/module/pbx/src/agent_stream.cpp"
        "modules/module/pbx/src/microservice_pbx.cpp"
-       "modules/module/pbx/src/push_sender.cpp")
+       "modules/module/pbx/src/push_sender.cpp"
+       "modules/module/pbx/src/ace_https_client.cpp")
   add_executable(pbx-cloud ${PBX_CLOUD_SRC})
   target_link_libraries(pbx-cloud pthread)
   target_link_libraries(pbx-cloud ACE)

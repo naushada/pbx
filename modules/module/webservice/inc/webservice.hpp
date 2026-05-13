@@ -71,6 +71,8 @@ enum class CommandArgumentName : std::uint32_t {
   TLS_KEY,
   TLS_CA,
   MIGRATE_PASSWORDS,
+  VAPID_KEY_PATH,
+  VAPID_SUBJECT,
   MAX_CMD_ARG
 };
 

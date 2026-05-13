@@ -1,9 +1,16 @@
+#include "ace_https_client.hpp"
 #include "cloud_tunnel_endpoint.hpp"
 #include "emailservice.hpp"
 #include "json.hpp"
+#include "push_sender.hpp"
 #include "sip_bridge.hpp"
 #include "webservice.hpp"
 #include "wsdbproxy.hpp"
+
+#include <ctime>
+#include <fstream>
+#include <memory>
+#include <sstream>
 
 namespace {
 
@@ -14,6 +21,68 @@ constexpr std::size_t N = idx(Arg::MAX_CMD_ARG);
 int opt_int(const std::array<std::string, N> &opt, Arg key, int default_val) {
   const auto &s = opt[idx(key)];
   return s.empty() ? default_val : std::stoi(s);
+}
+
+// System wall-clock for VAPID JWT `exp` claim.
+class SystemClock : public IClock {
+public:
+  std::int64_t now_unix() const override {
+    return static_cast<std::int64_t>(std::time(nullptr));
+  }
+};
+
+std::string read_file_to_string(const std::string &path) {
+  std::ifstream f(path);
+  if (!f.is_open()) return {};
+  std::stringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+/// Construct a PushSender (or nullptr if VAPID config is incomplete) and
+/// return both the sender + its dependencies so the caller can keep them
+/// alive for the WebServer's lifetime.
+struct PushDeps {
+  std::unique_ptr<AceHttpsClient> http;
+  std::unique_ptr<SystemClock>    clock;
+  std::unique_ptr<PushSender>     sender;
+};
+
+PushDeps make_push_deps(const std::array<std::string, N> &opt,
+                         IMongodbClient *db_ptr) {
+  PushDeps deps;
+  const std::string &key_path = opt[idx(Arg::VAPID_KEY_PATH)];
+  const std::string &subject  = opt[idx(Arg::VAPID_SUBJECT)];
+  if (key_path.empty() || subject.empty() || !db_ptr) {
+    ACE_DEBUG((LM_WARNING,
+               ACE_TEXT("%D [pbx-cloud] PushSender disabled: "
+                        "--vapid-key-path=%s --vapid-subject=%s db=%p\n"),
+               key_path.c_str(), subject.c_str(),
+               static_cast<void *>(db_ptr)));
+    return deps;
+  }
+  const std::string pem = read_file_to_string(key_path);
+  if (pem.empty()) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-cloud] PushSender: failed to read VAPID "
+                        "key file '%s'; PUSH_NOTIFY will be log-only\n"),
+               key_path.c_str()));
+    return deps;
+  }
+
+  PushSender::Config cfg;
+  cfg.vapid_private_pem = pem;
+  cfg.vapid_subject     = subject;
+
+  deps.http   = std::make_unique<AceHttpsClient>();
+  deps.clock  = std::make_unique<SystemClock>();
+  deps.sender = std::make_unique<PushSender>(std::move(cfg), *deps.http,
+                                              *db_ptr, *deps.clock);
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-cloud] PushSender ready (subject=%s, "
+                      "public key=%s)\n"),
+             subject.c_str(), deps.sender->vapid_public_b64url().c_str()));
+  return deps;
 }
 
 void print_usage(const char *prog) {
@@ -33,6 +102,8 @@ void print_usage(const char *prog) {
                       "  --tls-cert               <path>  Server certificate (PEM, mTLS mode)\n"
                       "  --tls-key                <path>  Server private key  (PEM, mTLS mode)\n"
                       "  --tls-ca                 <path>  CA cert for verifying agent cert (PEM)\n"
+                      "  --vapid-key-path         <path>  ECDSA P-256 PEM for Web Push (RFC 8292); if unset, PUSH_NOTIFY is logged but not sent\n"
+                      "  --vapid-subject          <uri>   mailto:ops@... for the VAPID `sub` claim\n"
                       "  --migrate-passwords              Hash plain-text account passwords and exit\n"
 "  --help                           Show this help\n"),
              prog));
@@ -47,7 +118,7 @@ int main(int argc, char *argv[]) {
 
   std::array<std::string, N> opt{};
 
-  ACE_Get_Opt args(argc, argv, ACE_TEXT("s:p:w:u:c:d:n:i:o:a:e:k:q:rhm"), 1);
+  ACE_Get_Opt args(argc, argv, ACE_TEXT("s:p:w:u:c:d:n:i:o:a:e:k:q:V:S:rhm"), 1);
   args.long_option(ACE_TEXT("server-ip"),               's', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("server-port"),             'p', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("server-worker"),           'w', ACE_Get_Opt::ARG_REQUIRED);
@@ -63,6 +134,8 @@ int main(int argc, char *argv[]) {
   args.long_option(ACE_TEXT("tls-key"),                 'k', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("tls-ca"),                  'q', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("migrate-passwords"),       'm', ACE_Get_Opt::NO_ARG);
+  args.long_option(ACE_TEXT("vapid-key-path"),          'V', ACE_Get_Opt::ARG_REQUIRED);
+  args.long_option(ACE_TEXT("vapid-subject"),           'S', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("help"),                    'h', ACE_Get_Opt::NO_ARG);
 
   // Short-option char → enum key table
@@ -80,6 +153,8 @@ int main(int argc, char *argv[]) {
     {'e', Arg::TLS_CERT},
     {'k', Arg::TLS_KEY},
     {'q', Arg::TLS_CA},
+    {'V', Arg::VAPID_KEY_PATH},
+    {'S', Arg::VAPID_SUBJECT},
   };
 
   int c;
@@ -181,13 +256,42 @@ int main(int argc, char *argv[]) {
     //
     // TODO(layer-4-push): swap this for `PushSender::notify(subscriberId,
     // payload)` once VAPID keys + IPushHttpClient are wired from config.
-    bridge->set_push_notify_handler(
-        [](const std::string &payload) {
-          ACE_DEBUG((LM_INFO,
-                     ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY received "
-                              "(PushSender not yet wired): %s\n"),
-                     payload.c_str()));
-        });
+    // If VAPID is configured, instantiate PushSender and route the
+    // bridge's push handler through it. The handler payload is the
+    // PUSH_NOTIFY JSON the agent shipped:
+    //   {"subscriberId":"u1","callerFlat":"A-101","callId":"abc"}
+    // PushSender::notify looks up `push_subscriptions` by subscriberId
+    // and POSTs an encrypted VAPID notification to each endpoint.
+    PushDeps push_deps = make_push_deps(opt, inst.mongodbcInst());
+    if (push_deps.sender) {
+      PushSender *sender = push_deps.sender.get();
+      bridge->set_push_notify_handler(
+          [sender](const std::string &payload) {
+            try {
+              const auto j = nlohmann::json::parse(payload);
+              if (!j.contains("subscriberId") ||
+                  !j["subscriberId"].is_string()) return;
+              const std::string sub_id =
+                  j["subscriberId"].get<std::string>();
+              sender->notify(sub_id, payload);
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] push handler: %s\n"),
+                         e.what()));
+            }
+          });
+      ACE_DEBUG((LM_INFO,
+                 ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY → PushSender wired\n")));
+    } else {
+      bridge->set_push_notify_handler(
+          [](const std::string &payload) {
+            ACE_DEBUG((LM_INFO,
+                       ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY received "
+                                "(PushSender not configured — see "
+                                "--vapid-key-path / --vapid-subject): %s\n"),
+                       payload.c_str()));
+          });
+    }
 
     // CDR_PUSH: the agent finalized a CDR doc and is shipping it up.
     // Write into the `cdr` collection via the WebServer's MongodbClient.
@@ -220,13 +324,42 @@ int main(int argc, char *argv[]) {
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
     endpoint->attach_bridge(bridge.get());
 
-    bridge->set_push_notify_handler(
-        [](const std::string &payload) {
-          ACE_DEBUG((LM_INFO,
-                     ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY received "
-                              "(PushSender not yet wired): %s\n"),
-                     payload.c_str()));
-        });
+    // If VAPID is configured, instantiate PushSender and route the
+    // bridge's push handler through it. The handler payload is the
+    // PUSH_NOTIFY JSON the agent shipped:
+    //   {"subscriberId":"u1","callerFlat":"A-101","callId":"abc"}
+    // PushSender::notify looks up `push_subscriptions` by subscriberId
+    // and POSTs an encrypted VAPID notification to each endpoint.
+    PushDeps push_deps = make_push_deps(opt, inst.mongodbcInst());
+    if (push_deps.sender) {
+      PushSender *sender = push_deps.sender.get();
+      bridge->set_push_notify_handler(
+          [sender](const std::string &payload) {
+            try {
+              const auto j = nlohmann::json::parse(payload);
+              if (!j.contains("subscriberId") ||
+                  !j["subscriberId"].is_string()) return;
+              const std::string sub_id =
+                  j["subscriberId"].get<std::string>();
+              sender->notify(sub_id, payload);
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] push handler: %s\n"),
+                         e.what()));
+            }
+          });
+      ACE_DEBUG((LM_INFO,
+                 ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY → PushSender wired\n")));
+    } else {
+      bridge->set_push_notify_handler(
+          [](const std::string &payload) {
+            ACE_DEBUG((LM_INFO,
+                       ACE_TEXT("%D [pbx-cloud] PUSH_NOTIFY received "
+                                "(PushSender not configured — see "
+                                "--vapid-key-path / --vapid-subject): %s\n"),
+                       payload.c_str()));
+          });
+    }
 
     {
       IMongodbClient *db_ptr = inst.mongodbcInst();

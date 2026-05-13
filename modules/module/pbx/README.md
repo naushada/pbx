@@ -13,6 +13,7 @@ Current status:
 | `CloudTunnelEndpoint` | `inc/cloud_tunnel_endpoint.hpp` + `src/cloud_tunnel_endpoint.cpp` | ✅ Complete (Layer 2, /sip-ws swap slice) |
 | `BrowserStream`       | `inc/browser_stream.hpp` + `src/browser_stream.cpp`             | ✅ Complete (Layer 3, ACE binding for `/sip-ws`) |
 | `AgentStream`         | `inc/agent_stream.hpp` + `src/agent_stream.cpp`                 | ✅ Complete (Layer 3, ACE binding for `/agent`) |
+| `AceHttpsClient`      | `inc/ace_https_client.hpp` + `src/ace_https_client.cpp`         | ✅ Complete (Layer 4, concrete `IPushHttpClient` for `PushSender`) |
 
 ---
 

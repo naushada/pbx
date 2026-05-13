@@ -40,9 +40,9 @@ See:
 | 1     | SipBridge 14 + MicroServicePbx 11 + MicroServiceRouting 7 + PushSender 8 | **40** |
 | 2     | SipFrameDemux 14 + CloudConnector 11 + AriClient 11 + CloudTunnelEndpoint 12 | **48** |
 | 3     | TunnelE2E 8 + BrowserStream 8 + AgentStream 9 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 | **57** |
-| 4     | AsteriskWsFactory 13 + AriRestClient 14 | **27** |
+| 4     | AsteriskWsFactory 13 + AriRestClient 14 + AceHttpsClient 13 | **40** |
 | regression | inherited xpmile suites (verbatim copy) | **112** |
-| **Total** | **35 suites** | **339** |
+| **Total** | **36 suites** | **352** |
 
 **Layer 3 is feature-complete.** The full cloud + agent control plane has real ACE bindings end-to-end, and the `WebConnection` hand-off ordering is defended against future regressions by a source-invariant test.
 
@@ -208,7 +208,7 @@ Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deploym
 | CMake `pbx-agent` + `pbx-cloud` build targets | ✅ Both binaries link; `BUILD_BINARIES=ON` is on by default. `docker/Dockerfile.test` builds them alongside `offtarget`. |
 | Real `AsteriskWsFactory` (replaces `StubAsteriskFactory`) — plain-TCP + WS upgrade to `ws://127.0.0.1:8088/ws` (chan_pjsip transport) with `Sec-WebSocket-Protocol: sip` per RFC 7118 §4 | ✅ Complete |
 | Real `IAriRest` impl — `AriRestClient` POSTs to `/ari/applications/{app}/subscription` and `/ari/channels/{cid}/continue` (HTTP Basic auth, URL-encoded path + query) | ✅ Complete |
-| Real `PushSender` wiring on cloud — instantiate with VAPID keys from env, pass into the bridge's push handler | ⏳ |
+| Real `PushSender` wiring on cloud — `AceHttpsClient` for HTTPS POSTs + `SystemClock`; `--vapid-key-path` + `--vapid-subject` CLI flags; both branches of `webservice_main.cpp` patched. If flags unset, log-only stub remains. | ✅ Complete |
 | `docker-compose.agent.yml` — Asterisk LTS + coturn + MongoDB + `pbx-agent` binary | ⏳ |
 | `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) | ⏳ |
 | `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker) | ⏳ |
