@@ -23,22 +23,37 @@ Pinned by **`MicroServiceRouting*`** (7 tests in `modules/module/pbx/test/micros
 - `RoutesSocietyPost`, `RoutesSubscriberImportPost`, `RoutesCdrGet`, `RoutesPushSubscribePost` — each PBX URI fires the right handler.
 - `FallsThroughOnXpmileUri` (`/api/v1/account/login` returns empty), `FallsThroughOnUnknownUri`, `FallsThroughOnWrongMethod` (`GET /api/v1/society`) — xpmile routes stay reachable.
 
-**2. `/sip-ws` upgrade gate in `WebConnection::handle_input`** (added branch)
+**2. `/agent` WebSocket upgrade hand-off** (Layer 2 addition)
+
+Mirror of xpmile's existing `/ws/db` upgrade branch. When the on-prem agent dials in to `/agent`, `WebConnection::handle_input`:
+
+1. Detects the WS upgrade (GET `/agent` + `Sec-WebSocket-Key`).
+2. Sends the `101 Switching Protocols` response.
+3. Hands the raw fd over to `WebServer::cloudTunnelEndpoint()` using the **identical ordering** as the `/ws/db` hand-off:
+   `remove_handler → m_handle = INVALID → publish` → `connectionPool().erase(raw)`.
+
+The production ACE event handler that wraps the agent fd, decodes inbound WS frames, and calls `endpoint.on_bytes_received(payload)` lands with Layer 3 integration (same scope boundary as the agent's `AceSslTransport`). Until then the hand-off logs an info line so monitoring can see that the agent reached us — `endpoint.on_agent_connected` is not yet invoked because the WS-decoding adapter doesn't exist.
+
+**3. `/sip-ws` upgrade gate** (Layer 1 added, Layer 2 enriched)
 
 When a WS upgrade for `/sip-ws` arrives:
 
 1. Call `MicroServicePbx::handle_sipws_upgrade(request)`. Non-empty return = 401 (no `session=…` cookie). Send and close.
-2. Auth ok → send a `503 Service Unavailable` with `X-PBX-Hint: SipBridge tunnel endpoint not yet wired` and close.
+2. Auth ok → return a context-aware 503:
+   - `X-PBX-AgentConnected: yes|no` indicates whether `cloudTunnelEndpoint()->has_agent()` is true.
+   - `X-PBX-Hint:` reads either `"no agent connected yet"` or `"agent connected; BrowserStream binding pending (Layer 3)"`.
 
-Step 2 is a stub: the real `SipBridge::on_browser_upgrade` hand-off needs the cloud-side tunnel endpoint (`CloudTunnelEndpoint`), which lands in Layer 2. The auth-gate behaviour is pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade` / `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
+The real `SipBridge::on_browser_upgrade` hand-off needs the `BrowserStream` ACE event handler (decodes inbound WS frames from the browser, encodes outbound bytes to the browser's WS). That's genuine Layer 3 reactor work — same scope as the agent's `AceSslTransport` and the cloud's WS-decoder for `/agent`.
 
-The xpmile `/ws/db` upgrade branch (immediately below the `/sip-ws` branch in the source) is **unchanged** — both upgrades coexist on the same `WebConnection::handle_input` path with identical hand-off mechanics.
+Auth-gate behaviour is still pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade` / `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
 
-## Upcoming (Layer 2)
+The xpmile `/ws/db` upgrade branch is **unchanged** — three upgrades (`/ws/db`, `/agent`, `/sip-ws`) now coexist on the same `WebConnection::handle_input` path with the same hand-off mechanics.
 
-- Cloud-side `CloudTunnelEndpoint` — the `IPushHttpClient`/`TunnelSink` implementation that actually wraps an `ACE_SSL_SOCK_Stream` to the agent.
-- Replace the `/sip-ws` 503 stub with the real hand-off (`remove_handler → m_handle = INVALID → bridge.on_browser_upgrade(raw)`).
-- `HandoffOrdering` test (works end-to-end against the real reactor; cheaper than reactor mocking).
+## Upcoming (Layer 3)
+
+- Browser-side `BrowserStream` ACE event handler — owns a `/sip-ws` socket, decodes inbound WS frames and feeds them into `SipBridge::on_browser_data`, encodes outbound bytes from `SipBridge::send_bytes` into WS frames. Implements `BrowserSink`. Retires the `/sip-ws` 503 stub.
+- Agent-side `AgentStream` ACE event handler — equivalent for `/agent`. Decodes inbound WS frames, calls `CloudTunnelEndpoint::on_bytes_received`. Implements `IAgentTransport`.
+- `HandoffOrdering` test — verifies the `remove_handler → m_handle = INVALID → publish to bridge` ordering for `/sip-ws` end-to-end. Easiest against a real reactor.
 
 The cloud's HTTP/WSS-serving spine. Three classes copied near-verbatim from xpmile's `modules/module/webservice/` and then extended:
 

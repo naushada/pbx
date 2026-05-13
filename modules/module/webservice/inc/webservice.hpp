@@ -27,6 +27,7 @@
 #include "ace/Timer_Queue_T.h"
 
 #include "mongodbc.hpp"
+#include "cloud_tunnel_endpoint.hpp"
 #include "wsdbproxy.hpp"
 
 /* Forward declarations */
@@ -346,6 +347,16 @@ public:
   /// Return the WsDbServer (null in local-MongoDB mode).
   WsDbServer *wsDbServer() { return m_wsDbServer.get(); }
 
+  /// Return the cloud↔pbx-agent tunnel endpoint, or null if the
+  /// onprem-pbx control plane isn't enabled in this deployment.
+  /// Owned by the WebServer; bound to the SipBridge externally.
+  CloudTunnelEndpoint *cloudTunnelEndpoint() {
+    return m_cloudTunnelEndpoint.get();
+  }
+  void setCloudTunnelEndpoint(std::unique_ptr<CloudTunnelEndpoint> ep) {
+    m_cloudTunnelEndpoint = std::move(ep);
+  }
+
   /// Return the semaphore used to gate concurrent database access.
   ACE_Semaphore &semaphore() const { return (*m_semaphore.get()); }
 
@@ -359,6 +370,7 @@ private:
   std::vector<std::unique_ptr<MicroService>>::iterator m_currentWorker;
   std::unique_ptr<IMongodbClient> mMongodbc;
   std::unique_ptr<WsDbServer>     m_wsDbServer;
+  std::unique_ptr<CloudTunnelEndpoint> m_cloudTunnelEndpoint;
   std::unique_ptr<ACE_Semaphore>  m_semaphore;
 };
 

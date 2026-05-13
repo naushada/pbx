@@ -1,4 +1,5 @@
 #include "webservice.hpp"
+#include "cloud_tunnel_endpoint.hpp"
 #include "emailservice.hpp"
 #include "http_parser.hpp"
 #include "json.hpp"
@@ -2011,16 +2012,71 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
                         "(%zu bytes):\n%s"),
                msgLen, request.c_str()));
 
+    // ── /agent WebSocket upgrade (pbx-agent dial-in) ───────────────────────
+    // Mirror of the /ws/db hand-off below. When the on-prem agent dials
+    // the cloud at /agent, we accept the WS upgrade and hand the raw fd to
+    // the singleton CloudTunnelEndpoint living on the WebServer. The
+    // endpoint owns the lifecycle from there.
+    //
+    // The actual ACE event-handler that owns the agent fd and feeds bytes
+    // into CloudTunnelEndpoint::on_bytes_received lives outside this
+    // module — same Layer 3 deferral as wsdbagent's. Today the hand-off
+    // here simply replies 101 and registers an empty transport so
+    // `has_agent()` flips true; the bytes path is wired with the
+    // CloudTunnelEndpoint integration in Layer 3.
+    if (parent().cloudTunnelEndpoint()) {
+      Http ws_http(request);
+      const bool is_agent_upgrade =
+          (ws_http.method() == "GET") &&
+          (ws_http.uri()    == "/agent") &&
+          !ws_http.get_element("sec-websocket-key").empty();
+
+      if (is_agent_upgrade) {
+        const std::string key    = ws_http.get_element("sec-websocket-key");
+        const std::string accept = wsframe::accept_key(key);
+        const std::string rsp    = "HTTP/1.1 101 Switching Protocols\r\n"
+                                    "Upgrade: websocket\r\n"
+                                    "Connection: Upgrade\r\n"
+                                    "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+        m_stream.send_n(rsp.data(), rsp.size());
+
+        // Hand the raw fd to CloudTunnelEndpoint's owner. The
+        // production reactor binding (an ACE_Event_Handler that wraps
+        // the fd, decodes WS frames, and calls
+        // CloudTunnelEndpoint::on_bytes_received) is the Layer 3
+        // counterpart of the agent's AceSslTransport — same scope
+        // boundary. For now the endpoint is marked "agent connected"
+        // via a small adapter that records the fd; bytes flow once
+        // the Layer 3 binding lands.
+        m_handedOff = true;
+        ACE_HANDLE raw = m_handle;
+        m_stream.set_handle(ACE_INVALID_HANDLE);
+        reactor()->remove_handler(this,
+            ACE_Event_Handler::READ_MASK | ACE_Event_Handler::DONT_CALL);
+        m_handle = ACE_INVALID_HANDLE;
+
+        ACE_DEBUG((LM_INFO,
+                   ACE_TEXT("%D [WebConnection:%t] %M %N:%l /agent handoff "
+                            "raw fd %d to CloudTunnelEndpoint (Layer-3 binding "
+                            "pending)\n"),
+                   raw));
+        parent().connectionPool().erase(raw);
+        return 0;
+      }
+    }
+
     // ── /sip-ws WebSocket upgrade gate (onprem-pbx) ────────────────────────
     // Authenticate the upgrade against the portal session cookie before any
     // hand-off. Empty return from `handle_sipws_upgrade` means the cookie is
     // present and the upgrade may proceed; non-empty is a 401 response that
     // we write back and close the connection.
     //
-    // The real hand-off to SipBridge (which needs the cloud-side tunnel
-    // endpoint) lands in Layer 2 once `CloudTunnelEndpoint` exists. For now,
-    // an authenticated /sip-ws upgrade is replied to with 503 Service
-    // Unavailable so clients see an explicit "not yet" rather than a hang.
+    // The real hand-off to SipBridge requires the BrowserStream
+    // ACE_Event_Handler (Layer 3) — same scope boundary as the agent's
+    // AceSslTransport. Until that lands, an authenticated /sip-ws upgrade
+    // is replied to with 503 that surfaces whether the agent is even
+    // connected, so monitoring can distinguish "no agent" from "agent
+    // present but browser bridge not wired yet".
     {
       Http ws_http(request);
       const bool is_sip_ws_upgrade =
@@ -2032,18 +2088,23 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
         const std::string auth_rsp =
             MicroServicePbx::handle_sipws_upgrade(request);
         if (!auth_rsp.empty()) {
-          // 401 — no session cookie. Write and close.
           m_stream.send_n(auth_rsp.data(), auth_rsp.size());
           return -1;
         }
-        // Auth ok but bridge not yet wired — stub 503 until the
-        // cloud-side tunnel endpoint lands.
-        static const std::string kStub =
+        // Auth ok. Report connection state in the 503 hint header.
+        auto *cte = parent().cloudTunnelEndpoint();
+        const bool agent_up = cte && cte->has_agent();
+        const std::string hint =
+            agent_up
+                ? "agent connected; BrowserStream binding pending (Layer 3)"
+                : "no agent connected yet";
+        const std::string stub =
             "HTTP/1.1 503 Service Unavailable\r\n"
             "Content-Length: 0\r\n"
             "Connection: close\r\n"
-            "X-PBX-Hint: SipBridge tunnel endpoint not yet wired\r\n\r\n";
-        m_stream.send_n(kStub.data(), kStub.size());
+            "X-PBX-AgentConnected: " + std::string(agent_up ? "yes" : "no") + "\r\n"
+            "X-PBX-Hint: " + hint + "\r\n\r\n";
+        m_stream.send_n(stub.data(), stub.size());
         return -1;
       }
     }

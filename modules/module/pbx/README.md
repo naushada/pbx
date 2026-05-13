@@ -6,10 +6,11 @@ Current status:
 
 | Component   | File                                         | Status      |
 |-------------|----------------------------------------------|-------------|
-| `SipFrame`          | `inc/sip_frame.hpp` + `src/sip_frame.cpp`                   | ✅ Complete (Layer 0) |
-| `SipBridge`         | `inc/sip_bridge.hpp` + `src/sip_bridge.cpp`                 | ✅ Complete (Layer 1, first slice) |
-| `MicroServicePbx`   | `inc/microservice_pbx.hpp` + `src/microservice_pbx.cpp`     | ✅ Complete (Layer 1, second slice) |
-| `PushSender`        | `inc/push_sender.hpp` + `src/push_sender.cpp`               | ✅ Complete (Layer 1, third slice) |
+| `SipFrame`            | `inc/sip_frame.hpp` + `src/sip_frame.cpp`                       | ✅ Complete (Layer 0) |
+| `SipBridge`           | `inc/sip_bridge.hpp` + `src/sip_bridge.cpp`                     | ✅ Complete (Layer 1, first slice) |
+| `MicroServicePbx`     | `inc/microservice_pbx.hpp` + `src/microservice_pbx.cpp`         | ✅ Complete (Layer 1, second slice) |
+| `PushSender`          | `inc/push_sender.hpp` + `src/push_sender.cpp`                   | ✅ Complete (Layer 1, third slice) |
+| `CloudTunnelEndpoint` | `inc/cloud_tunnel_endpoint.hpp` + `src/cloud_tunnel_endpoint.cpp` | ✅ Complete (Layer 2, /sip-ws swap slice) |
 
 ---
 
@@ -324,11 +325,70 @@ Edge: `NoSubscriptions_NotifyReturnsZero`.
 
 ---
 
-## Coming in Layer 1 (last slice)
+## CloudTunnelEndpoint — cloud-side accept-end of the tunnel
 
-### Route-wiring patch
+Mirror of agent-side [`CloudConnector`](../../../pbx-agent/README.md#cloudconnector). Where `CloudConnector` actively dials the cloud, `CloudTunnelEndpoint` is **fed** a connected transport after `WebConnection`'s `/agent` WebSocket-upgrade hand-off. Implements `TunnelSink` so `SipBridge` and the cloud's `PushSender` can write frames upstream without knowing about ACE_SSL or WS framing.
 
-A small targeted patch to `webservice.cpp` to route the new URI prefixes (`/api/v1/society`, `/api/v1/subscriber/import`, `/api/v1/cdr`, `/api/v1/push/subscribe`, `/sip-ws`) into the `MicroServicePbx::handle_*` free functions, and to wire the `SipBridge::on_browser_upgrade` hand-off on `/sip-ws`. Brings the `HandoffOrdering` test from TDD-PLAN Layer 1 with it.
+Owned by `WebServer` and exposed via `WebServer::cloudTunnelEndpoint()` (parallel to xpmile's `wsDbServer()` accessor). Bound to the cloud's `SipBridge` instance at startup via `endpoint.attach_bridge(&bridge)`.
+
+### Dependency injection
+
+```cpp
+class IAgentTransport {  // identical shape to agent-side ITransport
+public:
+  virtual bool send (const std::string& bytes) = 0;
+  virtual void close() = 0;
+};
+```
+
+Production: an ACE_SSL_SOCK_Stream wrapper installed by `WebConnection::handle_input` after the `/agent` WS upgrade. Tests: in-memory `FakeAgentTransport` whose state lives in a separate struct outside the `unique_ptr`, same fake-side-channel pattern as `CloudConnector` / `SipFrameDemux`.
+
+### Public API
+
+```cpp
+class CloudTunnelEndpoint : public TunnelSink {
+public:
+  struct Config { std::size_t outbound_buffer_max = 0; };  // 0 = unbounded
+  CloudTunnelEndpoint();
+  explicit CloudTunnelEndpoint(Config);
+
+  void attach_bridge(SipBridge*);
+
+  // External signals (production: ACE event handler that owns the agent fd)
+  void on_agent_connected   (std::unique_ptr<IAgentTransport>);
+  void on_bytes_received    (const std::string&);
+  void on_agent_disconnected();
+
+  // TunnelSink
+  void send_frame(SipFrame::Op, std::uint32_t, const std::string&) override;
+
+  bool        has_agent()            const;
+  std::size_t buffered_frame_count() const;
+};
+```
+
+### Behaviour
+
+Symmetric to `CloudConnector`'s state machine, accept-side:
+
+- **`on_agent_connected`** — install the transport; flush any frames buffered while no agent was attached. If a previous agent is somehow still hanging on, tear it down first so the bridge sees a clean disconnect.
+- **`on_bytes_received`** — forward to `SipBridge::on_tunnel_bytes`. If the bridge reports a protocol violation, drop the agent (close transport + tell bridge `on_tunnel_disconnect`).
+- **`on_agent_disconnected`** — close transport, tell the bridge `on_tunnel_disconnect` (which propagates to every registered `BrowserSink::close("tunnel_lost")`). The **outbound buffer survives** — frames produced during the outage flush on the next agent attach. The bridge's stream-id counter does NOT reset (DESIGN.md §7).
+- **`send_frame`** (`TunnelSink`) — if connected, `SipFrame::encode` + write. If the write fails mid-flight, treat as disconnect and re-queue the failing frame. If no agent, buffer.
+
+### Behaviour pinned by tests (`test/cloud_tunnel_endpoint_test.cc` — 12 tests)
+
+Lifecycle: `NoAgent_BeforeAttach`, `AcceptsAgentAndExposesHasAgent`, `OnAgentDisconnected_TellsBridge` (verifies `transport.close()` was called, every registered `BrowserSink` was closed, and the stream-id counter survived the reconnect).
+
+Frame writes: `SendFrameWhenConnected_WritesEncodedBytes` (round-trip-decode confirms wire bytes), `SendFrameWhenDisconnected_Buffers`, `ReconnectAgentFlushesBuffer`, `AgentDisconnect_BufferSurvivesForNextAgent`, `SendMidFlightFailure_MarksDisconnectedAndBuffers`.
+
+Inbound: `OnBytesReceived_ForwardsIntoBridge` (full PING→PONG round-trip through `endpoint → bridge → endpoint → fake transport`), `OnBytesReceived_InvalidFrame_DropsTunnel`, `OnBytesReceived_NoBridge_NoOp`.
+
+Browser end-to-end: `BrowserDataRoundTripsThroughBridgeAndAgent` — a browser registers with `bridge.on_browser_upgrade` (OPEN frame lands on the agent transport), sends a SIP REGISTER (DATA frame lands), and the agent replies with `401 Unauthorized` which `on_bytes_received` demuxes back to the browser's `FakeBrowser::got`. Both halves wired together without any real network.
+
+### Deferred to Layer 3
+
+The concrete ACE event handler that wraps the agent fd, decodes the inbound WS frames, calls `endpoint.on_bytes_received(payload)`, and exposes an `IAgentTransport` that encodes outbound WS frames. Same scope boundary as the agent's `AceSslTransport` — both are cheap to verify end-to-end against a real ACE reactor.
 
 ---
 
@@ -341,16 +401,20 @@ pbx/
     sip_bridge.hpp            # SipBridge + TunnelSink + BrowserSink interfaces
     microservice_pbx.hpp      # MicroServicePbx:: REST handlers (namespace API)
     push_sender.hpp           # PushSender + IPushHttpClient + IClock + push_crypto::
+    cloud_tunnel_endpoint.hpp # CloudTunnelEndpoint + IAgentTransport
+    tunnel_sink.hpp           # shared interface used by both SipBridge and CloudTunnelEndpoint
   src/
     sip_frame.cpp             # ~90 lines, hand-rolled big-endian impl
     sip_bridge.cpp            # ~100 lines, in-memory multiplexer
     microservice_pbx.cpp      # ~300 lines, society/subscriber/cdr/push/upgrade
     push_sender.cpp           # ~400 lines, VAPID JWT + RFC 8291 + retry policy
+    cloud_tunnel_endpoint.cpp # ~70 lines, accept-side state machine
   test/
-    sip_frame_test.cc         # 10 tests
-    sip_bridge_test.cc        # 12 tests
-    microservice_pbx_test.cc  # 11 tests
-    push_sender_test.cc       #  8 tests
+    sip_frame_test.cc           # 10 tests
+    sip_bridge_test.cc          # 12 tests
+    microservice_pbx_test.cc    # 11+7 tests (+ MicroServiceRouting suite)
+    push_sender_test.cc         #  8 tests
+    cloud_tunnel_endpoint_test.cc # 12 tests
 ```
 
 ## Dependencies
@@ -367,8 +431,8 @@ pbx/
 ## Build & test
 
 ```sh
-podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 \
-  --gtest_filter='SipFrame.*:SipBridge.*:MicroServicePbx.*:PushSender.*'
+podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer2 \
+  --gtest_filter='SipFrame.*:SipBridge.*:MicroServicePbx.*:MicroServiceRouting.*:PushSender.*:CloudTunnelEndpoint.*'
 ```
 
-Expected: **41/41 PASSED** (10 SipFrame + 12 SipBridge + 11 MicroServicePbx + 8 PushSender).
+Expected: **60/60 PASSED** (10 SipFrame + 12 SipBridge + 11 MicroServicePbx + 7 MicroServiceRouting + 8 PushSender + 12 CloudTunnelEndpoint).
