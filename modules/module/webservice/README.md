@@ -1,6 +1,6 @@
 # webservice — ACE reactor + per-socket handler + worker pool
 
-> **Status:** ⏳ Empty. Lands in **Layer 1**.
+> **Status:** ✅ Copied verbatim from xpmile (Layer 1). Extensions for SIP-WS/agent upgrade hand-off, new route handlers, and the `HandoffOrdering` test land in the upcoming slices.
 
 The cloud's HTTP/WSS-serving spine. Three classes copied near-verbatim from xpmile's `modules/module/webservice/` and then extended:
 

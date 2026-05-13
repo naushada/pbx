@@ -15,10 +15,27 @@ See:
 | 0.b | `MessageParser` base + `Http` subclass refactor + `Sip` subclass | ✅ Complete (commit `f45b40a`) |
 | 0.a | `SipFrame` wire-format primitives | ✅ Complete (commit `f45b40a`) |
 | 1   | `SipBridge` cloud-side multiplexer | ✅ Complete (first slice) |
-| 1   | `MicroServicePbx*`, `PushSender*` route handlers + xpmile webservice/mongodb/wsdbproxy/email copies | ⏳ Next |
+| 1   | xpmile module copies — webservice, mongodb, wsdbproxy, security, email, thirdparty | ✅ Verbatim regression-guard copy green |
+| 1   | `MicroServicePbx*` route handlers + `PushSender*` | ⏳ Next |
 | 2+  | `SipFrameDemux`, `CloudConnector`, tunnel E2E, AriClient, Angular UI, Playwright | ⏳ Not started |
 
-**Test totals: 67/67 passing** (20 HttpParser regression + 8 MessageParserBase + 17 SipParser + 10 SipFrame + 12 SipBridge).
+**Test totals: 179/179 passing across 20 suites** — our 67 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 12) + 112 inherited from xpmile (regression guard).
+
+### Skipped tests
+
+Three inherited xpmile tests are filtered out by `docker/Dockerfile.test`'s default CMD because they fail in xpmile too and are environment-dependent, not parser/protocol regressions:
+
+| Test                                                          | Why skipped |
+|---------------------------------------------------------------|-------------|
+| `AccountLoginTest.ValidCredentials_Returns200WithAccountData` | Requires a live MongoDB with xpmile shipment-account seed data. |
+| `AccountLoginTest.ResponseBody_ExcludesSensitiveFields`       | Same root cause — depends on the 200 OK path that needs seeded Mongo. |
+| `WsDbServer.SecondAgentRejected_When_FirstAlive`              | xpmile's production code returns "stale agent evicted, retry"; the test still asserts a 409 and has drifted from the code. |
+
+Override the filter to include them once a Mongo fixture is wired up:
+
+```sh
+podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 --gtest_filter='*'
+```
 
 ## Build & run (Layer 0)
 
@@ -26,15 +43,16 @@ All container operations use **podman** (not docker). Same toolchain as xpmile.
 
 ```sh
 # Build the test image. Reuses the cached `pbx-cpp-builder:bootstrap`
-# image (a tagged snapshot of xpmile's cpp-builder stage with ACE/TAO 7.0.0
-# and googletest already installed under /usr/local). Build time: ~30 s.
-podman build -f docker/Dockerfile.test -t onprem-pbx-test:layer0 .
+# image (a tagged snapshot of xpmile's cpp-builder stage with ACE/TAO 7.0.0,
+# googletest, and mongo-cxx-driver already installed under /usr/local).
+# Build time: ~30–60 s.
+podman build -f docker/Dockerfile.test -t onprem-pbx-test:layer1 .
 
 # Run all GTest suites.
-podman run --rm onprem-pbx-test:layer0
+podman run --rm onprem-pbx-test:layer1
 
 # Filter to a specific suite (override the entrypoint to pass flags).
-podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer0 \
+podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 \
   --gtest_filter='SipParser.*'
 ```
 

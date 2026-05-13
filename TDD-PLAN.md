@@ -231,7 +231,7 @@ Run after every deploy against the live Heroku app + a staging society agent:
 1. ✅ Copy xpmile skeleton — minimal subset shipped in Layer 0 commit (`modules/module/http/*`, `test/CMakeLists.txt`, root `CMakeLists.txt`, `docker/Dockerfile.test`, `docker-compose.test.yml`). Remaining xpmile modules (webservice, mongodb, wsdbproxy, email) land alongside Layer 1 when first needed. *(Reuse map in DESIGN.md §12.)*
 2. ✅ **Layer 0.b.** `MessageParser` base extracted; xpmile `HttpParser*` 20/20 still green; `MessageParserBase*` 8/8 + `SipParser*` 17/17 green.
 3. ✅ Layer 0.a `SipFrame*` 10/10 green.
-4. 🔄 Layer 1 — first slice green: `SipBridge*` 12/12. Remaining: `MicroServicePbx*`, `PushSender*`, and the `HandoffOrdering` test (lands with `webservice/`).
+4. 🔄 Layer 1 — in progress. ✅ `SipBridge*` 12/12 green. ✅ xpmile modules copied verbatim (webservice, mongodb, wsdbproxy, security, email, thirdparty); inherited tests 112 green (3 skipped — see README §Skipped tests). Remaining: `MicroServicePbx*`, `PushSender*`, and the `HandoffOrdering` test.
 5. ⏳ Layer 2 — `CloudConnector*`. Implement to green.
 6. ⏳ Layer 3 — `TunnelE2E*`. Wire everything end-to-end with fakes.
 7. ⏳ Compose Asterisk + coturn locally. Write `MicroServicePbx*` + `AriClient*`. Implement to green.

@@ -1,6 +1,6 @@
 # email — SMTP client (FSM-driven)
 
-> **Status:** ⏳ Empty. Copied from xpmile in **Layer 1**.
+> **Status:** ✅ Copied verbatim from xpmile (Layer 1, transitive — `webservice.cpp` includes `emailservice.hpp`). Inherited `EmailService*` tests green.
 
 Sends transactional email from the cloud. In onprem-pbx the only sender is the CSV-import flow: after the admin uploads a resident list, the cloud generates `sipUsername` + `sipPassword` + portal password for each subscriber, then mails them their credentials.
 

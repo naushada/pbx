@@ -1,6 +1,6 @@
 # mongodb — MongoDB client pool wrapper
 
-> **Status:** ⏳ Empty. Copied verbatim from xpmile when **Layer 2** needs it.
+> **Status:** ✅ Copied verbatim from xpmile (Layer 1). `MongodbClient.ImplementsIMongodbClient` passes; integration tests requiring a live Mongo land later with a fixture.
 
 Thin, thread-safe wrapper around `mongocxx::pool`. One `MongodbClient` per process (the `mongocxx::instance` is a singleton). Every worker thread in the `webservice` module's `MicroService` pool shares the same client; `pool::acquire()` is thread-safe so no external locking is required.
 

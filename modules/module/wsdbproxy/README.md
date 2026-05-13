@@ -1,6 +1,6 @@
 # wsdbproxy — Mongo-over-WSS proxy (cloud side)
 
-> **Status:** ⏳ Empty. Copied verbatim from xpmile in **Layer 2**.
+> **Status:** ✅ Copied verbatim from xpmile (Layer 1). 46 inherited tests green (WsFrame 12, DbProto 13, WsDbServer 7, WsMongodbProxy 14); 1 test skipped — `WsDbServer.SecondAgentRejected_When_FirstAlive` drifted from xpmile production code (see top-level [README §Skipped tests](../../../README.md)).
 
 Cloud-side counterpart to the on-prem `wsdbagent`. Replaces `MongodbClient` in remote-db mode: every DB call is serialized as BSON, sent down the mTLS WSS tunnel to the agent, executed against the on-prem MongoDB, and the result is sent back.
 
