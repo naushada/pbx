@@ -53,6 +53,8 @@ file(GLOB SOURCES "*.cc"
     "../pbx-agent/src/test/sip_frame_demux_test.cc"
     "../pbx-agent/src/main/cloud_connector.cpp"
     "../pbx-agent/src/test/cloud_connector_test.cc"
+    "../pbx-agent/src/main/ari_client.cpp"
+    "../pbx-agent/src/test/ari_client_test.cc"
     # ── webservice (xpmile copy, Layer 1) ─────────────────────────────
     "../modules/module/webservice/src/webservice.cpp"
     "../modules/module/webservice/test/webservice_test.cc"

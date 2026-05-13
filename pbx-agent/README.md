@@ -1,6 +1,6 @@
 # pbx-agent — on-prem daemon
 
-> **Status:** 🔄 Layer 2 in progress. ✅ `SipFrameDemux` complete. ✅ `CloudConnector` state machine complete (concrete `AceSslTransport` deferred to Layer 3 integration). ⏳ `AriClient` next.
+> **Status:** 🔄 Layer 2 in progress. ✅ `SipFrameDemux` complete. ✅ `CloudConnector` state machine complete (concrete `AceSslTransport` deferred to Layer 3 integration). ✅ `AriClient` complete (event processor + admission counter + CDR writer; WebSocket subscription glue deferred to Layer 3). ⏳ Real `/sip-ws` hand-off swap next.
 
 C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to xpmile's `wsdbagent` (the analog directory in xpmile is `xpmile/onprem/` — same role, different name).
 
@@ -10,7 +10,7 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 |-------------------|----------------------------------------|--------|------|
 | `SipFrameDemux`   | `src/main/sip_frame_demux.{hpp,cpp}`   | ✅ Complete | Receives frames off the cloud tunnel; opens (or reuses) a per-stream local socket to Asterisk's `ws://127.0.0.1:8088/ws`; pipes bytes in both directions. |
 | `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete (state machine) | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops. Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lands with Layer 3 integration. |
-| `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ⏳ Layer 2 | HTTP REST + WebSocket-events client for Asterisk ARI. Subscribes to `BridgeCreated`/`BridgeDestroyed` for admission control (counts bridges, not channels — see [`DESIGN.md §6.5`](../DESIGN.md#65-admission-control-5-call-cap)), and `ChannelDestroyed` for CDR finalization. |
+| `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
 | `MongoSink`       | (uses [`mongodb/`](../modules/module/mongodb/README.md)) | ⏳ Layer 2 | Persists CDR rows and replicates subscriber records pushed from the cloud over `OPEN` frames. |
 
 ---
@@ -176,6 +176,85 @@ State recorded in a `TransportState` struct that lives in the factory, not the `
 ### Deferred to Layer 3
 
 The concrete `AceSslTransport` (real `ACE_SSL_SOCK_Connector` + cert presentation + reactor binding + read-handler that calls `on_bytes_received`). Cheaper to verify end-to-end against a real Heroku stub than to mock the entire ACE stack here.
+
+---
+
+## AriClient
+
+Asterisk REST Interface consumer. Owns the per-call accumulators (channels, bridges) and writes CDR docs on hangup. Reactor-thread single-threaded; no internal locking.
+
+### Dependency injection
+
+```cpp
+class IAriRest {
+public:
+  struct Response { int status; std::string body; };
+  virtual Response subscribe(const std::string& app,
+                              const std::vector<std::string>& event_sources) = 0;
+  virtual Response continue_in_dialplan(const std::string& channel_id,
+                                         const std::string& context,
+                                         const std::string& extension,
+                                         int priority) = 0;
+};
+```
+
+Production: an HTTP client against `http://127.0.0.1:8088/ari/…` with the configured ARI credentials. Tests: `FakeAriRest` that records every call.
+
+The WebSocket event stream is **external** to `AriClient` — production wires an ARI WS client that calls `client.on_event(json_string)` per event. Tests drive `on_event` directly with hand-rolled JSON. This keeps `AriClient` itself testable without any networking.
+
+### Public API
+
+```cpp
+class AriClient {
+public:
+  struct Config {
+    std::string society_id;
+    std::string app_name             = "pbx";
+    int         max_concurrent_calls = 5;
+    std::string busy_context         = "pbx-busy";
+    std::string busy_extension       = "s";
+    int         busy_priority        = 1;
+  };
+  AriClient(Config, IAriRest&, IMongodbClient&);
+
+  void start();                                  // POSTs the subscribe call
+  void on_event(const std::string& json_event);  // dispatches by `type`
+  int  active_bridges() const;
+};
+```
+
+### Behaviour
+
+**Event dispatch.** `on_event` parses the JSON, reads `type`, and routes to a per-type handler. Malformed JSON and unknown types are silently dropped.
+
+**Admission.** `BridgeCreated` increments `m_active_bridges` (idempotent on duplicate `bridge.id`). `BridgeDestroyed` decrements (clamped — never negative; absorbs duplicate echoes). When `StasisStart` arrives and `m_active_bridges >= Config::max_concurrent_calls`, `AriClient` calls `IAriRest::continue_in_dialplan(channel_id, busy_context, busy_extension, busy_priority)` — Asterisk's dialplan then plays a busy message and hangs up, causing the SIP caller to see 503. No CDR row is written for rejected channels (the channel never entered Stasis).
+
+**CDR finalisation.** Three events build the per-call context:
+1. `StasisStart` records `caller_flat = channel.caller.number`, `callee_flat = channel.dialplan.exten` (or `args[0]`), `started_at = now`.
+2. `ChannelEnteredBridge` stamps `bridge_id` and `answered_at = now` (first time only).
+3. `ChannelDestroyed` builds the CDR doc, infers `type` from the bridge's channel-count (`>= 3 → "conference"`, else `"p2p"`), normalises `hangupCause` case-insensitively (matches "busy"/"no answer"/"normal" anywhere in `cause_txt`, otherwise passes the original string), inserts into the `cdr` collection.
+
+A `ChannelDestroyed` for a channel we never saw in `StasisStart` is dropped — no phantom CDR.
+
+### Behaviour pinned by tests (`src/test/ari_client_test.cc` — 11 tests)
+
+Subscription: `SubscribesToChannelEvents` (REST subscribe called with `app_name` + `channel:`/`bridge:` event sources).
+
+Bridge counter: `BridgeCreated_IncrementsActiveCount` (duplicate IDs don't double-count), `BridgeDestroyed_DecrementsActiveCount_NeverNegative` (extra echoes absorbed at 0).
+
+Admission: `AdmissionCap_ReturnsBusyAtFive` (cap=5, 6th `StasisStart` → REST `continue` to `pbx-busy:s:1`, no CDR insert), `AdmissionCap_AllowsUnderCap`.
+
+CDR: `HangupEvent_WritesCdr` (full doc: `societyId`, `callId`, `fromFlat`, `toFlat`, `hangupCause=normal`, `type=p2p`, plus timestamps + `durationSec`), `HangupEvent_BusyCauseNormalised` (Asterisk's `"User busy"` → `"busy"`), `ChannelDestroyed_WithoutStasisStart_NoCdr`.
+
+Conference detection: `ConferenceBridgeEvents_TaggedAsConference` (3 channels in a `mixing` bridge → `type=conference`, includes `conferenceBridge`), `TwoChannelsInBridge_StaysAsP2p`.
+
+Robustness: `IgnoresMalformedJson` (bad JSON, empty object, unknown event type — all silently dropped, no state changed).
+
+---
+
+## WebSocket subscription glue (Layer 3)
+
+The actual `ws://127.0.0.1:8088/ari/events?api_key=…&app=pbx` connection that pushes parsed events into `AriClient::on_event` lives outside this module. Production: an `AriEventStream` running on the same ACE reactor, reading JSON events and dispatching. Tests don't need it — `on_event` is the testable seam.
 
 ---
 

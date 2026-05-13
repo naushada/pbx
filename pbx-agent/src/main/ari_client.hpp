@@ -1,0 +1,142 @@
+#ifndef ARI_CLIENT_HPP
+#define ARI_CLIENT_HPP
+
+#include "mongodbc.hpp"
+#include "json.hpp"
+#include <cstdint>
+#include <ctime>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+/**
+ * @file ari_client.hpp
+ * @brief Asterisk REST Interface (ARI) consumer for `pbx-agent`.
+ *
+ * Receives parsed ARI events (`StasisStart`, `BridgeCreated`,
+ * `BridgeDestroyed`, `ChannelEnteredBridge`, `ChannelDestroyed`, …) and
+ * does three jobs:
+ *
+ *   1. **Admission control** — counts active bridges (NOT channels —
+ *      a 1:1 call has two channels but a single bridge; see
+ *      `DESIGN.md §6.5`). When a new `StasisStart` would push the
+ *      society over `max_concurrent_calls`, issues a REST `continue`
+ *      to route the channel to a busy-handler dialplan extension.
+ *
+ *   2. **CDR finalization** — accumulates per-channel state from
+ *      `StasisStart` + `ChannelEnteredBridge` events; on
+ *      `ChannelDestroyed` builds and writes a CDR document to the
+ *      `cdr` collection. Conference vs P2P is determined from the
+ *      bridge's participant count.
+ *
+ *   3. **App subscription** — on `start()`, issues the REST call(s)
+ *      needed to subscribe the Stasis app for the relevant event
+ *      sources.
+ *
+ * I/O is dependency-injected. Production wires `IAriRest` to an HTTP
+ * client against `http://127.0.0.1:8088/ari/...`; the WebSocket event
+ * stream is owned externally and pushes parsed events into
+ * `on_event()`. Tests drive both directly.
+ *
+ * Reactor-thread single-threaded; no internal locking.
+ */
+
+/// Asterisk ARI REST adapter. The methods that matter for v1:
+class IAriRest {
+public:
+  virtual ~IAriRest() = default;
+
+  struct Response {
+    int status = 0;
+    std::string body;
+  };
+
+  /// `POST /ari/applications/{app}/subscription?eventSource=…` for each
+  /// source we care about. Tests record the call.
+  virtual Response subscribe(const std::string &app_name,
+                              const std::vector<std::string> &event_sources) = 0;
+
+  /// `POST /ari/channels/{channel_id}/continue` — route the channel
+  /// back to a dialplan extension. Used to escape the Stasis app when
+  /// admission is denied (we hand the call to a busy-handler).
+  virtual Response continue_in_dialplan(const std::string &channel_id,
+                                         const std::string &context,
+                                         const std::string &extension,
+                                         int priority) = 0;
+};
+
+class AriClient {
+public:
+  struct Config {
+    /// Society this agent serves. Stamped on every CDR row.
+    std::string society_id;
+
+    /// Stasis application name. Stamped into the `subscribe()` call.
+    std::string app_name = "pbx";
+
+    /// Admission cap — counts ACTIVE BRIDGES (logical calls), not
+    /// channels. v1 default per DESIGN.md §1 is 5.
+    int max_concurrent_calls = 5;
+
+    /// Where to send rejected channels. Dialplan extension that should
+    /// play "all lines busy" and hang up. Default matches the typical
+    /// pjsip.conf wiring.
+    std::string busy_context   = "pbx-busy";
+    std::string busy_extension = "s";
+    int         busy_priority  = 1;
+  };
+
+  AriClient(Config cfg, IAriRest &rest, IMongodbClient &db);
+
+  /// Subscribe the Stasis app for the event sources we care about.
+  /// Idempotent — production calls this once at boot; tests call it
+  /// explicitly to assert on the subscription side effect.
+  void start();
+
+  /// Process one parsed ARI event. JSON shape is whatever Asterisk
+  /// sent us — we extract the fields we need and tolerate the rest.
+  void on_event(const std::string &json_event);
+
+  // ── Observability ──────────────────────────────────────────────────────
+
+  int active_bridges() const { return m_active_bridges; }
+
+private:
+  // Per-call accumulators keyed by channel id. Built up during
+  // StasisStart / ChannelEnteredBridge and consumed on
+  // ChannelDestroyed.
+  struct ChannelCtx {
+    std::string channel_id;
+    std::string caller_flat;   // e.g. "A-101"
+    std::string callee_flat;   // dialed extension (StasisStart args[0])
+    std::string bridge_id;
+    std::time_t started_at  = 0;
+    std::time_t answered_at = 0;
+  };
+  // Per-bridge accumulators keyed by bridge id.
+  struct BridgeCtx {
+    std::string bridge_id;
+    std::string bridge_type;          // "mixing", "holding", …
+    std::unordered_set<std::string> channel_ids;
+  };
+
+  void handle_stasis_start    (const nlohmann::json &);
+  void handle_bridge_created  (const nlohmann::json &);
+  void handle_bridge_destroyed(const nlohmann::json &);
+  void handle_channel_entered_bridge(const nlohmann::json &);
+  void handle_channel_destroyed(const nlohmann::json &);
+
+  bool over_admission_cap() const { return m_active_bridges >= m_cfg.max_concurrent_calls; }
+
+  Config           m_cfg;
+  IAriRest        &m_rest;
+  IMongodbClient  &m_db;
+
+  int m_active_bridges = 0;
+
+  std::unordered_map<std::string, ChannelCtx> m_channels;
+  std::unordered_map<std::string, BridgeCtx>  m_bridges;
+};
+
+#endif // ARI_CLIENT_HPP
