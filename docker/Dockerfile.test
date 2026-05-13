@@ -10,6 +10,7 @@ FROM localhost/pbx-cpp-builder:bootstrap
 WORKDIR /src
 COPY CMakeLists.txt /src/
 COPY modules/      /src/modules/
+COPY pbx-agent/    /src/pbx-agent/
 COPY test/         /src/test/
 
 WORKDIR /src/build

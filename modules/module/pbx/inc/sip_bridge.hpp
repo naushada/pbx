@@ -2,6 +2,7 @@
 #define SIP_BRIDGE_HPP
 
 #include "sip_frame.hpp"
+#include "tunnel_sink.hpp"
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -27,18 +28,8 @@
  * for behavioural contracts.
  */
 
-/// Abstract sink for outbound frames on the mTLS tunnel. Production wires
-/// this to a `CloudTunnelEndpoint` that writes onto an `ACE_SSL_SOCK_Stream`.
-class TunnelSink {
-public:
-  virtual ~TunnelSink() = default;
-
-  /// Send one complete frame down the tunnel. Implementations must be
-  /// non-blocking; back-pressure handling is the implementation's concern.
-  virtual void send_frame(SipFrame::Op op,
-                          std::uint32_t stream_id,
-                          const std::string &payload) = 0;
-};
+// `TunnelSink` is declared in tunnel_sink.hpp (shared with the agent's
+// SipFrameDemux). Re-included via the header above.
 
 /// Abstract sink for bytes destined to a single browser WSS. Production
 /// wires this to a `WebConnection` that writes onto a per-browser

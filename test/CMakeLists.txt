@@ -13,6 +13,8 @@ include_directories(../modules/module/sip/inc)
 include_directories(../modules/module/sip/test)
 include_directories(../modules/module/pbx/inc)
 include_directories(../modules/module/pbx/test)
+include_directories(../pbx-agent/src/main)
+include_directories(../pbx-agent/src/test)
 include_directories(../modules/module/webservice/inc)
 include_directories(../modules/module/webservice/test)
 include_directories(../modules/module/mongodb/inc)
@@ -46,6 +48,9 @@ file(GLOB SOURCES "*.cc"
     "../modules/module/pbx/test/microservice_pbx_test.cc"
     "../modules/module/pbx/src/push_sender.cpp"
     "../modules/module/pbx/test/push_sender_test.cc"
+    # ── pbx-agent (Layer 2) ───────────────────────────────────────────
+    "../pbx-agent/src/main/sip_frame_demux.cpp"
+    "../pbx-agent/src/test/sip_frame_demux_test.cc"
     # ── webservice (xpmile copy, Layer 1) ─────────────────────────────
     "../modules/module/webservice/src/webservice.cpp"
     "../modules/module/webservice/test/webservice_test.cc"

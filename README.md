@@ -20,9 +20,11 @@ See:
 | 1   | `PushSender*` — VAPID JWT (RFC 8292) + Web Push encryption (RFC 8291) + retry/410 | ✅ Complete |
 | 1   | Route wiring (`MicroService::dispatch_pbx_routes`) + `/sip-ws` upgrade auth gate in `WebConnection` | ✅ Complete |
 | 1   | `HandoffOrdering` test (asserts `remove_handler → m_handle=INVALID → bridge.publish` order in `WebConnection`) | ⏭️ Deferred to Layer 3 TunnelE2E — needs reactor mocking |
-| 2+  | `SipFrameDemux`, `CloudConnector`, tunnel E2E, AriClient, Angular UI, Playwright | ⏳ Not started |
+| 2   | `SipFrameDemux` — agent-side mirror of `SipBridge`, demuxes cloud tunnel ↔ per-stream Asterisk sockets | ✅ Complete (first slice) |
+| 2   | `CloudConnector` (mTLS dial-out + reconnect), `AriClient` (Asterisk REST + WS events), real `/sip-ws` hand-off | ⏳ Next |
+| 3+  | Tunnel E2E, Angular UI, Playwright | ⏳ Not started |
 
-**Test totals: 205/205 passing across 23 suites** — our 93 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 12, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7) + 112 inherited from xpmile (regression guard).
+**Test totals: 219/219 passing across 24 suites** — our 107 (HttpParser 20, MessageParserBase 8, SipParser 17, SipFrame 10, SipBridge 12, MicroServicePbx 11, PushSender 8, MicroServiceRouting 7, SipFrameDemux 14) + 112 inherited from xpmile (regression guard).
 
 ### Skipped tests
 
