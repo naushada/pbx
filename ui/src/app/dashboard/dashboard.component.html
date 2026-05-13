@@ -3,12 +3,26 @@
 
     <div class="status-card" *ngIf="subscriber">
         <dl class="info-grid">
-            <dt>Society</dt>          <dd>{{ subscriber.societyId }}</dd>
-            <dt>Flat</dt>             <dd>{{ subscriber.flatNumber }}</dd>
-            <dt>SIP user</dt>         <dd>{{ subscriber.sipUser }}</dd>
-            <dt>Role</dt>             <dd>{{ subscriber.role || 'resident' }}</dd>
+            <dt>Society</dt>  <dd>{{ subscriber.societyId }}</dd>
+            <dt>Flat</dt>     <dd>{{ subscriber.flatNumber }}</dd>
+            <dt>SIP user</dt> <dd>{{ subscriber.sipUser }}</dd>
+            <dt>Role</dt>     <dd>{{ subscriber.role || 'resident' }}</dd>
         </dl>
     </div>
 
-    <p class="placeholder">SIP registration + recent calls land in slice 2.</p>
+    <div class="sip-card">
+        <div [ngClass]="statusClass()" role="status">{{ statusLabel() }}</div>
+        <div class="actions">
+            <button type="button" class="btn btn-primary"
+                    (click)="onConnect()" [disabled]="!canConnect()">
+                Connect
+            </button>
+            <button type="button" class="btn btn-outline"
+                    (click)="onDisconnect()" [disabled]="!canDisconnect()">
+                Disconnect
+            </button>
+        </div>
+    </div>
+
+    <p class="placeholder">Directory + dialer land in slice 3.</p>
 </section>

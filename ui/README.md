@@ -75,7 +75,7 @@ podman run --rm -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-bullseye-slim 
 |---|---|---|
 | 0 | Project scaffold + Clarity/CDS styles + common services + empty routes | ✅ Complete |
 | 1 | Login flow — `AuthService` (localStorage session, rehydrate on load) + `AuthInterceptor` (Bearer + 401 → /login) + `AuthGuard` on /main + real `LoginComponent` (Clarity form, error states) + logout in header/dashboard. **15/15 specs green.** | ✅ Complete |
-| 2 | `src/common/sip.service.ts` — SIP.js wrapper over `/sip-ws` + registration | ⏳ |
+| 2 | `SipService` — high-level state machine (idle / registering / registered / failed) emitting through `PubsubsvcService.onCallState`. Sits on a seam: `SipUaFactory` interface + `SipJsUaFactory` production wrapper around SIP.js's `UserAgent` + `Registerer`; tests inject a fake. Dashboard shows live status with Connect/Disconnect actions. **22/22 specs green (7 new).** | ✅ Complete |
 | 3 | Directory search + outgoing call (P2P) UI | ⏳ |
 | 4 | Incoming call wakeup: VAPID push + Service Worker + ringtone | ⏳ |
 | 5 | Conference (ConfBridge) + call history (CDR list) + settings | ⏳ |
