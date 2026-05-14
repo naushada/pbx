@@ -362,22 +362,14 @@ std::string MicroService::get_cache_control(std::string fileName,
     return "no-cache";
   }
 
-  // Angular bundles. Only honor immutable+max-age=1yr when the filename
-  // carries a content hash (e.g. `main.abc123.js`) — production builds
-  // emit those. Our dev build emits bare `main.js`, so every deploy
-  // reuses the same URL and the browser would otherwise hold a stale
-  // copy for a year. For unhashed bundles, send "no-cache" so the
-  // browser revalidates with the origin (still cheap: 304 most of the
-  // time once we wire If-Modified-Since).
+  // Angular bundles — always "no-cache" so the browser revalidates with
+  // the origin on every load. Our dev build emits bare main.js /
+  // vendor.js (no content hash in the filename), so the same URL is
+  // reused across deploys; immutable+max-age=1yr would pin the first
+  // copy a browser ever cached for a year. If we later switch to
+  // `ng build --configuration production` (which emits
+  // `main.<hash>.js`), re-introduce an immutable branch then.
   if (!ext.compare("js") || !ext.compare("css")) {
-    std::string base = fileName;
-    auto slash = base.find_last_of('/');
-    if (slash != std::string::npos) base = base.substr(slash + 1);
-    auto lastDot = base.find_last_of('.');
-    if (lastDot != std::string::npos) base = base.substr(0, lastDot);
-    if (base.find('.') != std::string::npos) {
-      return "public, max-age=31536000, immutable";
-    }
     return "no-cache";
   }
 
