@@ -3,12 +3,18 @@
 
 #include "ace/Log_Msg.h"
 #include "ace/Reactor.h"
+#include "ace/Time_Value.h"
 
 #include <memory>
 
 namespace {
 
 constexpr std::size_t kReadChunk = 65536;
+
+// Heroku's router H15-drops a WebSocket after 55s with no bytes in
+// either direction. Send a WS PING every 25s so the /agent tunnel stays
+// alive between SIP traffic bursts — at least two pings per idle window.
+constexpr int kPingIntervalSec = 25;
 
 constexpr std::uint8_t kOpcodeContinuation = 0x0;
 constexpr std::uint8_t kOpcodeText         = 0x1;
@@ -37,7 +43,8 @@ AgentStream::AgentStream(CloudTunnelEndpoint &endpoint, ACE_HANDLE fd)
 
 AgentStream::~AgentStream() {
   // Defensive: if we never went through handle_close, do the cleanup
-  // here. Both calls are idempotent.
+  // here. All three calls are idempotent.
+  cancel_ping_timer();
   notify_disconnect_once();
   if (m_handle != ACE_INVALID_HANDLE) {
     m_stream.close();
@@ -46,7 +53,21 @@ AgentStream::~AgentStream() {
 }
 
 int AgentStream::register_with_reactor() {
-  return reactor()->register_handler(this, ACE_Event_Handler::READ_MASK);
+  if (reactor()->register_handler(this, ACE_Event_Handler::READ_MASK) == -1)
+    return -1;
+  // Keep-alive: arm a recurring WS-PING timer (initial delay == interval).
+  // Tests that skip register_with_reactor() never schedule a timer, so
+  // m_ping_timer stays -1 and cancel_ping_timer() is a no-op for them.
+  const ACE_Time_Value interval(kPingIntervalSec);
+  m_ping_timer = reactor()->schedule_timer(this, nullptr, interval, interval);
+  if (m_ping_timer == -1) {
+    // Roll the handler registration back so the caller can `delete` us
+    // without leaving a dangling pointer in the reactor.
+    reactor()->remove_handler(
+        this, ACE_Event_Handler::READ_MASK | ACE_Event_Handler::DONT_CALL);
+    return -1;
+  }
+  return 0;
 }
 
 // ── handle_input ─────────────────────────────────────────────────────────────
@@ -109,12 +130,36 @@ bool AgentStream::drain_frames() {
 // ── handle_close ─────────────────────────────────────────────────────────────
 
 int AgentStream::handle_close(ACE_HANDLE /*h*/, ACE_Reactor_Mask /*m*/) {
+  // Cancel the timer BEFORE `delete this` so the reactor can never fire
+  // handle_timeout on a freed object.
+  cancel_ping_timer();
   notify_disconnect_once();
   if (m_handle != ACE_INVALID_HANDLE) {
     m_stream.close();
     m_handle = ACE_INVALID_HANDLE;
   }
   delete this;
+  return 0;
+}
+
+// ── handle_timeout ───────────────────────────────────────────────────────────
+
+int AgentStream::handle_timeout(const ACE_Time_Value & /*tv*/,
+                                const void * /*act*/) {
+  if (m_handle == ACE_INVALID_HANDLE)
+    return -1; // socket already gone — let the reactor run handle_close
+
+  const auto ping = wsframe::ping_frame();
+  const ssize_t n = m_stream.send_n(ping.data(), ping.size());
+  if (n != static_cast<ssize_t>(ping.size())) {
+    // Write failed — the peer (or Heroku) is already gone. Notify the
+    // endpoint and return -1 so the reactor tears us down.
+    ACE_DEBUG((LM_DEBUG,
+               ACE_TEXT("%D [AgentStream:%t] %M %N:%l keep-alive ping write "
+                        "failed; releasing tunnel\n")));
+    notify_disconnect_once();
+    return -1;
+  }
   return 0;
 }
 
@@ -136,10 +181,20 @@ void AgentStream::close_socket() {
   // close-path (extremely unlikely on a single-threaded reactor) doesn't
   // dereference it.
   m_adapter = nullptr;
+  cancel_ping_timer();
   if (m_handle != ACE_INVALID_HANDLE) {
     m_stream.close();
     m_handle = ACE_INVALID_HANDLE;
   }
+}
+
+// ── cancel_ping_timer ────────────────────────────────────────────────────────
+
+void AgentStream::cancel_ping_timer() {
+  if (m_ping_timer != -1 && reactor() != nullptr) {
+    reactor()->cancel_timer(m_ping_timer);
+  }
+  m_ping_timer = -1;
 }
 
 // ── notify_disconnect_once ───────────────────────────────────────────────────

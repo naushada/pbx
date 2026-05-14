@@ -4,6 +4,8 @@
 #include "sip_frame.hpp"
 #include "wsframe.hpp"
 
+#include "ace/Time_Value.h"
+
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -138,6 +140,27 @@ TEST(AgentStream, OnInput_PingTriggersPong)
     ASSERT_GE(reply.size(), 2u);
     // FIN=1, opcode=0xA (pong), unmasked (server→client).
     EXPECT_EQ(0x8A, reply[0]);
+
+    delete s;
+    ::close(fds[0]);
+}
+
+// ── Keep-alive: handle_timeout emits a WS ping frame ─────────────────────
+
+TEST(AgentStream, HandleTimeout_EmitsWsPing)
+{
+    CloudTunnelEndpoint cte;
+    int fds[2]; make_socketpair(fds);
+    auto *s = new AgentStream(cte, fds[1]);
+
+    // Production arms the timer in register_with_reactor() (skipped on the
+    // test path); fire the callback directly to exercise the ping write.
+    EXPECT_EQ(0, s->handle_timeout(ACE_Time_Value::zero, nullptr));
+
+    const auto frame = drain_socket(fds[0]);
+    ASSERT_GE(frame.size(), 2u);
+    // FIN=1, opcode=0x9 (ping), unmasked (server→client).
+    EXPECT_EQ(0x89, frame[0]);
 
     delete s;
     ::close(fds[0]);

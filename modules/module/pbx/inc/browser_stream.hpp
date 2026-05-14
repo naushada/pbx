@@ -62,6 +62,9 @@ public:
 
   int handle_input(ACE_HANDLE) override;
   int handle_close(ACE_HANDLE, ACE_Reactor_Mask) override;
+  /// Reactor timer callback. Sends a WS PING so Heroku's router doesn't
+  /// H15-drop an idle /sip-ws socket mid-call. See register_with_reactor().
+  int handle_timeout(const ACE_Time_Value &tv, const void *act) override;
   ACE_HANDLE get_handle() const override { return m_handle; }
 
   // ── BrowserSink ────────────────────────────────────────────────────────
@@ -79,12 +82,17 @@ private:
   /// Single point that tears down the bridge mapping. Idempotent.
   void notify_close_once(const std::string &reason);
 
+  /// Cancel the keep-alive ping timer if one is scheduled. Idempotent —
+  /// safe to call from handle_close, close(), and the destructor.
+  void cancel_ping_timer();
+
   SipBridge       &m_bridge;
   std::uint32_t    m_stream_id = 0;
   ACE_HANDLE       m_handle;
   ACE_SOCK_Stream  m_stream;
   std::vector<std::uint8_t> m_recv_buf;
   bool             m_close_notified = false;
+  long             m_ping_timer = -1; // reactor timer id; -1 = unscheduled
 };
 
 #endif // BROWSER_STREAM_HPP
