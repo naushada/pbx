@@ -304,8 +304,8 @@ All integer fields are big-endian. Header is fixed at 10 bytes. `payload-len > 1
 | 0x01 | OPEN         | cloud → agent       | `{ societyId, sipUsername, clientUA }` (JSON) — agent opens a fresh socket to local Asterisk for this `stream-id` |
 | 0x02 | DATA         | both ways           | raw SIP-WS frame bytes — opaque, byte-faithful |
 | 0x03 | CLOSE        | both ways           | `{ reason }` (JSON) — stream-id is closed; both ends release resources |
-| 0x04 | PING         | both ways           | empty — sent every 15 s by whichever side has been silent |
-| 0x05 | PONG         | both ways           | mirrors PING — three missed PONGs → drop tunnel |
+| 0x04 | PING         | agent → cloud       | empty — `CloudConnector` sends one per 15 s of inbound silence; the cloud's `SipBridge` echoes a PONG. (Cloud-originated PING is allowed by the format but unused in v1.) |
+| 0x05 | PONG         | cloud → agent       | empty — answer to PING. `CloudConnector` drops + reconnects the tunnel after 3 consecutive unanswered PINGs (no inbound bytes of any kind in between) |
 | 0x06 | ERROR        | both ways           | `{ code, msg }` — protocol violation; sender closes the tunnel |
 | 0x10 | PUSH_NOTIFY  | agent → cloud       | `{ subscriberId, callerFlat, callId }` — agent saw INVITE arrive, cloud should VAPID-push |
 | 0x11 | CDR_PUSH     | agent → cloud       | BSON CDR doc — replicates finalized CDR to cloud for portal reads |
@@ -314,7 +314,7 @@ Parsed in C++ with `ACE_InputCDR` / `ACE_OutputCDR` buffers (or hand-rolled big-
 
 Multiplexing rationale: one mTLS socket per agent, not one per browser. Cuts handshake cost and Heroku connection-count overhead.
 
-**Two keep-alive layers — don't conflate them.** The `0x04` / `0x05` `PING` / `PONG` above are *SipFrame-level*: they ride inside the tunnel payload and exist for end-to-end peer liveness (three missed `PONG`s → drop the tunnel). Underneath them, every WebSocket *socket* — the agent's `/agent` and each browser's `/sip-ws` — also runs a *WebSocket-level* keep-alive: `AgentStream` / `BrowserStream` send an RFC 6455 ping (opcode `0x9`) every 25 s so Heroku's router doesn't H15-drop an idle socket (§6.6). The layers are independent: the WS-level ping keeps the *transport* open through an idle period; the SipFrame-level ping detects a *peer* that has gone away while the transport still looks healthy.
+**Two keep-alive layers — don't conflate them.** The `0x04` / `0x05` `PING` / `PONG` above are *SipFrame-level*: they ride inside the tunnel payload and exist for end-to-end peer liveness. The agent's `CloudConnector` owns this — it sends a `PING` after every 15 s of inbound silence, treats *any* inbound bytes (a `PONG` on an idle tunnel, `DATA` during a live call) as proof the peer is alive, and drops + reconnects the tunnel once 3 consecutive PINGs go unanswered. Underneath them, every WebSocket *socket* — the agent's `/agent` and each browser's `/sip-ws` — also runs a *WebSocket-level* keep-alive: `AgentStream` / `BrowserStream` send an RFC 6455 ping (opcode `0x9`) every 25 s so Heroku's router doesn't H15-drop an idle socket (§6.6). The layers are independent: the WS-level ping keeps the *transport* open through an idle period; the SipFrame-level ping detects a *peer* that has gone away — hung, not closed — while the transport still looks healthy.
 
 ---
 

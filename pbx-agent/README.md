@@ -9,7 +9,7 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 | Class             | Source-of-truth file                   | Status | Role |
 |-------------------|----------------------------------------|--------|------|
 | `SipFrameDemux`   | `src/main/sip_frame_demux.{hpp,cpp}`   | ✅ Complete | Receives frames off the cloud tunnel; opens (or reuses) a per-stream local socket to Asterisk's `ws://127.0.0.1:8088/ws`; pipes bytes in both directions. |
-| `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops. Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lives in `src/main/ace_ssl_transport.{hpp,cpp}` (Layer 3). |
+| `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops, and runs the SipFrame-level heartbeat (PING every 15 s of inbound silence; drop + reconnect after 3 unanswered). Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lives in `src/main/ace_ssl_transport.{hpp,cpp}` (Layer 3). |
 | `AceSslTransport` | `src/main/ace_ssl_transport.{hpp,cpp}` | ✅ Complete (Layer 3) | Concrete `ITransport` for `CloudConnector`. ACE_SSL_Context + ACE_SSL_SOCK_Connector dial; HTTP WebSocket upgrade to `/agent`; post-upgrade WS-frame layer on top of the SSL stream. Includes the matching `AceSslTransportFactory` that plugs into `CloudConnector::ITransportFactory`. |
 | `AriWsClient`     | `src/main/ari_ws_client.{hpp,cpp}`     | ✅ Complete (Layer 3) | Plain-TCP WS client to Asterisk `/ari/events`. HTTP Basic auth in the upgrade request (kept out of the URL so the password doesn't end up in webserver logs). Pushes each inbound JSON text frame to `AriClient::on_event`. Reconnect is the caller's concern. |
 | `AsteriskWsFactory` + `AsteriskStream` | `src/main/asterisk_ws_factory.{hpp,cpp}` | ✅ Complete (Layer 4) | Per-stream plain-TCP WS adapter from `SipFrameDemux` to chan_pjsip's `ws://127.0.0.1:8088/ws` endpoint. Same dual-pattern as `AgentStream`: ACE-owned `AsteriskStream` + non-owning back-pointer adapter held by the demux. Advertises `Sec-WebSocket-Protocol: sip` per RFC 7118 §4. No auth at WS layer — SIP digest happens inside the SIP REGISTERs. |
@@ -133,6 +133,8 @@ public:
     int           initial_backoff_sec = 1;
     int           max_backoff_sec     = 30;
     std::size_t   outbound_buffer_max = 0;  // 0 = unbounded (v1)
+    int           heartbeat_interval_sec = 15;  // 0 = heartbeat disabled
+    int           heartbeat_max_missed   = 3;
   };
   CloudConnector(Config, ITransportFactory&, IClock&);
 
@@ -150,6 +152,7 @@ public:
   int           current_backoff_sec()  const;
   std::int64_t  next_reconnect_at()    const;
   std::size_t   buffered_frame_count() const;
+  int           pings_outstanding()    const;
 };
 ```
 
@@ -160,10 +163,11 @@ public:
 - **Failure** → `current_backoff_sec` doubles each retry starting at `initial_backoff_sec`, capped at `max_backoff_sec`. Series for `(1, 30)`: 1 → 2 → 4 → 8 → 16 → 30 → 30 → … `next_reconnect_at = now + backoff`.
 - **`send_frame` while connected** → `SipFrame::encode` + `transport.send`. If `send` returns false, transport is treated as broken: `mark_disconnected` + push the failing frame to the buffer for retry.
 - **`send_frame` while disconnected** → push to the outbound buffer. Bounded by `Config::outbound_buffer_max` (0 = unbounded; v1 default).
-- **`on_bytes_received`** → forward into the attached `SipFrameDemux`. If demux reports invalid framing, drop the tunnel.
+- **`on_bytes_received`** → forward into the attached `SipFrameDemux`. If demux reports invalid framing, drop the tunnel. Also clears the heartbeat miss counter — any inbound bytes are proof the peer is alive.
 - **`on_transport_lost`** → close current transport, tell demux `on_tunnel_disconnect`, zero the backoff so the very next tick retries immediately.
+- **Heartbeat** (SipFrame-level, DESIGN.md §7) → while connected, `tick()` sends a connection-level `PING` (stream-id 0, empty payload) once per `heartbeat_interval_sec` of inbound silence. After `heartbeat_max_missed` consecutive unanswered PINGs the tunnel is declared dead and dropped via `mark_disconnected` — catches a peer that has hung without closing the socket. The first PING is one full interval after connect; the counter and clock re-arm on every (re)connect. `heartbeat_interval_sec <= 0` disables it.
 
-### Behaviour pinned by tests (`src/test/cloud_connector_test.cc` — 11 tests)
+### Behaviour pinned by tests (`src/test/cloud_connector_test.cc` — 15 tests)
 
 Connect: `Connects_PresentsClientCert` (factory invoked with configured host/port/cert/key/ca), `ConnectFailure_StaysDisconnected`.
 
@@ -174,6 +178,8 @@ Backoff: `AutoReconnectsWithBackoff` — exact series 1 → 2 → 4 → 8 → 16
 Drop survival: `SurvivesIntermittentTunnelDrop` (frames buffered during disconnect flush in order on next successful connect), `SendDuringDisconnect_BuffersUntilReconnect`, `SendMidFlightFailure_MarksDisconnectedAndBuffers` (the frame that triggered the failure is re-queued).
 
 Inbound: `OnBytesReceived_ForwardsIntoDemux` (round-trip a PING through both halves — the demux's PONG reply lands back on the FakeTransport's sent buffer), `OnBytesReceived_InvalidFrame_DropsTunnel`.
+
+Heartbeat: `Heartbeat_SendsPingAfterIdleInterval` (no PING before the interval, exactly one connection-level PING after), `Heartbeat_InboundBytesResetMissedCount` (inbound bytes each cycle keep the miss counter at 0 — never dropped), `Heartbeat_DropsTunnelAfterMaxMissedPings` (3 unanswered PINGs, then drop + immediate reconnect on the next tick), `Heartbeat_DisabledWhenIntervalZero`.
 
 State recorded in a `TransportState` struct that lives in the factory, not the `FakeTransport`, so it survives the `unique_ptr` destruction during disconnect — same fake-side-channel pattern as the SipFrameDemux suite.
 
