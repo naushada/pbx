@@ -1,0 +1,37 @@
+# Build artifacts + caches that we never want inside an image.
+# Excluding these dramatically shrinks the build context (the
+# `.angular/cache` directory alone is often >500 MB on dev machines
+# and was OOM-killing podman's bulk-transfer copier during
+# `COPY ui/` for Dockerfile.cloud).
+
+# Angular build outputs + caches
+ui/node_modules
+ui/.angular
+ui/dist
+ui/coverage
+ui/test-results
+ui/playwright-report
+ui/blob-report
+
+# C++ build artifacts
+build/
+out/
+
+# Test outputs
+test-results/
+coverage/
+
+# OS + editor metadata
+.DS_Store
+.vscode
+.idea
+
+# Local Heroku slug + container caches (mirrors xpmile's pattern)
+.heroku-slug-cache
+
+# Secrets / certs templates only (real material is gitignored too)
+certs/*.key
+certs/*.pem
+certs/*.crt
+.env
+.env.local

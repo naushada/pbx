@@ -180,6 +180,20 @@ std::string cookie_value(const std::string &cookie_header,
   return {};
 }
 
+// ── env-var helpers (shared by every handler) ─────────────────────────────────
+
+std::string env_or(const char *name, const std::string &fallback = {}) {
+  const char *v = std::getenv(name);
+  return (v && *v) ? std::string(v) : fallback;
+}
+
+// `db.get_documents()` blocks forever waiting for a Mongo connection
+// when DB_URI / REMOTE_DB are both unset (Heroku H12 timeout). Skip
+// the DB call entirely in that case and return an empty result.
+bool db_available() {
+  return !env_or("DB_URI").empty() || !env_or("REMOTE_DB").empty();
+}
+
 } // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -390,10 +404,16 @@ std::string handle_cdr_GET(const std::string &req, IMongodbClient &db) {
     return response_error(400, "Bad Request",
                           "Missing required query param: societyId");
 
-  const std::string result =
-      db.get_documents("cdr",
-                        R"({"societyId":")" + society_id + R"("})",
-                        "{}");
+  if (!db_available()) return http_response(200, "OK", "[]");
+
+  std::string result;
+  try {
+    result = db.get_documents("cdr",
+                              R"({"societyId":")" + society_id + R"("})",
+                              "{}");
+  } catch (...) {
+    return http_response(200, "OK", "[]");
+  }
 
   return http_response(200, "OK", result.empty() ? "[]" : result);
 }
@@ -416,7 +436,16 @@ std::string handle_push_subscribe_POST(const std::string &req,
                             std::string("Missing field: ") + required);
   }
 
-  db.create_document(db.get_database(), "push_subscriptions", body.dump());
+  if (!db_available())
+    return response_error(503, "Service Unavailable",
+                          "Push subscriptions store unavailable (no DB configured)");
+
+  try {
+    db.create_document(db.get_database(), "push_subscriptions", body.dump());
+  } catch (...) {
+    return response_error(503, "Service Unavailable",
+                          "Push subscriptions store unavailable");
+  }
   return http_response(201, "Created", body.dump());
 }
 
@@ -428,10 +457,8 @@ std::string handle_push_subscribe_POST(const std::string &req,
 
 namespace {
 
-std::string env_or(const char *name, const std::string &fallback = {}) {
-  const char *v = std::getenv(name);
-  return (v && *v) ? std::string(v) : fallback;
-}
+// env_or() + db_available() live in the file-level anonymous namespace
+// above so they're visible to every handler (including the legacy ones).
 
 std::string base64_encode(const std::string &raw) {
   // OpenSSL EVP_EncodeBlock writes exactly 4 * ceil(n/3) bytes plus a NUL.
@@ -515,12 +542,19 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
                           "Missing required query param: societyId");
   }
 
+  if (!db_available()) return http_response(200, "OK", "[]");
+
   // Mongo regex would be ideal but get_documents takes a plain JSON filter
   // here; do a society-scoped fetch, then filter by prefix client-side.
-  const std::string result = db.get_documents(
-      "subscribers",
-      R"({"societyId":")" + society_id + R"("})",
-      "{}");
+  std::string result;
+  try {
+    result = db.get_documents(
+        "subscribers",
+        R"({"societyId":")" + society_id + R"("})",
+        "{}");
+  } catch (...) {
+    return http_response(200, "OK", "[]");
+  }
 
   // No rows → return [] rather than the Mongo "" so the UI's typed
   // response shape is honoured.
