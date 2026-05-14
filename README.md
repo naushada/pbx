@@ -71,56 +71,56 @@ See:
 | `POST /api/v1/society` | Create a society. Existing handler (xpmile slice 1). |
 | `POST /api/v1/subscriber/import` | CSV import. Existing handler. |
 
-## Architecture (end of Layer 3)
+## Architecture
 
 ```
-Heroku cloud (C++ / ACE)                  pbx-agent (C++ / ACE) — on-prem
-────────────────────────                  ──────────────────────────────
-                                                                       
-WebServer                                                              
-  ├─ WebConnection (per inbound socket)                                
-  │    ├─ /sip-ws upgrade ─► BrowserStream ◄──┐                        
-  │    ├─ /agent  upgrade ─► AgentStream  ◄──┐│                        
-  │    ├─ /ws/db  upgrade ─► WsDbServer       ││ (xpmile, unchanged)   
-  │    └─ REST/portal     ─► MicroService     ││                       
-  │                          ├─ xpmile routes ││                       
-  │                          └─ dispatch_pbx_routes ─► MicroServicePbx 
-  │                                            ││                       
-  ├─ SipBridge       ◄──────TunnelSink────► CloudTunnelEndpoint        
-  │   ├─ set_push_notify_handler ──────► (PushSender::notify hook)     
-  │   └─ set_cdr_push_handler    ──────► (Mongo CDR writer hook)       
-  │                                                                    
-  └─ MongoDB ◄──── wsdbproxy ─── wsdbagent ──── on-prem Mongo          
-                                                                       
-                                                              ┌───────►│ AceSslTransport
-                                                              │        │   ↑      ↓
-                              WS over mTLS (Heroku /agent) ◄──┴────────┤   │      │
-                                                                       │ CloudConnector
-                                                                       │   ↓      ↑
-                                                                       │ SipFrameDemux
-                                                                       │   ↓
-                                                                       │ IAsteriskFactory
-                                                                       │    │
-                                                                       │    └► Asterisk WS
-                                                                       │       (chan_pjsip,
-                                                                       │        ws://127:8088)
-                                                                       │
-                                                                       │ AriClient ◄── AriWsClient
-                                                                       │  ├─ admission counter
-                                                                       │  ├─ CDR ─► Mongo
-                                                                       │  └─ PUSH_NOTIFY ────┐
-                                                                       │                     │
-                                                                       │  CloudConnector ◄───┘
-                                                                       │  .send_frame(…)
-                                                                       │       ↑
-                                                                       │       └── (also from
-                                                                       │              SipFrameDemux
-                                                                       │              upstream
-                                                                       │              answers)
-                                                                       └───────────────────────
+ Heroku cloud  (C++ / ACE, app pabx)            pbx-agent  (C++ / ACE) — on society LAN
+ ──────────────────────────────────             ──────────────────────────────────────
+
+ WebServer
+  ├─ WebConnection  (one per inbound socket)
+  │   ├─ /sip-ws upgrade ─► resolve sessions token ─► BrowserStream
+  │   ├─ /agent  upgrade ─► AgentStream
+  │   ├─ /ws/db  upgrade ─► WsDbServer                 (xpmile, unchanged)
+  │   └─ REST / portal   ─► MicroService ─► dispatch_pbx_routes ─► MicroServicePbx
+  │                            · login (strict): bcrypt-verify, then write a
+  │                              sessions row and set the session cookie
+  │                            · /sip-ws upgrade: resolve the token in
+  │                              sessions → subscriber identity → OPEN meta
+  ├─ SipBridge ◄───────────── TunnelSink ──────────► CloudTunnelEndpoint
+  │   ├─ set_push_notify_handler ─► PushSender::notify  (VAPID Web Push)
+  │   └─ set_cdr_push_handler    ─► Mongo CDR writer
+  │
+  └─ MongoDB ── subscribers · sessions · cdr · push_subscriptions
+        └── wsdbproxy ── (WSS + InnerTLS) ── wsdbagent ── on-prem Mongo
+
+
+   AgentStream ◄═══════════════════════════════════════►  AceSslTransport
+                WS over mTLS — Heroku /agent                     ▲    │
+                · WS-level keep-alive ping (idle H15 guard)       │    ▼
+                · SipFrame PING/PONG heartbeat (peer liveness)     │
+                                                              CloudConnector
+                                                                  ▲    │
+                                       upstream send_frame(…)     │    ▼
+                                                              SipFrameDemux
+                                                                  │    ▲
+                                                                  ▼    │
+                                                              IAsteriskFactory
+                                                                  │
+                                                                  └─► Asterisk WS
+                                                                      (chan_pjsip,
+                                                                       ws://127.0.0.1:8088)
+
+                                                              AriClient ◄── AriWsClient
+                                                               ├─ admission bridge-counter
+                                                               ├─ CDR ─► on-prem Mongo
+                                                               └─ PUSH_NOTIFY ─► CloudConnector
 ```
 
 ### How traffic flows
+
+**Portal login → SIP-WS session:**
+`Browser POST /api/v1/subscriber/login → MicroServicePbx.handle_subscriber_login_POST (strict mode: bcrypt-verify against the subscribers collection) → writes a sessions row + Set-Cookie → UI opens wss://…/sip-ws?token=… → handle_sipws_upgrade resolves the token in sessions → BrowserStream gets {societyId, sipUsername, clientUA} as its OPEN-frame meta`
 
 **Browser INVITE → Asterisk:**
 `Browser WSS → /sip-ws upgrade → BrowserStream.handle_input → SipBridge.on_browser_data → CloudTunnelEndpoint.send_frame → AgentStream WS → AceSslTransport ← (wire) → CloudConnector.on_bytes_received → SipFrameDemux → local Asterisk WS`
@@ -130,6 +130,8 @@ WebServer
 
 **Asterisk hangup → Mongo CDR + push:**
 `Asterisk → AriWsClient → AriClient.on_event(ChannelDestroyed) → CDR written locally + PUSH_NOTIFY frame → CloudConnector → AgentStream → SipBridge → bridge.cdr_push_handler / push_notify_handler hooks`
+
+**Tunnel keep-alive (two independent layers):** `AgentStream` / `BrowserStream` send a WebSocket-level ping every 25 s so Heroku's router doesn't H15-drop an idle socket; underneath that, the agent's `CloudConnector` sends a SipFrame `PING` after 15 s of inbound silence and drops + reconnects the tunnel once 3 go unanswered (detects a hung-but-not-closed peer).
 
 ### Skipped tests
 
