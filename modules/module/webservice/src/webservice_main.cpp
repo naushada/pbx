@@ -254,8 +254,6 @@ int main(int argc, char *argv[]) {
 
     // Wire bridge → cloud-side dispatch hooks.
     //
-    // TODO(layer-4-push): swap this for `PushSender::notify(subscriberId,
-    // payload)` once VAPID keys + IPushHttpClient are wired from config.
     // If VAPID is configured, instantiate PushSender and route the
     // bridge's push handler through it. The handler payload is the
     // PUSH_NOTIFY JSON the agent shipped:
