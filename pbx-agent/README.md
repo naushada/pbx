@@ -1,6 +1,6 @@
 # pbx-agent — on-prem daemon
 
-> **Status:** ✅ Layer 2 complete. ✅ Layer 3 ACE bindings complete (`AceSslTransport`, `AriWsClient`, plus the cloud-side `BrowserStream`/`AgentStream` and `HandoffOrdering` source-invariant test). 🔄 Layer 4 wiring in progress: `pbx-agent/src/main/main.cpp` ships + `--help` works; `pbx-agent` binary links with two documented placeholders (`NoopAriRest`, `StubAsteriskFactory`) that the next slices replace.
+> **Status:** ✅ Layer 2 complete. ✅ Layer 3 ACE bindings complete (`AceSslTransport`, `AriWsClient`, plus the cloud-side `BrowserStream`/`AgentStream` and `HandoffOrdering` source-invariant test). 🔄 Layer 4: the agent-side components (`AsteriskWsFactory`, `AriRestClient`) are complete, and `pbx-agent/src/main/main.cpp` wires every Layer 0–4 component into one ACE reactor with no placeholders (`--help` works; pure glue, no new logic). Remaining Layer 4 work is the `SipScenarios*` integration tests against a real Asterisk (see [`TDD-PLAN.md → Layer 4`](../TDD-PLAN.md)).
 
 C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to xpmile's `wsdbagent` (the analog directory in xpmile is `xpmile/onprem/` — same role, different name).
 

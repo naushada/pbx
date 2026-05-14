@@ -31,10 +31,10 @@ Mirror of xpmile's existing `/ws/db` upgrade branch. When the on-prem agent dial
 2. Sends the `101 Switching Protocols` response.
 3. xpmile-mechanic hand-off ordering: `remove_handler → m_handle = INVALID`.
 4. Constructs an [`AgentStream`](../pbx/README.md#agentstream--ace-event-handler-for-the-clouds-agent-socket) on the raw fd. The constructor calls `CloudTunnelEndpoint::on_agent_connected(adapter)` immediately, so `has_agent()` flips true.
-5. `as->reactor(reactor()) + register_handler(READ_MASK)`.
+5. `as->reactor(reactor()) + as->register_with_reactor()` — registers `READ_MASK` **and** arms the keep-alive ping timer; rolls the registration back on partial failure so the caller's `delete` stays safe.
 6. `connectionPool().erase(raw)`.
 
-The Layer 2 "info log only" stub is retired. `AgentStream`'s 9-test suite covers WS decode/encode, ping/pong, close handling, frame-boundary edge cases, and the endpoint-initiated release path — all via `socketpair()`, no reactor needed.
+The Layer 2 "info log only" stub is retired. `AgentStream`'s 10-test suite covers WS decode/encode, ping/pong, the keep-alive ping timer, close handling, frame-boundary edge cases, and the endpoint-initiated release path — all via `socketpair()`, no reactor needed.
 
 **3. `/sip-ws` upgrade — real BrowserStream hand-off** (Layer 3)
 
@@ -44,7 +44,7 @@ When a WS upgrade for `/sip-ws` arrives:
 2. If the control plane isn't fully wired (`cloudTunnelEndpoint()` / `sipBridge()` null, or no agent connected) → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers so monitoring can distinguish the failure modes.
 3. Otherwise: complete the WS handshake (`101 Switching Protocols` + `Sec-WebSocket-Accept`), perform the xpmile-mechanic hand-off (`remove_handler → m_handle = INVALID → publish raw fd`), construct a [`BrowserStream`](../pbx/README.md#browserstream--ace-event-handler-for-the-browsers-sip-ws-socket) on the raw fd, register it with the same reactor, and release this WebConnection from the pool.
 
-`BrowserStream` (in the `pbx/` module) owns the socket lifetime from there. Its 8-test suite covers WS decode/encode, ping/pong, close handling, and frame-boundary edge cases via `socketpair()` — no reactor needed for unit tests.
+`BrowserStream` (in the `pbx/` module) owns the socket lifetime from there. Its 9-test suite covers WS decode/encode, ping/pong, the keep-alive ping timer, close handling, and frame-boundary edge cases via `socketpair()` — no reactor needed for unit tests.
 
 Auth-gate behaviour is still pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade` / `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
 

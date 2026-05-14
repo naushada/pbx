@@ -2,7 +2,7 @@
 
 **Owner:** Naushad
 **Status:** Draft v1
-**Last updated:** 2026-05-13
+**Last updated:** 2026-05-14
 **Companion docs:** [DESIGN.md](./DESIGN.md), [TDD-PLAN.md](./TDD-PLAN.md)
 
 ---
@@ -217,7 +217,7 @@ A society-scoped VoIP PBX would let any resident reach any other resident (or th
 | iOS Safari Web Push has known limits (PWA-only, no background) | v1: document desktop browsers as primary; offer the missed-call history as the iOS fallback. Mobile native deferred. |
 | Email delivery of credentials is unreliable / hits spam | Provide an admin "regenerate + show inline" flow; recommend SMS as out-of-band secondary channel |
 | Asterisk version compatibility / chan_pjsip config drift | Pin Asterisk LTS version; vendor a `pjsip.conf` template in the agent image; integration tests run against the same pinned version |
-| pbx-agent ↔ Heroku tunnel flap during peak hours kills all calls | `CloudConnector` auto-reconnect with backoff; in-flight RTP is P2P so already-connected calls survive a signaling drop |
+| pbx-agent ↔ Heroku tunnel flap during peak hours kills all calls | WebSocket-level keep-alive ping (25 s) stops Heroku from H15-dropping idle tunnels in the first place; `CloudConnector` auto-reconnect with backoff recovers from real drops; in-flight RTP is P2P so already-connected calls survive a signaling drop |
 | Society admin uploads a CSV with PII to the cloud | Cloud only sees hashed passwords + names + flat numbers; no payment data; document the data we store in a privacy notice |
 | `directmedia=yes` interacts badly with browser ICE on some networks | Layer 4 SIP scenarios explicitly assert the re-INVITE direction and final media path; pilot will surface real-network edge cases |
 | 5-concurrent-call cap is wrong for a big society | Configurable per society (NFR-05); raise after benchmarking on pilot |

@@ -172,6 +172,17 @@ Reused tests come over verbatim from `xpmile/test/` (xpmile CLAUDE.md says 46 te
 | `TunnelE2E.PushNotifyFromAgentToCloud_TriggersWebPush`   | Agent emits PUSH_NOTIFY frame; cloud `PushSender` is called with the right subscriberId. |
 | `TunnelE2E.CdrPushFromAgentToCloud_PersistsInMongo`      | CDR_PUSH frame → cloud Mongo write via wsdbagent path. |
 
+### Post-Layer-3 reliability slice — WebSocket keep-alive
+
+`AgentStream` / `BrowserStream` gained a recurring 25 s reactor timer that sends an RFC 6455 ping so Heroku's router doesn't H15-drop an idle `/agent` or `/sip-ws` socket (DESIGN.md §6.6, §7). Wired through `register_with_reactor()`, which now registers `READ_MASK` *and* arms the timer.
+
+| Test | Behavior |
+|---|---|
+| `AgentStream.HandleTimeout_EmitsWsPing`   | Firing the keep-alive timer callback writes an unmasked WS ping frame (`0x89`) to the socket. |
+| `BrowserStream.HandleTimeout_EmitsWsPing` | Same for the browser-side `/sip-ws` handler. |
+
+Suites are now `BrowserStream*` 9/9, `AgentStream*` 10/10.
+
 ---
 
 ## Layer 4 — SIP correctness (real Asterisk in a container)
@@ -233,7 +244,7 @@ Run after every deploy against the live Heroku app + a staging society agent:
 3. ✅ Layer 0.a `SipFrame*` 10/10 green.
 4. ✅ Layer 1 — complete (modulo `HandoffOrdering`). `SipBridge*` 12/12, xpmile modules verbatim-copy 112/115 (3 environmental skips), `MicroServicePbx*` 11/11, `PushSender*` 8/8, `MicroServiceRouting*` 7/7 (PBX routes intercept first; xpmile URIs fall through). `/sip-ws` upgrade gates on the portal session cookie in `WebConnection::handle_input`; the real `SipBridge` hand-off is stubbed to 503 until the cloud-side tunnel endpoint exists (Layer 2). `HandoffOrdering` deferred to Layer 3 TunnelE2E — it needs ACE reactor mocking that's cheaper to do with a real reactor running.
 5. ✅ Layer 2 — feature-complete modulo concrete socket I/O (deferred to Layer 3). `SipFrameDemux*` 14/14, `CloudConnector*` 11/11, `AriClient*` 11/11, `CloudTunnelEndpoint*` 12/12. The `/sip-ws` swap shipped as: `CloudTunnelEndpoint` wired into `WebServer` (`cloudTunnelEndpoint()` accessor parallel to `wsDbServer()`); `WebConnection::handle_input` got an `/agent` WS upgrade branch mirroring `/ws/db`'s hand-off ordering; the `/sip-ws` 503 is now context-aware (`X-PBX-AgentConnected: yes|no`).
-6. ✅ Layer 3 — complete. `TunnelE2E*` 8/8, `BrowserStream*` 8/8, `AgentStream*` 9/9, `AceSslTransport*` 10/10, `AriWsClient*` 14/14, `HandoffOrdering*` 8/8. The originally-planned reactor-based `HandoffOrdering` test was replaced with a sharper **source-invariant** test (reads `webservice.cpp` directly and asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three WS upgrade branches — `/sip-ws`, `/agent`, `/ws/db`). The bug class we're guarding against is "swap two lines that both look like teardown" — a real-reactor test could pass even with the bug on some platforms; the source-grep is unambiguous. xpmile's `/ws/db` branch is included as a regression guard so we catch drift in the xpmile copy too.
+6. ✅ Layer 3 — complete. `TunnelE2E*` 8/8, `BrowserStream*` 9/9, `AgentStream*` 10/10, `AceSslTransport*` 10/10, `AriWsClient*` 14/14, `HandoffOrdering*` 8/8 (`BrowserStream`/`AgentStream` counts include the post-Layer-3 WebSocket keep-alive slice — see above). The originally-planned reactor-based `HandoffOrdering` test was replaced with a sharper **source-invariant** test (reads `webservice.cpp` directly and asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three WS upgrade branches — `/sip-ws`, `/agent`, `/ws/db`). The bug class we're guarding against is "swap two lines that both look like teardown" — a real-reactor test could pass even with the bug on some platforms; the source-grep is unambiguous. xpmile's `/ws/db` branch is included as a regression guard so we catch drift in the xpmile copy too.
 5. ⏳ Layer 2 — `CloudConnector*`. Implement to green.
 6. ⏳ Layer 3 — `TunnelE2E*`. Wire everything end-to-end with fakes.
 7. ⏳ Compose Asterisk + coturn locally. Write `MicroServicePbx*` + `AriClient*`. Implement to green.

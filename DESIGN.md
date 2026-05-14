@@ -281,6 +281,7 @@ The tunnel only carries **signaling**. RTP/SRTP is P2P (or via coturn) and does 
 - New REGISTERs, new INVITEs, and BYEs cannot be conveyed while the tunnel is down.
 - If a user hangs up during the outage, the BYE is queued client-side by SIP.js and replayed when the WSS reconnects. If the browser is closed first, Asterisk eventually times the channel out and writes a CDR with `hangupCause = "tunnel_lost"`.
 - Conference (ConfBridge) calls **do** require the tunnel for new joins, but existing legs survive — RTP is still flowing browser↔Asterisk on the on-prem LAN/public coturn port, not through the tunnel.
+- **Idle-drop prevention (first line of defence).** Heroku's router H15-drops a WebSocket after 55 s with no bytes in *either* direction — and a connected call generates no signalling traffic mid-conversation. The cloud-side `/agent` and `/sip-ws` handlers (`AgentStream` / `BrowserStream`) each arm a 25 s reactor timer that sends a WebSocket-level ping (RFC 6455 opcode `0x9`), so an otherwise-idle socket is never dropped in the first place. This sits *underneath* the SipFrame-level `PING`/`PONG` (§7) and the `CloudConnector` reconnect below — the keep-alive prevents the drop; reconnect recovers from one.
 - `CloudConnector` reconnects with exponential backoff (1s → 30s cap). The TDD plan's `CloudConnector.AutoReconnectsWithBackoff` pins this.
 
 ---
@@ -312,6 +313,8 @@ All integer fields are big-endian. Header is fixed at 10 bytes. `payload-len > 1
 Parsed in C++ with `ACE_InputCDR` / `ACE_OutputCDR` buffers (or hand-rolled big-endian readers — `ACE_CDR` defaults to platform-native byte order, so explicit `ACE_CDR::swap_4(...)` calls are required when targeting wire-format).
 
 Multiplexing rationale: one mTLS socket per agent, not one per browser. Cuts handshake cost and Heroku connection-count overhead.
+
+**Two keep-alive layers — don't conflate them.** The `0x04` / `0x05` `PING` / `PONG` above are *SipFrame-level*: they ride inside the tunnel payload and exist for end-to-end peer liveness (three missed `PONG`s → drop the tunnel). Underneath them, every WebSocket *socket* — the agent's `/agent` and each browser's `/sip-ws` — also runs a *WebSocket-level* keep-alive: `AgentStream` / `BrowserStream` send an RFC 6455 ping (opcode `0x9`) every 25 s so Heroku's router doesn't H15-drop an idle socket (§6.6). The layers are independent: the WS-level ping keeps the *transport* open through an idle period; the SipFrame-level ping detects a *peer* that has gone away while the transport still looks healthy.
 
 ---
 
