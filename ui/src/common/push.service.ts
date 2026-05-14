@@ -20,7 +20,10 @@ export type PushState =
     | 'disabled'      // permission grantable, no subscription yet
     | 'enabled';      // permission + active subscription
 
-const SW_URL = '/sw.js';
+// Relative path so the registration resolves against <base href="/webui/">.
+// An absolute "/sw.js" would resolve to the document root which the
+// webservice doesn't serve (the SPA + assets live under /webui/).
+const SW_URL = 'sw.js';
 
 @Injectable({ providedIn: 'root' })
 export class PushService {

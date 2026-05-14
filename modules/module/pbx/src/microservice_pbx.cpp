@@ -636,19 +636,27 @@ std::string handle_turn_credentials_GET(const std::string &req,
 }
 
 std::string handle_sipws_upgrade(const std::string &req) {
-  Http parsed(req);
+  // Browsers can't set arbitrary headers on `new WebSocket(url)`, so the
+  // UI passes its bearer via `?token=<value>` (see
+  // ui/src/common/sip.service.ts and the comment in sip-ua-sipjs.ts).
+  // Accept either the query-string token or a legacy `session=` cookie
+  // — older builds/tests still use the cookie path.
+  const std::string uri    = raw_uri_with_query(req);
+  const std::string token  = query_param(uri, "token");
 
-  const std::string cookie = parsed.get_element("Cookie");
+  Http parsed(req);
+  const std::string cookie  = parsed.get_element("Cookie");
   const std::string session = cookie_value(cookie, "session");
 
-  if (session.empty()) {
+  if (token.empty() && session.empty()) {
     return response_error(401, "Unauthorized",
-                          "SIP-WS upgrade requires an authenticated portal session");
+                          "SIP-WS upgrade requires ?token=<bearer> or a "
+                          "session= cookie tied to a portal login");
   }
-  // Session validity is checked against Mongo by the bridge wrapper that
-  // owns the upgrade hand-off. Here we only enforce the cookie's presence,
-  // matching the v1 contract in DESIGN.md §5 ("Cloud only validates the
-  // WSS upgrade has a session cookie tied to a portal login").
+
+  // The bridge wrapper that owns the upgrade hand-off is responsible
+  // for validating the token/session against Mongo. We only enforce
+  // that *some* proof of login was presented.
   return {};
 }
 
