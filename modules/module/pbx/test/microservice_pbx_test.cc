@@ -3,9 +3,11 @@
 #include "json.hpp"
 #include "webservice.hpp"   // for MicroService::dispatch_pbx_routes routing tests
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstdlib>
 #include <regex>
 #include <string>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -218,6 +220,9 @@ TEST(MicroServicePbx, SubscriberImport_GeneratesCreds)
     EXPECT_EQ(2, subscriber_inserts);
 
     // sipHa1 / portalPasswordHash present, plaintext sipPassword NOT in DB doc.
+    // The denormalized `flatNumber` is stored too — the directory filters and
+    // the UI dials by it.
+    std::vector<std::string> stored_flats;
     for (const auto &ins : db.inserts) {
         if (ins.coll != "subscribers") continue;
         json d = json::parse(ins.doc);
@@ -225,7 +230,13 @@ TEST(MicroServicePbx, SubscriberImport_GeneratesCreds)
         EXPECT_TRUE(d.contains("portalPasswordHash"));
         EXPECT_FALSE(d.contains("sipPassword"));
         EXPECT_FALSE(d.contains("portalPassword"));
+        ASSERT_TRUE(d.contains("flatNumber") && d["flatNumber"].is_string());
+        stored_flats.push_back(d["flatNumber"].get<std::string>());
     }
+    EXPECT_NE(stored_flats.end(),
+              std::find(stored_flats.begin(), stored_flats.end(), "A-101"));
+    EXPECT_NE(stored_flats.end(),
+              std::find(stored_flats.begin(), stored_flats.end(), "B-204"));
 
     // Response CSV carries the plaintexts ONCE.
     const auto body_start = rsp.find("\r\n\r\n");
@@ -336,6 +347,87 @@ TEST(MicroServicePbx, PushSubscribe_RejectsMissingFields)
     std::string rsp = MicroServicePbx::handle_push_subscribe_POST(req, db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
     EXPECT_TRUE(db.inserts.empty());
+}
+
+// ── Subscriber directory ──────────────────────────────────────────────────────
+
+namespace {
+// RAII: `handle_directory_GET` (and the other DB-touching handlers) short-
+// circuit to an empty/503 response unless db_available() — i.e. DB_URI or
+// REMOTE_DB is set. Flip DB_URI on for the test, restore on scope exit.
+struct DbAvailableEnv {
+  DbAvailableEnv()  { ::setenv("DB_URI", "mongodb://test/pabx", 1); }
+  ~DbAvailableEnv() { ::unsetenv("DB_URI"); }
+};
+
+// A `subscribers` doc as handle_subscriber_import_POST writes it — including
+// the secrets the directory must strip.
+json directory_row(const std::string &flat_number, const std::string &name,
+                   const std::string &sip_username) {
+  return {
+      {"societyId",          "s1"},
+      {"flatId",             "f_" + flat_number},
+      {"flatNumber",         flat_number},
+      {"name",               name},
+      {"role",               "resident"},
+      {"status",             "active"},
+      {"sipUsername",        sip_username},
+      {"sipHa1",             "deadbeefdeadbeefdeadbeefdeadbeef"},
+      {"portalPasswordHash", "$2b$12$placeholderplaceholderplaceholder"},
+  };
+}
+} // namespace
+
+TEST(MicroServicePbx, Directory_FiltersByFlatPrefix)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({directory_row("A-101", "Asha", "u_a101"),
+                             directory_row("A-205", "Arjun", "u_a205"),
+                             directory_row("B-101", "B',", "u_b101")});
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    const std::string req = make_get("/api/v1/subscriber?societyId=s1&flatPrefix=A");
+    std::string rsp = MicroServicePbx::handle_directory_GET(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_TRUE(arr.is_array());
+    ASSERT_EQ(2u, arr.size()) << "only the two A-* flats match prefix 'A'";
+    for (const auto &row : arr)
+        EXPECT_EQ('A', row["flatNumber"].get<std::string>().front());
+}
+
+TEST(MicroServicePbx, Directory_StripsSecrets)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({directory_row("A-101", "Asha", "u_a101")});
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    // No prefix → returns the whole society; the secrets must still be gone.
+    const std::string req = make_get("/api/v1/subscriber?societyId=s1");
+    std::string rsp = MicroServicePbx::handle_directory_GET(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(1u, arr.size());
+    EXPECT_FALSE(arr[0].contains("portalPasswordHash"))
+        << "the bcrypt portal hash must never leave the server";
+    EXPECT_FALSE(arr[0].contains("sipHa1"))
+        << "the SIP digest credential must never leave the server";
+    // Non-secret fields the UI needs are still present.
+    EXPECT_EQ("A-101", arr[0]["flatNumber"]);
+    EXPECT_EQ("u_a101", arr[0]["sipUsername"]);
+}
+
+TEST(MicroServicePbx, Directory_MissingSocietyId_400)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    const std::string req = make_get("/api/v1/subscriber");
+    std::string rsp = MicroServicePbx::handle_directory_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
 }
 
 // ── Subscriber portal login ───────────────────────────────────────────────────
@@ -628,6 +720,16 @@ TEST(MicroServiceRouting, RoutesSubscriberLoginPost)
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_NE(std::string::npos, rsp.find(R"("token")"));
+}
+
+TEST(MicroServiceRouting, RoutesSubscriberGet)
+{
+    TestDb db;  // db_available() false → directory short-circuits to []+200,
+                // which is enough to confirm dispatch picked the handler.
+    MicroService e;
+    const std::string req = make_get("/api/v1/subscriber?societyId=s1");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 }
 
 TEST(MicroServiceRouting, FallsThroughOnXpmileUri)
