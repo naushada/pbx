@@ -112,6 +112,41 @@ services:
     volumes:
       - ${CERTS_DIR:?CERTS_DIR required}:/opt/pbx-agent/certs:ro
 
+  # ──────────────────────────────────────────────────────────────────
+  # pbx-wsdbagent — DB-tunnel side of the on-prem stack.
+  #
+  # Dials wss://${CLOUD_HOST}/ws/db with ACE InnerTLS on top of the
+  # outer WSS (Heroku terminates the outer TLS at the router; the
+  # inner TLS handshake is what the cloud's wsdbproxy authenticates).
+  # Each binary frame carries one BSON-encoded DbRequest / DbResponse.
+  # Standalone binary per xpmile's pattern.
+  # ──────────────────────────────────────────────────────────────────
+  pbx-wsdbagent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.wsdbagent
+    image: localhost/onprem-pbx-wsdbagent:latest
+    container_name: pbx-wsdbagent
+    restart: unless-stopped
+    depends_on:
+      pbx-mongo:
+        condition: service_healthy
+    networks:
+      - pbx-net
+    environment:
+      CLOUD_HOST:    ${CLOUD_HOST:?CLOUD_HOST required}
+      CLOUD_PORT:    ${CLOUD_PORT:-443}
+      BACKOFF:       ${WSDBAGENT_BACKOFF:-5}
+      TLS_CERT:      /opt/wsdbagent/certs/agent.crt
+      TLS_KEY:       /opt/wsdbagent/certs/agent.key
+      TLS_CA:        /opt/wsdbagent/certs/cloud-ca.pem
+      TLS_HOSTNAME:  ${TLS_HOSTNAME:-}      # pin InnerTLS server CN if set
+      MONGO_URI:     mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pbx}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-pbx}
+      MONGO_POOL:    ${MONGO_POOL:-10}
+    volumes:
+      - ${CERTS_DIR:?CERTS_DIR required}:/opt/wsdbagent/certs:ro
+
 volumes:
   pbx_mongo_data:
 

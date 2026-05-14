@@ -12,6 +12,7 @@ include_directories(modules/module/pbx/inc)
 include_directories(modules/module/webservice/inc)
 include_directories(modules/module/mongodb/inc)
 include_directories(modules/module/wsdbproxy/inc)
+include_directories(modules/module/wsdbagent/inc)
 include_directories(modules/module/security/inc)
 include_directories(modules/module/email/inc)
 include_directories(modules/module/thirdparty)
@@ -81,4 +82,24 @@ if(BUILD_BINARIES)
   target_link_libraries(pbx-cloud ssl crypto)
   target_link_libraries(pbx-cloud mongocxx bsoncxx)
   target_link_libraries(pbx-cloud z)
+
+  # ── wsdbagent ──────────────────────────────────────────────────────────
+  # Standalone on-prem binary that dials wss://${CLOUD_HOST}/ws/db with
+  # ACE InnerTLS on top of the outer WSS (Heroku-router TLS terminates
+  # the outer; InnerTLS gives us real mTLS to the cloud process). Each
+  # binary frame carries one BSON-encoded DbRequest / DbResponse.
+  # Verbatim copy from xpmile/modules/module/wsdbagent.
+  file(GLOB MODULE_WSDBAGENT_SOURCES
+       "modules/module/wsdbagent/src/*.cpp")
+  add_executable(wsdbagent
+      ${MODULE_WSDBAGENT_SOURCES}
+      modules/module/wsdbproxy/src/dbproto.cpp
+      modules/module/wsdbproxy/src/wsframe.cpp
+      modules/module/security/src/innertls.cpp
+      modules/module/mongodb/src/mongodbc.cpp)
+  target_link_libraries(wsdbagent pthread)
+  target_link_libraries(wsdbagent ACE)
+  target_link_libraries(wsdbagent ACE_SSL)
+  target_link_libraries(wsdbagent ssl crypto)
+  target_link_libraries(wsdbagent mongocxx bsoncxx)
 endif()
