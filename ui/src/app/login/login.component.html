@@ -16,6 +16,10 @@
             <div class="login-subtitle">Sign in with your flat number and password.</div>
         </div>
 
+        <div *ngIf="timedOut" class="login-timeout-banner" role="status">
+            Your session timed out. Please sign in again.
+        </div>
+
         <form [formGroup]="loginForm" (ngSubmit)="onLogin()" class="login-form" novalidate>
 
             <div class="login-field">

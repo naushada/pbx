@@ -14,6 +14,11 @@ import { PubsubsvcService } from './pubsubsvc.service';
 
 const STORAGE_TOKEN      = 'pbxui:auth-token';
 const STORAGE_SUBSCRIBER = 'pbxui:subscriber';
+// Last-typed identifiers, surfaced on the login form so users don't
+// retype them after a hard reload or session timeout. We never store
+// the password — that defeats the point of asking for it.
+const STORAGE_LAST_SOCIETY = 'pbxui:last-society-code';
+const STORAGE_LAST_FLAT    = 'pbxui:last-flat-number';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
@@ -60,4 +65,16 @@ export class AuthService {
     getToken(): string | undefined      { return this.token; }
     getSubscriber(): Subscriber | undefined { return this.subscriber; }
     isAuthenticated(): boolean          { return !!this.token; }
+
+    setLastCredentials(societyCode: string, flatNumber: string): void {
+        localStorage.setItem(STORAGE_LAST_SOCIETY, societyCode);
+        localStorage.setItem(STORAGE_LAST_FLAT,    flatNumber);
+    }
+
+    getLastCredentials(): { societyCode: string; flatNumber: string } | undefined {
+        const societyCode = localStorage.getItem(STORAGE_LAST_SOCIETY) ?? '';
+        const flatNumber  = localStorage.getItem(STORAGE_LAST_FLAT)    ?? '';
+        if (!societyCode && !flatNumber) return undefined;
+        return { societyCode, flatNumber };
+    }
 }

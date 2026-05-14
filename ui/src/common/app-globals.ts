@@ -70,4 +70,5 @@ export const UriMap = new Map<string, string>([
     ['from_web_push_subscribe',      '/api/v1/push-subscribe'],
     ['from_web_push_vapid_key',      '/api/v1/push-vapid-key'],
     ['from_web_turn_credentials',    '/api/v1/turn-credentials'],
+    ['from_web_ping',                '/api/v1/ping'],
 ]);

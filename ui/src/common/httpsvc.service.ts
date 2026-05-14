@@ -32,10 +32,13 @@ export class HttpsvcService {
     }
 
     // ─── Auth ────────────────────────────────────────────────────────
-    login(societyId: string, flatNumber: string, password: string): Observable<LoginResponse> {
+    // Login takes the human-typed society slug (`societyCode`), not the
+    // internal id — the cloud handler resolves slug → id and includes
+    // both in the LoginResponse. Other endpoints below take `societyId`.
+    login(societyCode: string, flatNumber: string, password: string): Observable<LoginResponse> {
         return this.http.post<LoginResponse>(
             this.getUri('from_web_subscriber_login'),
-            { societyId, flatNumber, password },
+            { societyCode, flatNumber, password },
             this.jsonHeaders,
         );
     }
@@ -76,5 +79,10 @@ export class HttpsvcService {
     // ─── TURN credentials (short-lived) ──────────────────────────────
     getTurnCredentials(): Observable<TurnCredentials> {
         return this.http.get<TurnCredentials>(this.getUri('from_web_turn_credentials'));
+    }
+
+    // ─── Keep-alive heartbeat ────────────────────────────────────────
+    ping(): Observable<{ ok: boolean; ts: number }> {
+        return this.http.get<{ ok: boolean; ts: number }>(this.getUri('from_web_ping'));
     }
 }

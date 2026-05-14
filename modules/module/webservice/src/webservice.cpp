@@ -276,6 +276,10 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "GET" && uri == "/api/v1/turn-credentials")
     return MicroServicePbx::handle_turn_credentials_GET(req, dbInst);
 
+  // Exact-match: GET /api/v1/ping (UI keep-alive heartbeat)
+  if (method == "GET" && uri == "/api/v1/ping")
+    return MicroServicePbx::handle_ping_GET(req, dbInst);
+
   // No PBX route owns this URI — caller falls through to xpmile dispatch.
   return {};
 }
@@ -358,9 +362,23 @@ std::string MicroService::get_cache_control(std::string fileName,
     return "no-cache";
   }
 
-  // Angular content-hashed bundles: 1 year immutable
+  // Angular bundles. Only honor immutable+max-age=1yr when the filename
+  // carries a content hash (e.g. `main.abc123.js`) — production builds
+  // emit those. Our dev build emits bare `main.js`, so every deploy
+  // reuses the same URL and the browser would otherwise hold a stale
+  // copy for a year. For unhashed bundles, send "no-cache" so the
+  // browser revalidates with the origin (still cheap: 304 most of the
+  // time once we wire If-Modified-Since).
   if (!ext.compare("js") || !ext.compare("css")) {
-    return "public, max-age=31536000, immutable";
+    std::string base = fileName;
+    auto slash = base.find_last_of('/');
+    if (slash != std::string::npos) base = base.substr(slash + 1);
+    auto lastDot = base.find_last_of('.');
+    if (lastDot != std::string::npos) base = base.substr(0, lastDot);
+    if (base.find('.') != std::string::npos) {
+      return "public, max-age=31536000, immutable";
+    }
+    return "no-cache";
   }
 
   // Fonts and images: 1 week

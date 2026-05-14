@@ -591,6 +591,19 @@ std::string handle_push_vapid_key_GET(const std::string & /*req*/,
   return http_response(200, "OK", rsp.dump());
 }
 
+// Lightweight health/keep-alive. The UI hits this every 30s while
+// logged in so the browser can detect cloud reachability and so the
+// cloud sees fresh traffic from each tab (useful for future presence
+// work). Intentionally does not touch the DB tunnel — a tunnel hiccup
+// shouldn't drop a user's UI session.
+std::string handle_ping_GET(const std::string & /*req*/,
+                            IMongodbClient & /*db*/) {
+  const long ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  json rsp = {{"ok", true}, {"ts", ts_ms}};
+  return http_response(200, "OK", rsp.dump());
+}
+
 std::string handle_turn_credentials_GET(const std::string &req,
                                         IMongodbClient & /*db*/) {
   Http parsed(req);

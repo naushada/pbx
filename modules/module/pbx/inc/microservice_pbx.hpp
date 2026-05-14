@@ -97,6 +97,11 @@ std::string handle_push_vapid_key_GET(const std::string &req,
 std::string handle_turn_credentials_GET(const std::string &req,
                                         IMongodbClient &db);
 
+/// GET /api/v1/ping
+/// Lightweight health endpoint for the UI's keep-alive heartbeat.
+/// Returns `{"ok": true, "ts": <unix-ms>}`. Does not touch the DB.
+std::string handle_ping_GET(const std::string &req, IMongodbClient &db);
+
 /// Pre-upgrade auth check for /sip-ws. The cloud only allows SIP-WS
 /// upgrades from browsers with a valid portal session cookie — defence in
 /// depth so anonymous browsers cannot open a path to Asterisk through the

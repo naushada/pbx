@@ -136,6 +136,19 @@
     font-size: 0.85rem;
 }
 
+// Surfaced when the keep-alive watchdog or idle timer bounces the
+// user back here. Same shape as the error banner but warning-amber so
+// it doesn't look like a credential rejection.
+.login-timeout-banner {
+    margin: 0 0 1rem;
+    padding: 0.65rem 0.85rem;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    color: #92400e;
+    font-size: 0.85rem;
+}
+
 .login-submit {
     margin-top: 0.5rem;
     padding: 0.85rem;
