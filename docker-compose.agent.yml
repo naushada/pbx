@@ -58,6 +58,12 @@ services:
       - ./docker/asterisk/ari.conf:/etc/asterisk/ari.conf:ro
       - ./docker/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
       - ./docker/asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./docker/asterisk/confbridge.conf:/etc/asterisk/confbridge.conf:ro
+      # DTLS-SRTP cert + key for chan_pjsip's media_encryption=dtls.
+      # Generated locally by scripts/setup-society.sh — self-signed
+      # is correct here: browsers verify the SDP `a=fingerprint` line
+      # per-call, not a CA chain (RFC 5764). Rotate by regenerating.
+      - ${ASTERISK_KEYS_DIR:-./certs/asterisk-dtls}:/etc/asterisk/keys:ro
     networks:
       - pbx-net
     # The agent reaches us at pbx-asterisk:8088 over the compose
@@ -76,7 +82,12 @@ services:
     # in its STUN replies. host networking is the simplest way; trade
     # off is no isolation from the host network namespace.
     volumes:
-      - ./docker/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      # turnserver.conf is rendered from turnserver.conf.template by
+      # scripts/setup-society.sh — the rendered output is per-society
+      # (real static-auth-secret, external-ip, realm) and lives
+      # outside the repo (./certs/turnserver.conf by default, but
+      # configurable via TURN_CONF_PATH).
+      - ${TURN_CONF_PATH:-./certs/turnserver.conf}:/etc/coturn/turnserver.conf:ro
     command: ["-c", "/etc/coturn/turnserver.conf"]
 
   # ──────────────────────────────────────────────────────────────────

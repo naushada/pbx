@@ -337,16 +337,22 @@ rm -f agent.csr cloud-ca.srl cloud-ca.tmp.pem cloud-ca.key
 cp /etc/ssl/cert.pem cloud-ca.pem        # macOS system bundle
 cd ../..
 
-# 2. Fill in .env from the example.
+# 2. Generate the society-specific bits: DTLS cert + TURN secret +
+#    rendered turnserver.conf. Idempotent — re-running keeps existing
+#    material; rm + rerun to rotate.
+./scripts/setup-society.sh "${AGENT_SOCIETY_ID:-demo-society}"
+
+# 3. Fill in .env from the example.
 cp .env.agent.example .env
 $EDITOR .env       # set CLOUD_HOST=pabx-5fbf3550f938.herokuapp.com, AGENT_SOCIETY_ID=…
 
-# 3. Build the amd64 agent image (Heroku is amd64; podman-compose --build
+# 4. Build the amd64 images (Heroku is amd64; podman-compose --build
 #    doesn't honour `localhost/` FROM lines, so build manually first).
-podman build --platform linux/amd64 -f docker/Dockerfile.agent \
-    -t onprem-pbx-agent:latest .
+podman build --platform linux/amd64 -f docker/Dockerfile.agent     -t onprem-pbx-agent:latest .
+podman build --platform linux/amd64 -f docker/Dockerfile.wsdbagent -t onprem-pbx-wsdbagent:latest .
 
-# 4. Up the stack. mongo + asterisk + coturn + pbx-agent.
+# 5. Up the stack. mongo + asterisk (with DTLS keys mounted) + coturn
+#    (with the rendered turnserver.conf) + pbx-agent + pbx-wsdbagent.
 podman-compose -f docker-compose.agent.yml up -d
 podman logs pbx-agent | tail -10
 #   ... AceSslTransport: connected + WS-upgraded pabx-5fbf3550f938.herokuapp.com:443/agent

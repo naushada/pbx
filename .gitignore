@@ -39,6 +39,9 @@ Thumbs.db
 certs/*.key
 certs/*.pem
 certs/*.crt
+certs/turnserver.conf       # rendered per society by scripts/setup-society.sh
+certs/asterisk-dtls/        # DTLS cert + key emitted by setup-society.sh
+certs/agent-deployed/       # cloud↔agent mTLS leaf + CA pin
 !certs/.gitkeep
 !certs/*.template
 

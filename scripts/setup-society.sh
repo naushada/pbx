@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# setup-society.sh — one-shot society install.
+#
+# Generates everything `podman-compose -f docker-compose.agent.yml up`
+# needs that isn't already in the repo:
+#
+#   1. Asterisk DTLS-SRTP cert (self-signed; browsers verify it via the
+#      per-call SDP `a=fingerprint:sha-256 …` line, not a CA chain).
+#   2. 32-byte random `static-auth-secret` for coturn (also the value
+#      that should land in `societies.turnSharedSecret` in Mongo so the
+#      cloud's GET /api/v1/turn-credentials mints matching HMAC creds).
+#   3. Rendered turnserver.conf with the secret + realm + external-ip
+#      substituted in.
+#
+# Does NOT generate the cloud↔agent mTLS material — that's a separate
+# concern (see README "Connect the on-prem stack to the live cloud").
+# Does NOT bring the compose stack up — review the rendered files
+# first, then run `podman-compose -f docker-compose.agent.yml up -d`.
+#
+# Usage:
+#   ./scripts/setup-society.sh [SOCIETY_CODE]
+#
+# Outputs (under repo root):
+#   certs/asterisk-dtls/pbx.crt
+#   certs/asterisk-dtls/pbx.key
+#   certs/turnserver.conf      (rendered from docker/coturn/turnserver.conf.template)
+#
+# Env (optional overrides):
+#   SOCIETY_CODE        Society short code  (default: arg $1, then "demo-society")
+#   EXTERNAL_IP         Public IP of the host running coturn
+#                       (default: best-effort via ifconfig.me / ipify.org;
+#                        falls back to "auto")
+#   ASTERISK_KEYS_DIR   Where to write the DTLS cert  (default: certs/asterisk-dtls)
+#   TURN_CONF_PATH      Where to write turnserver.conf (default: certs/turnserver.conf)
+
+set -euo pipefail
+
+SOCIETY_CODE="${1:-${SOCIETY_CODE:-demo-society}}"
+ASTERISK_KEYS_DIR="${ASTERISK_KEYS_DIR:-certs/asterisk-dtls}"
+TURN_CONF_PATH="${TURN_CONF_PATH:-certs/turnserver.conf}"
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+log() { printf '\033[1;34m[setup-society]\033[0m %s\n' "$*"; }
+
+# ── 1. Asterisk DTLS cert ────────────────────────────────────────────
+log "generating Asterisk DTLS cert at ${ASTERISK_KEYS_DIR}/pbx.{crt,key}"
+mkdir -p "$ASTERISK_KEYS_DIR"
+if [[ -f "${ASTERISK_KEYS_DIR}/pbx.crt" ]]; then
+    log "  …existing cert found, leaving it alone (rm + rerun to rotate)"
+else
+    # ECDSA P-256 cert — what WebRTC implementations actually want.
+    openssl ecparam -genkey -name prime256v1 -noout \
+        -out "${ASTERISK_KEYS_DIR}/pbx.key" 2>/dev/null
+    openssl req -new -x509 -key "${ASTERISK_KEYS_DIR}/pbx.key" \
+        -subj "/CN=pbx-asterisk-${SOCIETY_CODE}" \
+        -days 3650 -sha256 \
+        -out "${ASTERISK_KEYS_DIR}/pbx.crt" 2>/dev/null
+    chmod 600 "${ASTERISK_KEYS_DIR}/pbx.key"
+
+    FP=$(openssl x509 -in "${ASTERISK_KEYS_DIR}/pbx.crt" -noout -fingerprint -sha256 \
+            | sed 's/^.*=//')
+    log "  ✓ generated. SHA-256 fingerprint Asterisk will publish in SDP:"
+    log "    $FP"
+fi
+
+# ── 2. coturn static-auth-secret ─────────────────────────────────────
+mkdir -p "$(dirname "$TURN_CONF_PATH")"
+if [[ -f "$TURN_CONF_PATH" ]] && grep -q '^static-auth-secret=' "$TURN_CONF_PATH"; then
+    STATIC_AUTH_SECRET=$(awk -F= '/^static-auth-secret=/ { print $2 }' "$TURN_CONF_PATH")
+    log "reusing existing static-auth-secret from ${TURN_CONF_PATH}"
+else
+    STATIC_AUTH_SECRET=$(openssl rand -base64 32)
+    log "generated new static-auth-secret (32 bytes base64)"
+fi
+
+# ── 3. Detect external IP (best-effort) ──────────────────────────────
+if [[ -z "${EXTERNAL_IP:-}" ]]; then
+    log "detecting external IP via ifconfig.me…"
+    EXTERNAL_IP=$(curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)
+    if [[ -z "$EXTERNAL_IP" ]]; then
+        log "  …couldn't detect (offline?). Falling back to 'auto' — coturn"
+        log "    will STUN-itself to discover. Set EXTERNAL_IP explicitly"
+        log "    if the society host is double-NAT'd."
+        EXTERNAL_IP=auto
+    else
+        log "  external IP = $EXTERNAL_IP"
+    fi
+fi
+
+# ── 4. Render turnserver.conf from template ──────────────────────────
+REALM="${SOCIETY_CODE}.pbx.local"
+log "rendering ${TURN_CONF_PATH} (realm=$REALM)"
+export REALM STATIC_AUTH_SECRET EXTERNAL_IP
+envsubst '${REALM} ${STATIC_AUTH_SECRET} ${EXTERNAL_IP}' \
+    < docker/coturn/turnserver.conf.template \
+    > "$TURN_CONF_PATH"
+
+# ── 5. Print follow-up commands ──────────────────────────────────────
+cat <<EOF
+
+────────────────────────────────────────────────────────────────────
+Society install ready.
+
+  Society code:           ${SOCIETY_CODE}
+  Asterisk DTLS cert:     ${ASTERISK_KEYS_DIR}/pbx.crt
+  Asterisk DTLS key:      ${ASTERISK_KEYS_DIR}/pbx.key
+  coturn config:          ${TURN_CONF_PATH}
+  coturn realm:           ${REALM}
+  coturn external-ip:     ${EXTERNAL_IP}
+  TURN shared secret:     ${STATIC_AUTH_SECRET}
+
+NEXT — sync the TURN shared secret to the cloud's Mongo:
+
+  mongosh "<cloud Mongo URI>" --eval '
+    db.societies.updateOne(
+      { code: "${SOCIETY_CODE}" },
+      { \$set: { turnSharedSecret: "${STATIC_AUTH_SECRET}" } },
+      { upsert: true }
+    )'
+
+THEN — bring the on-prem stack up:
+
+  podman-compose -f docker-compose.agent.yml up -d
+
+VERIFY — agent + wsdbagent both connect:
+
+  podman logs pbx-agent     | grep 'connected + WS-upgraded'
+  podman logs pbx-wsdbagent | grep 'session started'
+────────────────────────────────────────────────────────────────────
+EOF

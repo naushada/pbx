@@ -1,0 +1,59 @@
+#
+# turnserver.conf.template — coturn config rendered per society by
+# scripts/setup-society.sh. Placeholders `${REALM}`,
+# `${STATIC_AUTH_SECRET}`, and `${EXTERNAL_IP}` are substituted; the
+# rendered file lands at ${TURN_CONF_PATH} (default
+# certs/turnserver.conf) which docker-compose.agent.yml mounts into
+# the pbx-coturn container.
+#
+# Topology (per DESIGN.md §3.2):
+#   - Off-LAN browsers use this as a TURN relay when ICE direct-P2P
+#     fails. The society DNATs ONE public UDP port to the host port
+#     below (default 3478).
+#   - 1:1 calls inside the society's LAN don't need coturn; the
+#     browsers' host candidates suffice.
+#   - ConfBridge legs always traverse Asterisk on the on-prem box —
+#     coturn is irrelevant for conferences.
+#
+# Auth: time-limited credentials issued by the cloud's
+# `GET /api/v1/turn-credentials` endpoint, signed with
+# societies.turnSharedSecret using HMAC-SHA1 (RFC 5766 §5). The cloud
+# stores `static-auth-secret` mirrored into Mongo as
+# `societies.turnSharedSecret`; this file ships the local copy.
+#
+
+# Listening sockets.
+listening-port=3478
+fingerprint
+no-multicast-peers
+
+# Realm — society-specific so creds don't cross-mint between societies
+# sharing a coturn install.
+realm=${REALM}
+
+# Shared secret (32 bytes random, base64). MUST match
+# societies.turnSharedSecret in Mongo. Rotation: regenerate, update
+# both Mongo and this file, restart pbx-coturn. Active calls survive
+# (existing TURN allocations remain valid until their 5-min TTL); new
+# allocations use the new secret.
+use-auth-secret
+static-auth-secret=${STATIC_AUTH_SECRET}
+
+# External IP — what coturn advertises in STUN replies. Without this,
+# off-LAN browsers see the society's LAN IP and ICE fails. If the
+# society host is double-NAT'd, set to the public IP of the
+# outermost NAT. `auto` lets coturn detect via STUN-against-itself
+# (works for single-NAT setups).
+external-ip=${EXTERNAL_IP}
+
+# Bandwidth + connection caps (tune per society size).
+# Per-user quota = simultaneous TURN allocations per (username,credential).
+# total-quota = simultaneous allocations across all users.
+# max-bps = per-allocation bandwidth ceiling.
+user-quota=100
+total-quota=300
+max-bps=512000
+
+# Process hygiene — no interactive CLI, log via syslog.
+no-cli
+syslog
