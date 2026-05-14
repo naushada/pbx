@@ -43,8 +43,8 @@ See [`DESIGN.md §7`](../../../DESIGN.md#7-tunnel-framing-heroku--pbx-agent) for
 | 0x01 | `OPEN`       | cloud → agent       | `{societyId, sipUsername, clientUA}` (JSON) — agent opens an Asterisk socket for this stream-id |
 | 0x02 | `DATA`       | both ways           | raw SIP-WS frame bytes — opaque, byte-faithful                          |
 | 0x03 | `CLOSE`      | both ways           | `{reason}` (JSON) — release stream-id                                   |
-| 0x04 | `PING`       | both ways           | empty — sent every 15 s by the quiet side                               |
-| 0x05 | `PONG`       | both ways           | mirrors `PING` — three missed `PONG`s → drop tunnel                     |
+| 0x04 | `PING`       | agent → cloud       | empty — agent's `CloudConnector` sends one per 15 s of inbound silence; cloud's `SipBridge` echoes a `PONG` |
+| 0x05 | `PONG`       | cloud → agent       | empty — answer to `PING`; agent drops + reconnects the tunnel after 3 consecutive unanswered `PING`s |
 | 0x06 | `ERR`        | both ways           | `{code, msg}` — protocol violation; sender closes the tunnel            |
 | 0x10 | `PUSH_NOTIFY`| agent → cloud       | `{subscriberId, callerFlat, callId}` — INVITE arrived, cloud should VAPID-push |
 | 0x11 | `CDR_PUSH`   | agent → cloud       | BSON CDR doc — replicates finalized CDR to cloud for portal reads       |
@@ -170,7 +170,7 @@ public:
 - **CLOSE semantics.**
   - Browser-initiated close (`on_browser_close`): emit `CLOSE` to agent, erase from map. **Do not** call `close()` on the browser sink — the caller owns that lifetime.
   - Agent-initiated close (incoming `CLOSE` frame): call `close(reason)` on the browser sink, erase from map.
-- **PING / PONG.** Agent `PING` → reply `PONG` with the same stream-id (0 for tunnel-level heartbeat). Liveness tracking on the cloud side wires in with `CloudTunnelEndpoint` later.
+- **PING / PONG.** The cloud is the heartbeat *responder*: an inbound `PING` is answered with a `PONG` carrying the same stream-id (0 for the tunnel-level heartbeat). The cloud does not originate `PING`s or track liveness — the agent's `CloudConnector` owns the heartbeat and drops + reconnects the tunnel on missed `PONG`s (DESIGN.md §7). An inbound `PONG` at the cloud is unexpected in v1 and dropped.
 - **Partial frames.** `on_tunnel_bytes` accumulates into `m_recv_buffer` and decodes as many complete frames as fit. Tail bytes wait for the next call.
 - **Invalid frames.** Returns `false`. The caller (cloud tunnel endpoint) drops the tunnel; reconnect logic kicks in.
 - **Tunnel disconnect.** Closes every browser sink with reason `"tunnel_lost"`, clears the map and the buffer. The stream-id counter does **not** reset — old ids stay dead forever. New browsers after reconnect get fresh ids.

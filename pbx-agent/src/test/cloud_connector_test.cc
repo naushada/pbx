@@ -364,3 +364,121 @@ TEST(CloudConnector, SendMidFlightFailure_MarksDisconnectedAndBuffers)
     EXPECT_EQ(1u, cc.buffered_frame_count())
         << "the frame that triggered the failure should be buffered for retry";
 }
+
+// ── SipFrame-level heartbeat (DESIGN.md §7) ──────────────────────────────────
+
+namespace {
+// default_cfg() leaves the heartbeat at its 15s/3-miss production defaults;
+// the heartbeat tests want a tighter, explicit interval to read cleanly.
+CloudConnector::Config heartbeat_cfg(int interval_sec, int max_missed) {
+    auto c = default_cfg();
+    c.heartbeat_interval_sec = interval_sec;
+    c.heartbeat_max_missed   = max_missed;
+    return c;
+}
+} // namespace
+
+TEST(CloudConnector, Heartbeat_SendsPingAfterIdleInterval)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(heartbeat_cfg(/*interval=*/10, /*max_missed=*/3), fac, clk);
+
+    cc.tick();  // connect at t=0
+    ASSERT_TRUE(cc.connected());
+    auto &ts = fac.last_state();
+    ASSERT_EQ(0u, ts.sent.size());
+
+    // A tick before the interval elapses must NOT send a heartbeat.
+    clk.advance(9);
+    cc.tick();
+    EXPECT_EQ(0u, ts.sent.size()) << "no heartbeat before the interval elapses";
+
+    // Crossing the interval sends exactly one connection-level PING.
+    clk.advance(1);  // t=10
+    cc.tick();
+    ASSERT_EQ(1u, ts.sent.size());
+    const auto r = SipFrame::decode(ts.sent[0]);
+    ASSERT_EQ(SipFrame::Status::Ok, r.status);
+    EXPECT_EQ(SipFrame::Op::PING, r.frame.op);
+    EXPECT_EQ(0u,                 r.frame.stream_id);
+    EXPECT_TRUE(r.frame.payload.empty());
+    EXPECT_EQ(1, cc.pings_outstanding());
+}
+
+TEST(CloudConnector, Heartbeat_InboundBytesResetMissedCount)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(heartbeat_cfg(/*interval=*/10, /*max_missed=*/3), fac, clk);
+
+    cc.tick();  // connect at t=0
+    ASSERT_TRUE(cc.connected());
+
+    // Five heartbeat cycles, each answered by inbound bytes. The miss
+    // counter must keep returning to 0 so the tunnel is never dropped.
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        clk.advance(10);
+        cc.tick();
+        EXPECT_EQ(1, cc.pings_outstanding()) << "cycle " << cycle;
+
+        // Any inbound bytes count as proof of life (here: a PONG reply).
+        cc.on_bytes_received(SipFrame::encode(SipFrame::Op::PONG, 0, ""));
+        EXPECT_EQ(0, cc.pings_outstanding()) << "cycle " << cycle;
+    }
+    EXPECT_TRUE(cc.connected());
+}
+
+TEST(CloudConnector, Heartbeat_DropsTunnelAfterMaxMissedPings)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(heartbeat_cfg(/*interval=*/10, /*max_missed=*/3), fac, clk);
+
+    cc.tick();  // connect at t=0
+    ASSERT_TRUE(cc.connected());
+    TransportState &dead = fac.last_state();
+
+    // Three heartbeat intervals with zero inbound bytes: three PINGs go out,
+    // the tunnel stays up (we haven't exceeded max_missed yet).
+    for (int i = 1; i <= 3; ++i) {
+        clk.advance(10);
+        cc.tick();
+        EXPECT_TRUE(cc.connected())   << "still connected after " << i << " missed";
+        EXPECT_EQ(i, cc.pings_outstanding());
+    }
+    EXPECT_EQ(3u, dead.sent.size()) << "three PINGs were sent";
+
+    // The fourth heartbeat occasion finds max_missed PINGs unanswered and
+    // drops the tunnel instead of sending another.
+    clk.advance(10);
+    cc.tick();
+    EXPECT_FALSE(cc.connected()) << "tunnel dropped after max_missed unanswered PINGs";
+    EXPECT_TRUE(dead.closed);
+    EXPECT_EQ(3u, dead.sent.size()) << "no PING sent on the drop tick";
+
+    // The drop armed an immediate reconnect (next_reconnect_at == 0).
+    EXPECT_EQ(0, cc.next_reconnect_at());
+    cc.tick();
+    EXPECT_TRUE(cc.connected()) << "reconnects on the next tick after a heartbeat drop";
+    EXPECT_EQ(0, cc.pings_outstanding()) << "heartbeat state re-armed on reconnect";
+}
+
+TEST(CloudConnector, Heartbeat_DisabledWhenIntervalZero)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(heartbeat_cfg(/*interval=*/0, /*max_missed=*/3), fac, clk);
+
+    cc.tick();  // connect at t=0
+    ASSERT_TRUE(cc.connected());
+
+    // Far past any sane interval; with the heartbeat disabled nothing is sent
+    // and the tunnel is never declared dead.
+    clk.advance(3600);
+    for (int i = 0; i < 10; ++i) cc.tick();
+
+    EXPECT_TRUE(cc.connected());
+    EXPECT_EQ(0u, fac.last_state().sent.size());
+    EXPECT_EQ(0, cc.pings_outstanding());
+}

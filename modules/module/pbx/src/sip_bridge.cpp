@@ -85,8 +85,11 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
     return;
   }
   case Op::PONG:
+    // The cloud answers PINGs (case PING above) but never originates them —
+    // the agent owns the tunnel heartbeat and its liveness tracking (see
+    // CloudConnector). A PONG arriving here is unexpected in v1; drop it
+    // rather than treat it as a protocol error.
   case Op::ERR:
-    // PONG: heartbeat ack consumed by liveness tracking (not yet wired).
     // ERR : tunnel will be torn down by the peer; passive ack here.
     return;
   case Op::OPEN:

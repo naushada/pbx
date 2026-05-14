@@ -32,7 +32,11 @@ void CloudConnector::send_frame(SipFrame::Op op, std::uint32_t stream_id,
 }
 
 void CloudConnector::tick() {
-  if (m_transport) return; // already connected; nothing to do
+  if (m_transport) {
+    // Connected: the only periodic work is the SipFrame-level heartbeat.
+    maybe_heartbeat();
+    return;
+  }
 
   if (m_clock.now_unix() < m_next_reconnect_at) return; // still backing off
 
@@ -40,6 +44,11 @@ void CloudConnector::tick() {
 }
 
 void CloudConnector::on_bytes_received(const std::string &bytes) {
+  // Any inbound bytes are proof the peer is alive — clear the heartbeat
+  // miss counter regardless of what the bytes decode to (a PONG during an
+  // idle tunnel, DATA during an active call: both prove liveness).
+  m_pings_outstanding = 0;
+
   if (!m_demux) return;
   if (!m_demux->on_tunnel_bytes(bytes)) {
     // Protocol violation — drop the tunnel so the cloud sees a clean reset.
@@ -73,6 +82,10 @@ void CloudConnector::attempt_connect() {
   m_reconnect_attempts   = 0;
   m_current_backoff_sec  = 0;
   m_next_reconnect_at    = 0;
+  // Arm the heartbeat clock so the first PING is one full interval out, not
+  // immediately on the next tick.
+  m_last_heartbeat_unix  = m_clock.now_unix();
+  m_pings_outstanding    = 0;
   flush_outbound();
 }
 
@@ -89,6 +102,10 @@ void CloudConnector::mark_disconnected() {
   // backoff via attempt_connect().
   m_current_backoff_sec = 0;
   m_next_reconnect_at   = 0;
+
+  // Heartbeat state is meaningless without a transport; the next
+  // successful connect re-arms it.
+  m_pings_outstanding = 0;
 }
 
 void CloudConnector::flush_outbound() {
@@ -99,5 +116,32 @@ void CloudConnector::flush_outbound() {
       return;
     }
     m_outbound.pop_front();
+  }
+}
+
+void CloudConnector::maybe_heartbeat() {
+  if (m_cfg.heartbeat_interval_sec <= 0) return; // heartbeat disabled
+
+  const std::int64_t now = m_clock.now_unix();
+  if (now - m_last_heartbeat_unix < m_cfg.heartbeat_interval_sec)
+    return; // not yet time for the next heartbeat
+
+  if (m_pings_outstanding >= m_cfg.heartbeat_max_missed) {
+    // We've sent heartbeat_max_missed PINGs and gotten zero bytes back.
+    // The transport still looks healthy but the peer is unresponsive —
+    // drop it so the reconnect path can re-establish a live tunnel.
+    mark_disconnected();
+    return;
+  }
+
+  // Connection-level heartbeat: stream-id 0, empty payload (DESIGN.md §7).
+  // send_frame() handles a mid-flight send failure by marking us
+  // disconnected, so a dead socket is caught here too.
+  send_frame(SipFrame::Op::PING, 0, {});
+  if (m_transport) {
+    // Still connected after the send — count this PING as outstanding
+    // until on_bytes_received() clears it.
+    ++m_pings_outstanding;
+    m_last_heartbeat_unix = now;
   }
 }

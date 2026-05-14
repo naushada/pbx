@@ -93,6 +93,17 @@ public:
     /// CDR / PUSH_NOTIFY events during a brief tunnel flap. `0` means
     /// unbounded (society loads are small in v1; tighten in v2 if needed).
     std::size_t outbound_buffer_max = 0;
+
+    /// SipFrame-level heartbeat (DESIGN.md §7). After `heartbeat_interval_sec`
+    /// of inbound silence the connector sends a connection-level `PING`; if
+    /// `heartbeat_max_missed` consecutive PINGs go unanswered (no bytes
+    /// received at all in between) the tunnel is declared dead and dropped,
+    /// which arms the reconnect path. This catches a peer that has hung
+    /// without closing the socket — the WS-level keep-alive (PR #1) keeps the
+    /// transport open; this proves the peer behind it is still answering.
+    /// `heartbeat_interval_sec <= 0` disables the heartbeat (used by tests).
+    int heartbeat_interval_sec = 15;
+    int heartbeat_max_missed   = 3;
   };
 
   CloudConnector(Config cfg, ITransportFactory &factory, IClock &clock);
@@ -141,10 +152,19 @@ public:
   std::int64_t  next_reconnect_at()   const { return m_next_reconnect_at; }
   std::size_t   buffered_frame_count() const { return m_outbound.size(); }
 
+  /// Heartbeat PINGs sent since the last inbound bytes. Resets to 0 on any
+  /// `on_bytes_received()` and on every (re)connect. Reaches
+  /// `Config::heartbeat_max_missed` only when the peer has gone silent.
+  int           pings_outstanding()   const { return m_pings_outstanding; }
+
 private:
   void attempt_connect();
   void mark_disconnected();
   void flush_outbound();
+  /// Called from `tick()` while connected: sends a heartbeat PING once per
+  /// `heartbeat_interval_sec` of inbound silence, and drops the tunnel once
+  /// `heartbeat_max_missed` PINGs have gone unanswered.
+  void maybe_heartbeat();
 
   Config             m_cfg;
   ITransportFactory &m_factory;
@@ -157,6 +177,9 @@ private:
   int           m_current_backoff_sec = 0;
   std::int64_t  m_next_reconnect_at   = 0; // 0 = "connect on next tick"
   std::deque<std::string> m_outbound;
+
+  std::int64_t  m_last_heartbeat_unix = 0; // when the last heartbeat PING went out
+  int           m_pings_outstanding   = 0; // PINGs sent with no inbound bytes since
 };
 
 #endif // CLOUD_CONNECTOR_HPP
