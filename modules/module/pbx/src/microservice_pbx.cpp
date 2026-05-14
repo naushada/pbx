@@ -484,8 +484,18 @@ std::string hmac_sha1(const std::string &key, const std::string &msg) {
 
 } // namespace
 
+// Mint a 16-byte random bearer token, hex-encoded → 32 chars. Returns
+// empty on RAND_bytes failure (caller turns that into a 500).
+namespace {
+std::string mint_bearer_token() {
+  unsigned char token_bytes[16];
+  if (RAND_bytes(token_bytes, sizeof(token_bytes)) != 1) return {};
+  return hex_encode(token_bytes, sizeof(token_bytes));
+}
+} // namespace
+
 std::string handle_subscriber_login_POST(const std::string &req,
-                                         IMongodbClient & /*db*/) {
+                                         IMongodbClient &db) {
   Http parsed(req);
 
   json body;
@@ -494,7 +504,7 @@ std::string handle_subscriber_login_POST(const std::string &req,
     return response_error(400, "Bad Request", "Invalid JSON body");
   }
 
-  for (const char *required : {"societyCode", "flatNumber", "password"}) {
+  for (const char *required : {"email", "password"}) {
     if (!body.contains(required) || !body[required].is_string() ||
         body[required].get<std::string>().empty()) {
       return response_error(400, "Bad Request",
@@ -502,31 +512,64 @@ std::string handle_subscriber_login_POST(const std::string &req,
     }
   }
 
-  const std::string society_code = body["societyCode"].get<std::string>();
-  const std::string flat_number  = body["flatNumber"].get<std::string>();
-  // Production auth (strict mode) requires the subscriber row to exist
-  // and bcrypt(portalPasswordHash) to match. The MVP deploy runs without
-  // seeded Mongo data, so we accept any non-empty triple and synthesise
-  // the subscriber profile from the form fields. Override by setting
-  // PBX_AUTH_STRICT=1 once CSV-import has populated the collection.
-  const bool strict = env_or("PBX_AUTH_STRICT") == "1";
-  if (strict) {
-    return response_error(503, "Service Unavailable",
-                          "strict-mode auth requires DB lookup; not yet wired");
+  const std::string email    = body["email"].get<std::string>();
+  const std::string password = body["password"].get<std::string>();
+
+  // Strict mode: look the subscriber up by email (globally unique —
+  // DESIGN.md §5) and verify the password against the stored bcrypt hash.
+  // Dev mode (default) keeps the seed-free deploy working by synthesising
+  // a profile from the email — set PBX_AUTH_STRICT=1 once the CSV-import
+  // flow has populated the `subscribers` collection.
+  if (env_or("PBX_AUTH_STRICT") == "1") {
+    const json query = {{"email", email}};
+    const std::string record =
+        db.get_document("subscribers", query.dump(), "{}");
+    if (record.empty())
+      return response_error(401, "Unauthorized", "Invalid credentials");
+
+    json subscriber;
+    try { subscriber = json::parse(record); }
+    catch (...) {
+      return response_error(500, "Internal Server Error",
+                            "subscriber record is not valid JSON");
+    }
+
+    // Verify against the bcrypt portalPasswordHash. A missing/!string hash
+    // fails closed — we never authenticate without a hash to check.
+    if (!subscriber.contains("portalPasswordHash") ||
+        !subscriber["portalPasswordHash"].is_string() ||
+        !MongodbClient::verify_password(
+            password, subscriber["portalPasswordHash"].get<std::string>())) {
+      return response_error(401, "Unauthorized", "Invalid credentials");
+    }
+
+    // An explicitly disabled subscriber can authenticate but not log in.
+    if (subscriber.contains("status") && subscriber["status"].is_string() &&
+        subscriber["status"].get<std::string>() != "active") {
+      return response_error(403, "Forbidden", "Account disabled");
+    }
+
+    // Never return the secrets: the bcrypt portal hash and the SIP digest
+    // credential (sipHa1) must not leave the server.
+    subscriber.erase("portalPasswordHash");
+    subscriber.erase("sipHa1");
+
+    const std::string token = mint_bearer_token();
+    if (token.empty())
+      return response_error(500, "Internal Server Error", "RAND_bytes failed");
+
+    json rsp = {{"token", token}, {"subscriber", subscriber}};
+    return http_response(200, "OK", rsp.dump());
   }
 
-  // 16-byte random bearer, hex-encoded → 32 chars.
-  unsigned char token_bytes[16];
-  if (RAND_bytes(token_bytes, sizeof(token_bytes)) != 1) {
+  // Dev mode: accept any non-empty {email, password}, synthesise a profile.
+  const std::string token = mint_bearer_token();
+  if (token.empty())
     return response_error(500, "Internal Server Error", "RAND_bytes failed");
-  }
-  const std::string token = hex_encode(token_bytes, sizeof(token_bytes));
 
   json subscriber = {
-      {"societyId",   society_code},
-      {"flatNumber",  flat_number},
-      {"displayName", flat_number},
-      {"sipUser",     flat_number},
+      {"email",       email},
+      {"displayName", email},
       {"role",        "resident"},
   };
   json rsp = {{"token", token}, {"subscriber", subscriber}};

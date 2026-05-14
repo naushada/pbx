@@ -60,14 +60,18 @@ std::string handle_push_subscribe_POST(const std::string &req,
                                        IMongodbClient &db);
 
 /// POST /api/v1/subscriber/login
-/// Body: `{"societyCode":"...","flatNumber":"...","password":"..."}`
-/// Authenticates the subscriber and issues a bearer token. Until the
-/// subscribers collection is seeded by the CSV-import flow, this handler
-/// runs in **dev mode**: any non-empty credentials triple is accepted
-/// and a synthetic subscriber profile is returned. The token is a 32-
-/// character hex string (16 bytes from `crypto.RAND_bytes`). Production
-/// mode (when ENV `PBX_AUTH_STRICT=1`) requires the row to exist in
-/// Mongo and the bcrypt(`portalPasswordHash`) to match.
+/// Body: `{"email":"...","password":"..."}` (portal login is email-keyed —
+/// DESIGN.md §5; email is globally unique across societies).
+/// Authenticates the subscriber and issues a bearer token (32-char hex,
+/// 16 bytes from `RAND_bytes`).
+///   - **Strict mode** (ENV `PBX_AUTH_STRICT=1`): looks the subscriber up
+///     in the `subscribers` collection by email, verifies the password
+///     against the stored bcrypt `portalPasswordHash`, and requires
+///     `status == "active"`. The response profile has `portalPasswordHash`
+///     and `sipHa1` stripped. Bad email/password → 401; disabled → 403.
+///   - **Dev mode** (default, for deploys with no seeded Mongo data): any
+///     non-empty `{email, password}` is accepted and a synthetic profile
+///     is returned.
 std::string handle_subscriber_login_POST(const std::string &req,
                                          IMongodbClient &db);
 

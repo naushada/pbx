@@ -12,15 +12,16 @@ Intercepts PBX URI prefixes before the xpmile route chain so neither `handle_GET
 |---|---|---|
 | `/api/v1/society` (exact) | `POST` | `MicroServicePbx::handle_society_POST` |
 | `/api/v1/subscriber/import` (prefix) | `POST` | `MicroServicePbx::handle_subscriber_import_POST` |
+| `/api/v1/subscriber/login` (exact) | `POST` | `MicroServicePbx::handle_subscriber_login_POST` |
 | `/api/v1/cdr` (prefix) | `GET` | `MicroServicePbx::handle_cdr_GET` |
 | `/api/v1/push/subscribe` (exact) | `POST` | `MicroServicePbx::handle_push_subscribe_POST` |
 | _anything else_ | — | returns empty → caller falls through to xpmile dispatch |
 
 `process_request` calls `dispatch_pbx_routes` first; only if it returns empty does it consult xpmile's method-based chain.
 
-Pinned by **`MicroServiceRouting*`** (7 tests in `modules/module/pbx/test/microservice_pbx_test.cc`):
+Pinned by **`MicroServiceRouting*`** (8 tests in `modules/module/pbx/test/microservice_pbx_test.cc`):
 
-- `RoutesSocietyPost`, `RoutesSubscriberImportPost`, `RoutesCdrGet`, `RoutesPushSubscribePost` — each PBX URI fires the right handler.
+- `RoutesSocietyPost`, `RoutesSubscriberImportPost`, `RoutesSubscriberLoginPost`, `RoutesCdrGet`, `RoutesPushSubscribePost` — each PBX URI fires the right handler.
 - `FallsThroughOnXpmileUri` (`/api/v1/account/login` returns empty), `FallsThroughOnUnknownUri`, `FallsThroughOnWrongMethod` (`GET /api/v1/society`) — xpmile routes stay reachable.
 
 **2. `/agent` WebSocket upgrade hand-off** (Layer 3)

@@ -3,6 +3,7 @@
 #include "json.hpp"
 #include "webservice.hpp"   // for MicroService::dispatch_pbx_routes routing tests
 #include <gtest/gtest.h>
+#include <cstdlib>
 #include <regex>
 #include <string>
 
@@ -337,6 +338,126 @@ TEST(MicroServicePbx, PushSubscribe_RejectsMissingFields)
     EXPECT_TRUE(db.inserts.empty());
 }
 
+// ── Subscriber portal login ───────────────────────────────────────────────────
+
+namespace {
+// RAII: flip PBX_AUTH_STRICT on for a strict-mode test, restore on scope exit.
+// GTest ASSERT_* just returns from the test body, so the destructor still runs.
+struct StrictAuthEnv {
+  StrictAuthEnv()  { ::setenv("PBX_AUTH_STRICT", "1", 1); }
+  ~StrictAuthEnv() { ::unsetenv("PBX_AUTH_STRICT"); }
+};
+
+// A `subscribers` doc whose bcrypt portalPasswordHash matches `password`,
+// shaped like the rows handle_subscriber_import_POST writes.
+std::string subscriber_doc(const std::string &email, const std::string &password,
+                           const std::string &status = "active") {
+  json doc = {
+      {"_id",                "sub_" + email},
+      {"societyId",          "soc1"},
+      {"flatId",             "flatA101"},
+      {"name",               "Asha Resident"},
+      {"email",              email},
+      {"role",               "resident"},
+      {"status",             status},
+      {"sipUsername",        "u_abc123"},
+      {"sipHa1",             "deadbeefdeadbeefdeadbeefdeadbeef"},
+      {"portalPasswordHash", MongodbClient::hash_password(password)},
+  };
+  return doc.dump();
+}
+} // namespace
+
+TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
+{
+    TestDb db;  // PBX_AUTH_STRICT unset → dev mode
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"anyone@example.com","password":"whatever"})");
+
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    const std::string body = rsp.substr(rsp.find("\r\n\r\n") + 4);
+    json j = json::parse(body);
+    EXPECT_FALSE(j["token"].get<std::string>().empty());
+    EXPECT_EQ("anyone@example.com", j["subscriber"]["email"]);
+}
+
+TEST(MicroServicePbx, SubscriberLogin_MissingField_400)
+{
+    TestDb db;
+    const std::string req = make_post("/api/v1/subscriber/login",
+                                      R"({"email":"a@example.com"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_Strict_ValidCredentials_200)
+{
+    StrictAuthEnv strict;
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("email":"asha@example.com")",
+         subscriber_doc("asha@example.com", "s3cret-pass")});
+
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"asha@example.com","password":"s3cret-pass"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    const std::string body = rsp.substr(rsp.find("\r\n\r\n") + 4);
+    json j = json::parse(body);
+    EXPECT_FALSE(j["token"].get<std::string>().empty());
+    EXPECT_EQ("asha@example.com", j["subscriber"]["email"]);
+    EXPECT_EQ("u_abc123",         j["subscriber"]["sipUsername"]);
+    // Secrets must never leave the server.
+    EXPECT_FALSE(j["subscriber"].contains("portalPasswordHash"));
+    EXPECT_FALSE(j["subscriber"].contains("sipHa1"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_Strict_WrongPassword_401)
+{
+    StrictAuthEnv strict;
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("email":"asha@example.com")",
+         subscriber_doc("asha@example.com", "s3cret-pass")});
+
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"asha@example.com","password":"wrong-pass"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_Strict_UnknownEmail_401)
+{
+    StrictAuthEnv strict;
+    TestDb db;  // no subscribers seeded
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"ghost@example.com","password":"whatever"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_Strict_DisabledAccount_403)
+{
+    StrictAuthEnv strict;
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("email":"asha@example.com")",
+         subscriber_doc("asha@example.com", "s3cret-pass", "disabled")});
+
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"asha@example.com","password":"s3cret-pass"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+}
+
 // ── SIP-WS upgrade auth gate ──────────────────────────────────────────────────
 
 TEST(MicroServicePbx, Auth_RejectsAnonymousSipWsUpgrade)
@@ -413,6 +534,18 @@ TEST(MicroServiceRouting, RoutesPushSubscribePost)
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 201 Created"));
     ASSERT_EQ(1u, db.inserts.size());
     EXPECT_EQ("push_subscriptions", db.inserts[0].coll);
+}
+
+TEST(MicroServiceRouting, RoutesSubscriberLoginPost)
+{
+    TestDb db;  // dev mode (PBX_AUTH_STRICT unset) — routing check only
+    MicroService e;
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"a@example.com","password":"p"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find(R"("token")"));
 }
 
 TEST(MicroServiceRouting, FallsThroughOnXpmileUri)
