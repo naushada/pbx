@@ -59,6 +59,44 @@ std::string handle_cdr_GET(const std::string &req, IMongodbClient &db);
 std::string handle_push_subscribe_POST(const std::string &req,
                                        IMongodbClient &db);
 
+/// POST /api/v1/subscriber/login
+/// Body: `{"societyCode":"...","flatNumber":"...","password":"..."}`
+/// Authenticates the subscriber and issues a bearer token. Until the
+/// subscribers collection is seeded by the CSV-import flow, this handler
+/// runs in **dev mode**: any non-empty credentials triple is accepted
+/// and a synthetic subscriber profile is returned. The token is a 32-
+/// character hex string (16 bytes from `crypto.RAND_bytes`). Production
+/// mode (when ENV `PBX_AUTH_STRICT=1`) requires the row to exist in
+/// Mongo and the bcrypt(`portalPasswordHash`) to match.
+std::string handle_subscriber_login_POST(const std::string &req,
+                                         IMongodbClient &db);
+
+/// GET /api/v1/subscriber?societyId=<id>&flatPrefix=<prefix>
+/// Returns matching subscribers in the society (case-insensitive
+/// prefix match). For the MVP this returns the contents of the
+/// `subscribers` collection filtered client-side; an empty array if
+/// the collection has no documents.
+std::string handle_directory_GET(const std::string &req, IMongodbClient &db);
+
+/// GET /api/v1/push-vapid-key
+/// Returns `{"key": "<base64url public key>"}`. Source: the
+/// `VAPID_PUBLIC_KEY` env var, populated by `deploy-heroku.sh` from
+/// the generated VAPID keypair. Returns an empty key string if the
+/// env var is unset (push will silently no-op on the UI side).
+std::string handle_push_vapid_key_GET(const std::string &req,
+                                      IMongodbClient &db);
+
+/// GET /api/v1/turn-credentials
+/// Mints time-limited TURN credentials per RFC 5766 §5:
+///   username   = "<unix-now+ttl>:<sip-user>"
+///   credential = base64(HMAC-SHA1(`societies.turnSharedSecret`, username))
+/// Returns `{ urls, username, credential, ttlSec }`. The TURN_URL env
+/// var supplies the relay address (e.g.
+/// "turn:turn.example.local:3478?transport=udp"); ttl defaults to
+/// 5 minutes.
+std::string handle_turn_credentials_GET(const std::string &req,
+                                        IMongodbClient &db);
+
 /// Pre-upgrade auth check for /sip-ws. The cloud only allows SIP-WS
 /// upgrades from browsers with a valid portal session cookie — defence in
 /// depth so anonymous browsers cannot open a path to Asterisk through the

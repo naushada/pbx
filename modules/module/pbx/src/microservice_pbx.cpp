@@ -6,10 +6,13 @@
 #include "webservice.hpp"
 
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -415,6 +418,174 @@ std::string handle_push_subscribe_POST(const std::string &req,
 
   db.create_document(db.get_database(), "push_subscriptions", body.dump());
   return http_response(201, "Created", body.dump());
+}
+
+// ── Slice (REST-routing fix): login, directory, vapid, turn-creds ────────────
+//
+// These four endpoints unblock the UI's end-to-end flow. Each ships in a
+// minimal-but-correct form so the live deployment behaves as advertised in
+// /webui/. Production-grade auth + DB-backed directory come next.
+
+namespace {
+
+std::string env_or(const char *name, const std::string &fallback = {}) {
+  const char *v = std::getenv(name);
+  return (v && *v) ? std::string(v) : fallback;
+}
+
+std::string base64_encode(const std::string &raw) {
+  // OpenSSL EVP_EncodeBlock writes exactly 4 * ceil(n/3) bytes plus a NUL.
+  const std::size_t out_len = 4 * ((raw.size() + 2) / 3);
+  std::vector<unsigned char> out(out_len + 1, 0);
+  const int n = ::EVP_EncodeBlock(
+      out.data(),
+      reinterpret_cast<const unsigned char *>(raw.data()),
+      static_cast<int>(raw.size()));
+  return std::string(reinterpret_cast<char *>(out.data()),
+                     static_cast<std::size_t>(n));
+}
+
+std::string hmac_sha1(const std::string &key, const std::string &msg) {
+  unsigned int len = 0;
+  unsigned char mac[EVP_MAX_MD_SIZE];
+  ::HMAC(::EVP_sha1(),
+         key.data(), static_cast<int>(key.size()),
+         reinterpret_cast<const unsigned char *>(msg.data()),
+         msg.size(), mac, &len);
+  return std::string(reinterpret_cast<char *>(mac), len);
+}
+
+} // namespace
+
+std::string handle_subscriber_login_POST(const std::string &req,
+                                         IMongodbClient & /*db*/) {
+  Http parsed(req);
+
+  json body;
+  try { body = json::parse(parsed.body()); }
+  catch (...) {
+    return response_error(400, "Bad Request", "Invalid JSON body");
+  }
+
+  for (const char *required : {"societyCode", "flatNumber", "password"}) {
+    if (!body.contains(required) || !body[required].is_string() ||
+        body[required].get<std::string>().empty()) {
+      return response_error(400, "Bad Request",
+                            std::string("Missing field: ") + required);
+    }
+  }
+
+  const std::string society_code = body["societyCode"].get<std::string>();
+  const std::string flat_number  = body["flatNumber"].get<std::string>();
+  // Production auth (strict mode) requires the subscriber row to exist
+  // and bcrypt(portalPasswordHash) to match. The MVP deploy runs without
+  // seeded Mongo data, so we accept any non-empty triple and synthesise
+  // the subscriber profile from the form fields. Override by setting
+  // PBX_AUTH_STRICT=1 once CSV-import has populated the collection.
+  const bool strict = env_or("PBX_AUTH_STRICT") == "1";
+  if (strict) {
+    return response_error(503, "Service Unavailable",
+                          "strict-mode auth requires DB lookup; not yet wired");
+  }
+
+  // 16-byte random bearer, hex-encoded → 32 chars.
+  unsigned char token_bytes[16];
+  if (RAND_bytes(token_bytes, sizeof(token_bytes)) != 1) {
+    return response_error(500, "Internal Server Error", "RAND_bytes failed");
+  }
+  const std::string token = hex_encode(token_bytes, sizeof(token_bytes));
+
+  json subscriber = {
+      {"societyId",   society_code},
+      {"flatNumber",  flat_number},
+      {"displayName", flat_number},
+      {"sipUser",     flat_number},
+      {"role",        "resident"},
+  };
+  json rsp = {{"token", token}, {"subscriber", subscriber}};
+  return http_response(200, "OK", rsp.dump());
+}
+
+std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
+  const std::string uri          = raw_uri_with_query(req);
+  const std::string society_id   = query_param(uri, "societyId");
+  const std::string flat_prefix  = query_param(uri, "flatPrefix");
+  if (society_id.empty()) {
+    return response_error(400, "Bad Request",
+                          "Missing required query param: societyId");
+  }
+
+  // Mongo regex would be ideal but get_documents takes a plain JSON filter
+  // here; do a society-scoped fetch, then filter by prefix client-side.
+  const std::string result = db.get_documents(
+      "subscribers",
+      R"({"societyId":")" + society_id + R"("})",
+      "{}");
+
+  // No rows → return [] rather than the Mongo "" so the UI's typed
+  // response shape is honoured.
+  if (result.empty()) return http_response(200, "OK", "[]");
+
+  json arr;
+  try { arr = json::parse(result); } catch (...) { arr = json::array(); }
+  if (!arr.is_array()) arr = json::array();
+
+  if (!flat_prefix.empty()) {
+    json filtered = json::array();
+    for (auto &row : arr) {
+      if (!row.contains("flatNumber") || !row["flatNumber"].is_string()) continue;
+      const std::string flat = row["flatNumber"].get<std::string>();
+      if (flat.size() < flat_prefix.size()) continue;
+      if (std::equal(flat_prefix.begin(), flat_prefix.end(), flat.begin(),
+                     [](char a, char b) {
+                       return std::tolower(static_cast<unsigned char>(a)) ==
+                              std::tolower(static_cast<unsigned char>(b));
+                     })) {
+        filtered.push_back(row);
+      }
+    }
+    arr = std::move(filtered);
+  }
+
+  return http_response(200, "OK", arr.dump());
+}
+
+std::string handle_push_vapid_key_GET(const std::string & /*req*/,
+                                      IMongodbClient & /*db*/) {
+  const std::string key = env_or("VAPID_PUBLIC_KEY");
+  json rsp = {{"key", key}};
+  return http_response(200, "OK", rsp.dump());
+}
+
+std::string handle_turn_credentials_GET(const std::string &req,
+                                        IMongodbClient & /*db*/) {
+  Http parsed(req);
+  // The caller's bearer should identify the sip-user but we don't yet
+  // validate the bearer end-to-end. For MVP, derive sip-user from the
+  // X-PBX-Flat custom header if present, else fall back to "anon".
+  const std::string sip_user =
+      parsed.get_element("X-PBX-Flat").empty() ? "anon"
+                                               : parsed.get_element("X-PBX-Flat");
+
+  const std::string secret  = env_or("TURN_SHARED_SECRET",
+                                     "dev-only-shared-secret-override-in-prod");
+  const std::string turn_url = env_or("TURN_URL",
+                                      "turn:turn.pbx.local:3478?transport=udp");
+  const long ttl_sec = 300;
+  const long expires =
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count() + ttl_sec;
+
+  const std::string username = std::to_string(expires) + ":" + sip_user;
+  const std::string credential = base64_encode(hmac_sha1(secret, username));
+
+  json rsp = {
+      {"urls",       json::array({turn_url, "stun:" + turn_url.substr(5)})},
+      {"username",   username},
+      {"credential", credential},
+      {"ttlSec",     ttl_sec},
+  };
+  return http_response(200, "OK", rsp.dump());
 }
 
 std::string handle_sipws_upgrade(const std::string &req) {

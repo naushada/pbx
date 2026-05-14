@@ -241,21 +241,40 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   const std::string &uri    = http.uri();
   const std::string &method = http.method();
 
-  // Exact-match: POST /api/v1/society
-  if (method == "POST" && uri == "/api/v1/society")
-    return MicroServicePbx::handle_society_POST(req, dbInst);
+  // Exact-match: POST /api/v1/subscriber/login   (must come before /import prefix-match)
+  if (method == "POST" && uri == "/api/v1/subscriber/login")
+    return MicroServicePbx::handle_subscriber_login_POST(req, dbInst);
 
   // Prefix-match: POST /api/v1/subscriber/import[?societyId=…]
   if (method == "POST" && uri.compare(0, 25, "/api/v1/subscriber/import") == 0)
     return MicroServicePbx::handle_subscriber_import_POST(req, dbInst);
 
+  // Prefix-match: GET /api/v1/subscriber[?societyId=…&flatPrefix=…]
+  // Comes AFTER the more specific /subscriber/login and /subscriber/import
+  // checks above.
+  if (method == "GET" && uri.compare(0, 18, "/api/v1/subscriber") == 0)
+    return MicroServicePbx::handle_directory_GET(req, dbInst);
+
+  // Exact-match: POST /api/v1/society
+  if (method == "POST" && uri == "/api/v1/society")
+    return MicroServicePbx::handle_society_POST(req, dbInst);
+
   // Prefix-match: GET /api/v1/cdr[?societyId=…]
   if (method == "GET" && uri.compare(0, 11, "/api/v1/cdr") == 0)
     return MicroServicePbx::handle_cdr_GET(req, dbInst);
 
-  // Exact-match: POST /api/v1/push/subscribe
-  if (method == "POST" && uri == "/api/v1/push/subscribe")
+  // Exact-match: GET /api/v1/push-vapid-key
+  if (method == "GET" && uri == "/api/v1/push-vapid-key")
+    return MicroServicePbx::handle_push_vapid_key_GET(req, dbInst);
+
+  // POST /api/v1/push-subscribe (UI convention) or /api/v1/push/subscribe (legacy)
+  if (method == "POST" &&
+      (uri == "/api/v1/push-subscribe" || uri == "/api/v1/push/subscribe"))
     return MicroServicePbx::handle_push_subscribe_POST(req, dbInst);
+
+  // Exact-match: GET /api/v1/turn-credentials
+  if (method == "GET" && uri == "/api/v1/turn-credentials")
+    return MicroServicePbx::handle_turn_credentials_GET(req, dbInst);
 
   // No PBX route owns this URI — caller falls through to xpmile dispatch.
   return {};

@@ -1,61 +1,69 @@
+<!-- All classes namespaced with `login-` so Clarity's global CSS in
+     styles.scss can't accidentally match (e.g. `.label` is a Clarity
+     utility class, `<header>` gets flex-row treatment). Plain <div>
+     soup is uglier markup but renders predictably. -->
 <div class="login-page">
-    <main class="login-card" role="main">
-        <header class="brand">
-            <span class="icon" aria-hidden="true">
+    <div class="login-card">
+
+        <div class="login-brand">
+            <div class="login-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="28" height="28">
                     <path fill="currentColor"
                           d="M19.95 21q-3.125 0-6.175-1.362-3.05-1.363-5.55-3.863-2.5-2.5-3.862-5.55Q3 7.175 3 4.05q0-.45.3-.75.3-.3.75-.3H8.1q.35 0 .625.225.275.225.325.575l.65 3.5q.05.35-.013.638-.062.287-.262.487L6.975 10.9q.5.875 1.188 1.7.687.825 1.512 1.6.775.775 1.625 1.438.85.662 1.8 1.212L15.45 14.5q.225-.225.587-.337.363-.113.713-.063l3.45.7q.35.075.575.338.225.262.225.612v4.2q0 .45-.3.75-.3.3-.75.3Z"/>
                 </svg>
-            </span>
-            <h1>Society Softphone</h1>
-            <p class="hint">Sign in with your flat number and password.</p>
-        </header>
+            </div>
+            <div class="login-title">Society Softphone</div>
+            <div class="login-subtitle">Sign in with your flat number and password.</div>
+        </div>
 
-        <form [formGroup]="loginForm" (ngSubmit)="onLogin()" class="form" novalidate>
-            <label class="field" for="societyCode">
-                <span class="label">Society code</span>
-                <input id="societyCode" type="text" formControlName="societyCode"
+        <form [formGroup]="loginForm" (ngSubmit)="onLogin()" class="login-form" novalidate>
+
+            <div class="login-field">
+                <div class="login-field-label">Society code</div>
+                <input class="login-input"
+                       type="text" formControlName="societyCode"
                        placeholder="e.g. greenwoods-a"
                        autocomplete="organization"
                        autocapitalize="off" autocorrect="off" />
-                <small class="field-error"
-                       *ngIf="loginForm.get('societyCode')?.touched && loginForm.get('societyCode')?.invalid">
+                <div class="login-field-error"
+                     *ngIf="loginForm.get('societyCode')?.touched && loginForm.get('societyCode')?.invalid">
                     Society code is required.
-                </small>
-            </label>
+                </div>
+            </div>
 
-            <label class="field" for="flatNumber">
-                <span class="label">Flat number</span>
-                <input id="flatNumber" type="text" formControlName="flatNumber"
+            <div class="login-field">
+                <div class="login-field-label">Flat number</div>
+                <input class="login-input"
+                       type="text" formControlName="flatNumber"
                        placeholder="e.g. A-204"
                        autocomplete="username"
                        autocapitalize="characters" autocorrect="off" />
-                <small class="field-error"
-                       *ngIf="loginForm.get('flatNumber')?.touched && loginForm.get('flatNumber')?.invalid">
+                <div class="login-field-error"
+                     *ngIf="loginForm.get('flatNumber')?.touched && loginForm.get('flatNumber')?.invalid">
                     Flat number is required.
-                </small>
-            </label>
+                </div>
+            </div>
 
-            <label class="field" for="password">
-                <span class="label">Password</span>
-                <input id="password" type="password" formControlName="password"
+            <div class="login-field">
+                <div class="login-field-label">Password</div>
+                <input class="login-input"
+                       type="password" formControlName="password"
                        autocomplete="current-password" />
-                <small class="field-error"
-                       *ngIf="loginForm.get('password')?.touched && loginForm.get('password')?.invalid">
+                <div class="login-field-error"
+                     *ngIf="loginForm.get('password')?.touched && loginForm.get('password')?.invalid">
                     Password is required.
-                </small>
-            </label>
+                </div>
+            </div>
 
-            <p *ngIf="errorMessage" class="alert" role="alert">{{ errorMessage }}</p>
+            <div *ngIf="errorMessage" class="login-error-banner" role="alert">{{ errorMessage }}</div>
 
-            <button type="submit" class="submit" [disabled]="loading">
+            <button type="submit" class="login-submit" [disabled]="loading">
                 <span *ngIf="!loading">Sign in</span>
-                <span *ngIf="loading" class="spinner" aria-label="Signing in"></span>
+                <span *ngIf="loading" class="login-spinner" aria-label="Signing in"></span>
             </button>
         </form>
 
-        <footer class="footer">
-            <span>onprem-pbx · v1.0</span>
-        </footer>
-    </main>
+        <div class="login-footer">onprem-pbx · v1.0</div>
+
+    </div>
 </div>

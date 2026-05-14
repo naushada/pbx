@@ -25,13 +25,14 @@ Every piece of sensitive material the system handles, where it lives, who reads 
 heroku config:set \
   VAPID_KEY_PATH=/app/secrets/vapid.pem \
   VAPID_SUBJECT=mailto:ops@yourcompany.example \
-  --app onprem-pbx
-
-# UI app
-heroku config:set \
-  BACKEND_ORIGIN=https://pabx-5fbf3550f938.herokuapp.com \
-  --app onprem-pbx-ui
+  VAPID_PUBLIC_KEY=<base64url> \
+  TURN_SHARED_SECRET=<32 random bytes, base64> \
+  TURN_URL='turn:turn.example.local:3478?transport=udp' \
+  PBX_AUTH_STRICT=1 \
+  --app pabx
 ```
+
+The UI bundles into the same `pabx` Heroku app — no separate UI app or `BACKEND_ORIGIN` to set.
 
 The VAPID key file ships into the cloud image at build time (multi-stage) or is mounted via Heroku's filesystem (Heroku doesn't really have a secrets-mount story; the file lives inside the image). For the MVP we accept that VAPID key material is baked into the container layer — rotation means rebuilding + redeploying.
 
