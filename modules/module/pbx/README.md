@@ -209,7 +209,8 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 | `/api/v1/subscriber/import?societyId=…`  | `POST` | `handle_subscriber_import_POST`           | CSV body (`flat_number,name,email,phone,role`). Generates `sipUsername`, `sipPassword`, `portalPassword` per row; stores **only** `sipHa1` (MD5(user:realm:pwd)) and `portalPasswordHash` (bcrypt). Returns the plaintexts in a downloadable CSV (one-shot). Idempotent on `(societyId, email)`. 400 with row index if a flat is unknown. |
 | `/api/v1/cdr?societyId=…`                | `GET`  | `handle_cdr_GET`                          | Returns the society's CDR rows as JSON. 400 if `societyId` is missing. |
 | `/api/v1/push/subscribe`                 | `POST` | `handle_push_subscribe_POST`              | Persists a Web Push subscription (`subscriberId`, `endpoint`, `p256dh`, `auth`). 400 on missing fields. |
-| `/sip-ws` (pre-upgrade)                  | `GET`  | `handle_sipws_upgrade`                    | Returns empty string if the request carries a `session=…` cookie (defence in depth — DESIGN.md §5). Returns a 401 response otherwise; caller sends it and closes the socket. |
+| `/api/v1/subscriber/login`               | `POST` | `handle_subscriber_login_POST`            | Body `{email, password}`. Strict mode (`PBX_AUTH_STRICT=1`): Mongo lookup by email + bcrypt `verify_password` + `status=="active"`; dev mode synthesises a profile. On success writes a `sessions` row and replies with a `Set-Cookie: session=…; HttpOnly; Secure; SameSite=Strict` header + `{token, subscriber}` body. 401/403 on bad/disabled. |
+| `/sip-ws` (pre-upgrade)                  | `GET`  | `handle_sipws_upgrade`                    | Resolves the `?token=` query param (or `session=` cookie) against the `sessions` collection. Returns a `SipWsUpgrade{error, open_meta}`: `error` is a 401 response for an absent/unknown/expired session; otherwise `open_meta` is the `{societyId, sipUsername, clientUA}` JSON for the bridge's OPEN frame. |
 
 ### Crypto
 
@@ -217,7 +218,7 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 - **portalPasswordHash**: `MongodbClient::hash_password()` (xpmile-provided bcrypt) for the portal login.
 - **Random secrets**: `OPENSSL_RAND_bytes` over a 62-char alphanumeric alphabet (fallback to `std::random_device` if `RAND_bytes` fails). `sipPassword`/`portalPassword` are 16 chars, `sipUsername` is 10 chars prefixed `u_`, `turnSharedSecret` is 32 chars.
 
-### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 11 tests)
+### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 20 tests)
 
 `MicroServicePbx.SocietyCreate_201`, `SocietyCreate_DuplicateCode_409`.
 
@@ -231,7 +232,11 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 
 `PushSubscribe_PersistsEndpoint`, `PushSubscribe_RejectsMissingFields`.
 
-`Auth_RejectsAnonymousSipWsUpgrade`, `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
+`SubscriberLogin_DevMode_AcceptsAnyCredentials`, `SubscriberLogin_MissingField_400` — login contract + dev mode; the dev case also asserts a `Set-Cookie` header and a `sessions` insert whose row carries the body's token.
+
+`SubscriberLogin_Strict_ValidCredentials_200` (real bcrypt round-trip; `portalPasswordHash`/`sipHa1` stripped from the response; `sessions` row persisted), `SubscriberLogin_Strict_WrongPassword_401`, `SubscriberLogin_Strict_UnknownEmail_401`, `SubscriberLogin_Strict_DisabledAccount_403`.
+
+`Auth_RejectsAnonymousSipWsUpgrade` (no token → 401), `Auth_AllowsSipWsUpgrade_WithSessionCookie` (seeded `sessions` row via cookie → `open_meta` resolved), `SipWsUpgrade_ResolvesSubscriberMeta_FromQueryToken` (the UI's `?token=` path), `SipWsUpgrade_RejectsUnknownToken`, `SipWsUpgrade_RejectsExpiredSession`.
 
 Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collection, query-fragment)` to a canned response — small extension over xpmile's single-result `MockMongodbClient` because MicroServicePbx handlers issue several different queries per call (society lookup + flat lookup + duplicate-email check).
 
@@ -449,9 +454,9 @@ Tests use `socketpair(AF_UNIX, SOCK_STREAM)` so `ACE_SOCK_Stream::recv` reads fr
 
 The Layer 1 / Layer 2 503 stub is retired. The new flow in `WebConnection::handle_input`:
 
-1. Auth gate (unchanged) — 401 if no `session=` cookie.
+1. Resolve the portal session — `handle_sipws_upgrade(request, *mongodbcInst())` looks the `?token=`/cookie up in the `sessions` collection. A null Mongo client or an absent/unknown/expired session → send the error response and close. On success it yields the OPEN-frame `open_meta`.
 2. If `WebServer::cloudTunnelEndpoint()` is null, `sipBridge()` is null, or the agent isn't connected → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers.
-3. Otherwise: 101 Switching Protocols + xpmile-mechanic hand-off ordering (`remove_handler → m_handle=INVALID`) → construct `BrowserStream` on the raw fd → register on the same reactor → release this WebConnection from the pool.
+3. Otherwise: 101 Switching Protocols + xpmile-mechanic hand-off ordering (`remove_handler → m_handle=INVALID`) → construct `BrowserStream` on the raw fd with the resolved `open_meta` → register on the same reactor → release this WebConnection from the pool.
 
 ---
 

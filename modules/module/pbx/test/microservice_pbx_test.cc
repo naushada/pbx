@@ -377,11 +377,19 @@ TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
 
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    // The portal session is persisted and pinned with an HttpOnly cookie.
+    EXPECT_NE(std::string::npos, rsp.find("Set-Cookie: session="));
+    EXPECT_NE(std::string::npos, rsp.find("HttpOnly; Secure; SameSite=Strict"));
+    ASSERT_EQ(1u, db.inserts.size());
+    EXPECT_EQ("sessions", db.inserts[0].coll);
 
     const std::string body = rsp.substr(rsp.find("\r\n\r\n") + 4);
     json j = json::parse(body);
     EXPECT_FALSE(j["token"].get<std::string>().empty());
     EXPECT_EQ("anyone@example.com", j["subscriber"]["email"]);
+    // The token in the body matches the persisted session row.
+    EXPECT_NE(std::string::npos,
+              db.inserts[0].doc.find(j["token"].get<std::string>()));
 }
 
 TEST(MicroServicePbx, SubscriberLogin_MissingField_400)
@@ -406,6 +414,11 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_ValidCredentials_200)
         R"({"email":"asha@example.com","password":"s3cret-pass"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("Set-Cookie: session="));
+    // A `sessions` row is persisted, carrying the real subscriber identity.
+    ASSERT_EQ(1u, db.inserts.size());
+    EXPECT_EQ("sessions", db.inserts[0].coll);
+    EXPECT_NE(std::string::npos, db.inserts[0].doc.find(R"("sipUsername":"u_abc123")"));
 
     const std::string body = rsp.substr(rsp.find("\r\n\r\n") + 4);
     json j = json::parse(body);
@@ -458,22 +471,91 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_DisabledAccount_403)
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
 }
 
-// ── SIP-WS upgrade auth gate ──────────────────────────────────────────────────
+// ── SIP-WS upgrade: session validation + identity resolution ──────────────────
+
+namespace {
+// A `sessions` doc shaped like the one finish_login writes.
+std::string session_doc(const std::string &token, long expires_at,
+                         const std::string &society_id = "soc1",
+                         const std::string &sip_username = "u_abc123") {
+  json doc = {
+      {"token",       token},
+      {"email",       "asha@example.com"},
+      {"societyId",   society_id},
+      {"sipUsername", sip_username},
+      {"role",        "resident"},
+      {"createdAt",   100},
+      {"expiresAt",   expires_at},
+  };
+  return doc.dump();
+}
+constexpr long kFarFuture = 4102444800L;  // year 2100
+} // namespace
 
 TEST(MicroServicePbx, Auth_RejectsAnonymousSipWsUpgrade)
 {
-    const std::string req = make_ws_upgrade("/sip-ws");  // no Cookie
-    std::string rsp = MicroServicePbx::handle_sipws_upgrade(req);
+    TestDb db;
+    const std::string req = make_ws_upgrade("/sip-ws");  // no token, no cookie
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
 
-    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_NE(std::string::npos, up.error.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(up.open_meta.empty());
 }
 
 TEST(MicroServicePbx, Auth_AllowsSipWsUpgrade_WithSessionCookie)
 {
-    const std::string req = make_ws_upgrade("/sip-ws", "other=1; session=abc123");
-    std::string rsp = MicroServicePbx::handle_sipws_upgrade(req);
+    TestDb db;
+    db.getDoc["sessions"].push_back(
+        {R"("token":"abc123")", session_doc("abc123", kFarFuture)});
 
-    EXPECT_TRUE(rsp.empty()) << "Empty response means 'upgrade may proceed'";
+    const std::string req = make_ws_upgrade("/sip-ws", "other=1; session=abc123");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_TRUE(up.error.empty()) << "valid session → upgrade may proceed";
+    ASSERT_FALSE(up.open_meta.empty());
+    json meta = json::parse(up.open_meta);
+    EXPECT_EQ("soc1",     meta["societyId"]);
+    EXPECT_EQ("u_abc123", meta["sipUsername"]);
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_ResolvesSubscriberMeta_FromQueryToken)
+{
+    TestDb db;
+    db.getDoc["sessions"].push_back(
+        {R"("token":"tok-query")",
+         session_doc("tok-query", kFarFuture, "soc9", "u_zzz")});
+
+    // UI delivery path: ?token= in the WebSocket URL, no cookie.
+    const std::string req = make_ws_upgrade("/sip-ws?token=tok-query");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    ASSERT_TRUE(up.error.empty());
+    json meta = json::parse(up.open_meta);
+    EXPECT_EQ("soc9",  meta["societyId"]);
+    EXPECT_EQ("u_zzz", meta["sipUsername"]);
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_RejectsUnknownToken)
+{
+    TestDb db;  // no sessions seeded
+    const std::string req = make_ws_upgrade("/sip-ws?token=ghost");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_NE(std::string::npos, up.error.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(up.open_meta.empty());
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_RejectsExpiredSession)
+{
+    TestDb db;
+    db.getDoc["sessions"].push_back(
+        {R"("token":"stale")", session_doc("stale", /*expires_at=*/1)});
+
+    const std::string req = make_ws_upgrade("/sip-ws?token=stale");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_NE(std::string::npos, up.error.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(up.open_meta.empty());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

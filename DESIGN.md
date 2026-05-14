@@ -180,12 +180,25 @@ push_subscriptions: {
   userAgent, createdAt, lastSeenAt
 }
 
+sessions: {
+  _id,
+  token,                                     // random 16-byte hex — the
+                                             //   `Set-Cookie: session=` value
+                                             //   and the /sip-ws `?token=`
+  email, societyId, sipUsername, role,       // resolved subscriber identity
+  createdAt, expiresAt                       // portal-login session (24 h TTL)
+}
+// Written by POST /api/v1/subscriber/login; the /sip-ws upgrade resolves
+// `token` here to build the bridge OPEN-frame metadata. `token` is a plain
+// field, not `_id`, because the Mongo client's insert path assumes an
+// ObjectId `_id`.
+
 audit: {
   _id, ts, actor, action, target, details    // admin actions + guard-initiated calls
 }
 ```
 
-Indexes: `flats(societyId, number)` unique; `subscribers(societyId, sipUsername)` unique; `subscribers(societyId, email)` unique; `cdr(societyId, startedAt)` for history queries; `subscribers(societyId, role)` for forked-ringing the guard extension.
+Indexes: `flats(societyId, number)` unique; `subscribers(societyId, sipUsername)` unique; `subscribers(societyId, email)` unique; `cdr(societyId, startedAt)` for history queries; `subscribers(societyId, role)` for forked-ringing the guard extension; `sessions(token)` unique, plus a TTL index on `sessions(expiresAt)` so expired rows self-evict.
 
 Notes on roles:
 - `resident` — must have `flatId`.
@@ -201,8 +214,9 @@ Two distinct credentials per subscriber, both generated at CSV-import time, both
 **Portal login**
 - Email + portal password.
 - Stored as `portalPasswordHash` (bcrypt, cost 12).
-- Validated by `MicroService` on the Heroku cloud.
-- Issues an `HttpOnly; Secure; SameSite=Strict` session cookie. Cookie required to upgrade `/sip-ws`.
+- Validated by `MicroService` on the Heroku cloud (`POST /api/v1/subscriber/login`).
+- On success a row is written to the `sessions` collection (§4) and its `token` is returned three ways: an `HttpOnly; Secure; SameSite=Strict` session cookie, and in the JSON body so the UI can pass it as the `/sip-ws` `?token=` query param (browsers can't set headers on `new WebSocket`).
+- The `/sip-ws` upgrade resolves that token against `sessions` — an absent / unknown / expired session is a 401. The resolved `societyId` / `sipUsername` become the bridge's `OPEN`-frame metadata (§7).
 
 **SIP REGISTER (digest)**
 - `sipUsername` + a separate `sipPassword`.
