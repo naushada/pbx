@@ -78,16 +78,22 @@ ENV CLOUD_HOST="" \
     ARI_USER="asterisk" \
     ARI_PASS="asterisk"
 
-ENTRYPOINT ["tini", "--", "/opt/pbx-agent/pbx-agent"]
-CMD ["--cloud-host",     "${CLOUD_HOST}", \
-     "--cloud-port",     "${CLOUD_PORT}", \
-     "--tls-cert",       "${TLS_CERT}", \
-     "--tls-key",        "${TLS_KEY}", \
-     "--tls-ca",         "${TLS_CA}", \
-     "--mongo-uri",      "${MONGO_URI}", \
-     "--society-id",     "${AGENT_SOCIETY_ID}", \
-     "--asterisk-host",  "${ASTERISK_HOST}", \
-     "--asterisk-port",  "${ASTERISK_PORT}", \
-     "--ari-app",        "${ARI_APP}", \
-     "--ari-user",       "${ARI_USER}", \
-     "--ari-pass",       "${ARI_PASS}"]
+# Shell form so env vars expand. JSON-exec form passes literal
+# `${CLOUD_HOST}` etc. to the binary and `stoi("${CLOUD_PORT}")`
+# crash-loops the process. Same fix as Dockerfile.cloud.
+ENTRYPOINT ["tini", "--"]
+CMD ["/bin/sh", "-c", "\
+  /opt/pbx-agent/pbx-agent \
+    --cloud-host    \"$CLOUD_HOST\" \
+    --cloud-port    \"$CLOUD_PORT\" \
+    --tls-cert      \"$TLS_CERT\" \
+    --tls-key       \"$TLS_KEY\" \
+    --tls-ca        \"$TLS_CA\" \
+    --mongo-uri     \"$MONGO_URI\" \
+    --society-id    \"$AGENT_SOCIETY_ID\" \
+    --asterisk-host \"$ASTERISK_HOST\" \
+    --asterisk-port \"$ASTERISK_PORT\" \
+    --ari-app       \"$ARI_APP\" \
+    --ari-user      \"$ARI_USER\" \
+    --ari-pass      \"$ARI_PASS\" \
+"]
