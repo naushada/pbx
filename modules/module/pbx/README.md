@@ -413,16 +413,17 @@ The first concrete reactor binding. Lives between the browser's WebSocket and th
 // In WebConnection::handle_input, after the WS 101 response is sent:
 auto *bs = new BrowserStream(*bridge, raw_fd, open_meta);
 bs->reactor(reactor());
-reactor()->register_handler(bs, ACE_Event_Handler::READ_MASK);
+bs->register_with_reactor();   // READ_MASK + keep-alive ping timer
 ```
 
 - Constructor calls `bridge.on_browser_upgrade(this, open_meta)` and stores the returned stream-id.
+- `register_with_reactor()` registers for `READ_MASK` **and** arms the keep-alive timer (see below). On partial failure it rolls the registration back, so the caller can `delete` the stream safely.
 - ACE owns the lifetime once registered. `handle_close` calls `bridge.on_browser_close(...)` and `delete this`.
 - `close()` (called by the bridge to release the stream) sends a WS close frame, closes the socket, and marks the stream as already-notified so the eventual `handle_close` doesn't double-call into the bridge map.
 
 ### Frame handling
 
-Uses xpmile's `wsframe::{encode, decode, pong_frame, close_frame}`. On `handle_input`:
+Uses xpmile's `wsframe::{encode, decode, ping_frame, pong_frame, close_frame}`. On `handle_input`:
 
 | Inbound WS opcode | Action |
 |---|---|
@@ -434,11 +435,15 @@ Uses xpmile's `wsframe::{encode, decode, pong_frame, close_frame}`. On `handle_i
 
 Outbound (`send_bytes`): encode as a WS **text** frame (RFC 7118 §2 mandates text for SIP-over-WS), unmasked (server→client), and `send_n` to the socket.
 
-### Behaviour pinned by tests (`test/browser_stream_test.cc` — 8 tests)
+### Keep-alive
 
-Tests use `socketpair(AF_UNIX, SOCK_STREAM)` so `ACE_SOCK_Stream::recv` reads from a real fd. No reactor needed — `handle_input` is invoked directly by the test driver.
+Heroku's router H15-drops a WebSocket after 55s with no bytes in either direction, and a SIP call can sit idle far longer than that mid-conversation. `register_with_reactor()` schedules a recurring reactor timer; `handle_timeout` sends an unmasked WS **ping** every 25s (≥ two pings per idle window) to keep the `/sip-ws` socket alive. A failed ping write tears the stream down via `notify_close_once` + `-1`. The timer is cancelled (idempotently) from `handle_close`, `close()`, and the destructor so the reactor can never fire `handle_timeout` on a freed object.
 
-- `ConstructorRegistersStreamWithBridge`, `OnInput_DecodesAndDispatches`, `OnInput_PingTriggersPong`, `OnInput_CloseFrame_TellsBridge`, `SendBytes_EncodesWsFrame`, `Close_SendsWsCloseFrame`, `MultipleFramesInOneRead`, `PartialFrameAcrossReads`.
+### Behaviour pinned by tests (`test/browser_stream_test.cc` — 9 tests)
+
+Tests use `socketpair(AF_UNIX, SOCK_STREAM)` so `ACE_SOCK_Stream::recv` reads from a real fd. No reactor needed — `handle_input` (and `handle_timeout`) are invoked directly by the test driver.
+
+- `ConstructorRegistersStreamWithBridge`, `OnInput_DecodesAndDispatches`, `OnInput_PingTriggersPong`, `HandleTimeout_EmitsWsPing`, `OnInput_CloseFrame_TellsBridge`, `SendBytes_EncodesWsFrame`, `Close_SendsWsCloseFrame`, `MultipleFramesInOneRead`, `PartialFrameAcrossReads`.
 
 ### `/sip-ws` swap in WebConnection
 
@@ -477,13 +482,18 @@ Identical opcode table to `BrowserStream`:
 
 Outbound (`write_bytes`, invoked by adapter): encode as WS text (RFC 7118), unmasked.
 
-### Behaviour pinned by tests (`test/agent_stream_test.cc` — 9 tests)
+### Keep-alive
 
-Tests use `socketpair()` so reads come from a real fd; `handle_input` is invoked directly. Coverage:
+Same H15 problem as `BrowserStream`: `register_with_reactor()` arms a recurring 25s timer and `handle_timeout` sends an unmasked WS **ping** so an otherwise-idle `/agent` tunnel stays alive between SIP traffic bursts. A failed ping write calls `notify_disconnect_once()` and returns `-1`; the timer is cancelled (idempotently) from `handle_close`, `close_socket`, and the destructor.
+
+### Behaviour pinned by tests (`test/agent_stream_test.cc` — 10 tests)
+
+Tests use `socketpair()` so reads come from a real fd; `handle_input` (and `handle_timeout`) are invoked directly. Coverage:
 
 - `ConstructorAttachesToEndpoint` — endpoint's `has_agent()` flips true on construction, back to false on destruction.
 - `OnInput_ForwardsToEndpoint` — masked WS text frame from peer carries a `SipFrame::DATA` payload; round-trips through the endpoint → bridge → `BrowserSink::send_bytes`.
 - `OnInput_PingTriggersPong` — ping bytes from peer → unmasked PONG (`0x8A`) bytes on the other socket end.
+- `HandleTimeout_EmitsWsPing` — firing the keep-alive timer writes an unmasked WS ping (`0x89`) to the socket.
 - `OnInput_CloseFrame_DisconnectsEndpoint` — peer-side WS close → endpoint released.
 - `EndpointSendFrame_WritesWsFrameToSocket` — `endpoint.send_frame(CDR_PUSH, …)` → unmasked WS text frame on the peer side, decoded payload round-trip-matches the original `SipFrame::encode` bytes.
 - `EndpointReleasesTransport_ClosesSocket` — `endpoint.on_agent_disconnected()` → AgentStream's fd is closed (subsequent `recv` on the AgentStream side fails).
@@ -496,7 +506,7 @@ Mirrors the `/sip-ws` swap: on detected `/agent` WS upgrade:
 1. Send `101 Switching Protocols` + `Sec-WebSocket-Accept`.
 2. xpmile-mechanic hand-off (`remove_handler → m_handle=INVALID`).
 3. Construct an `AgentStream` on the raw fd (which immediately calls `endpoint.on_agent_connected`).
-4. `as->reactor(reactor()) + register_handler(READ_MASK)`.
+4. `as->reactor(reactor()) + as->register_with_reactor()` (READ_MASK + keep-alive ping timer).
 5. `connectionPool().erase(raw)`.
 
 The previous Layer 2 "info log only" stub is now retired — `has_agent()` flips true the moment the agent's WS upgrade completes.

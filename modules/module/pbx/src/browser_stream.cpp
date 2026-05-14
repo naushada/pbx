@@ -3,12 +3,19 @@
 
 #include "ace/Log_Msg.h"
 #include "ace/Reactor.h"
+#include "ace/Time_Value.h"
 
 #include <cstring>
 
 namespace {
 
 constexpr std::size_t kReadChunk = 65536;
+
+// Heroku's router H15-drops a WebSocket after 55s with no bytes in
+// either direction. A SIP call can sit idle far longer than that
+// (mid-conversation there's no signalling traffic), so send a WS PING
+// every 25s to keep the /sip-ws socket alive.
+constexpr int kPingIntervalSec = 25;
 
 // WS opcodes (RFC 6455 §5.2).
 constexpr std::uint8_t kOpcodeContinuation = 0x0;
@@ -37,7 +44,8 @@ BrowserStream::BrowserStream(SipBridge &bridge, ACE_HANDLE fd,
 
 BrowserStream::~BrowserStream() {
   // Defensive: if for some reason the bridge wasn't notified (e.g. test
-  // path), do it now. Idempotent.
+  // path), do it now. All three calls are idempotent.
+  cancel_ping_timer();
   notify_close_once("destroyed");
   if (m_handle != ACE_INVALID_HANDLE) {
     m_stream.close();
@@ -46,7 +54,21 @@ BrowserStream::~BrowserStream() {
 }
 
 int BrowserStream::register_with_reactor() {
-  return reactor()->register_handler(this, ACE_Event_Handler::READ_MASK);
+  if (reactor()->register_handler(this, ACE_Event_Handler::READ_MASK) == -1)
+    return -1;
+  // Keep-alive: arm a recurring WS-PING timer (initial delay == interval).
+  // Tests that skip register_with_reactor() never schedule a timer, so
+  // m_ping_timer stays -1 and cancel_ping_timer() is a no-op for them.
+  const ACE_Time_Value interval(kPingIntervalSec);
+  m_ping_timer = reactor()->schedule_timer(this, nullptr, interval, interval);
+  if (m_ping_timer == -1) {
+    // Roll the handler registration back so the caller can `delete` us
+    // without leaving a dangling pointer in the reactor.
+    reactor()->remove_handler(
+        this, ACE_Event_Handler::READ_MASK | ACE_Event_Handler::DONT_CALL);
+    return -1;
+  }
+  return 0;
 }
 
 // ── handle_input ─────────────────────────────────────────────────────────────
@@ -105,12 +127,37 @@ bool BrowserStream::drain_frames() {
 // ── handle_close ─────────────────────────────────────────────────────────────
 
 int BrowserStream::handle_close(ACE_HANDLE /*h*/, ACE_Reactor_Mask /*m*/) {
+  // Cancel the timer BEFORE `delete this` so the reactor can never fire
+  // handle_timeout on a freed object.
+  cancel_ping_timer();
   notify_close_once("handle_close");
   if (m_handle != ACE_INVALID_HANDLE) {
     m_stream.close();
     m_handle = ACE_INVALID_HANDLE;
   }
   delete this;
+  return 0;
+}
+
+// ── handle_timeout ───────────────────────────────────────────────────────────
+
+int BrowserStream::handle_timeout(const ACE_Time_Value & /*tv*/,
+                                  const void * /*act*/) {
+  if (m_handle == ACE_INVALID_HANDLE)
+    return -1; // socket already gone — let the reactor run handle_close
+
+  const auto ping = wsframe::ping_frame();
+  const ssize_t n = m_stream.send_n(ping.data(), ping.size());
+  if (n != static_cast<ssize_t>(ping.size())) {
+    // Write failed — the peer (or Heroku) is already gone. Notify the
+    // bridge and return -1 so the reactor tears us down.
+    ACE_DEBUG((LM_DEBUG,
+               ACE_TEXT("%D [BrowserStream:%t] %M %N:%l keep-alive ping write "
+                        "failed sid=%u; releasing stream\n"),
+               m_stream_id));
+    notify_close_once("keepalive_write_failed");
+    return -1;
+  }
   return 0;
 }
 
@@ -131,6 +178,7 @@ void BrowserStream::close(const std::string &reason) {
   // does NOT need an `on_browser_close` callback here — `close()` is
   // called BY the bridge to release us, so the bridge is the one that
   // initiated the close.
+  cancel_ping_timer();
   const auto close = wsframe::close_frame();
   m_stream.send_n(close.data(), close.size());
   // `notify_close_once` marks us as already closed so handle_close
@@ -149,4 +197,13 @@ void BrowserStream::notify_close_once(const std::string &reason) {
   if (m_close_notified) return;
   m_close_notified = true;
   m_bridge.on_browser_close(m_stream_id, reason);
+}
+
+// ── cancel_ping_timer ────────────────────────────────────────────────────────
+
+void BrowserStream::cancel_ping_timer() {
+  if (m_ping_timer != -1 && reactor() != nullptr) {
+    reactor()->cancel_timer(m_ping_timer);
+  }
+  m_ping_timer = -1;
 }

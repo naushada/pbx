@@ -63,6 +63,9 @@ public:
 
   int handle_input(ACE_HANDLE) override;
   int handle_close(ACE_HANDLE, ACE_Reactor_Mask) override;
+  /// Reactor timer callback. Sends a WS PING so Heroku's router doesn't
+  /// H15-drop an otherwise-idle /agent tunnel. See register_with_reactor().
+  int handle_timeout(const ACE_Time_Value &tv, const void *act) override;
   ACE_HANDLE get_handle() const override { return m_handle; }
 
   // ── Adapter callbacks (private impl details exposed for tests) ─────────
@@ -92,6 +95,9 @@ private:
 
   bool drain_frames();
   void notify_disconnect_once();
+  /// Cancel the keep-alive ping timer if one is scheduled. Idempotent —
+  /// safe to call from handle_close, close_socket, and the destructor.
+  void cancel_ping_timer();
 
   CloudTunnelEndpoint     &m_endpoint;
   ACE_HANDLE               m_handle;
@@ -99,6 +105,7 @@ private:
   TransportAdapter        *m_adapter; // non-owning; endpoint owns via unique_ptr
   std::vector<std::uint8_t> m_recv_buf;
   bool                     m_close_notified = false;
+  long                     m_ping_timer = -1; // reactor timer id; -1 = unscheduled
 };
 
 #endif // AGENT_STREAM_HPP

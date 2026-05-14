@@ -2085,10 +2085,13 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
 
         auto *as = new AgentStream(*parent().cloudTunnelEndpoint(), raw);
         as->reactor(reactor());
-        if (reactor()->register_handler(as, ACE_Event_Handler::READ_MASK) == -1) {
+        // register_with_reactor() registers for READ_MASK *and* arms the
+        // keep-alive WS-PING timer; on partial failure it rolls the
+        // registration back, so `delete as` here is always safe.
+        if (as->register_with_reactor() == -1) {
           ACE_ERROR((LM_ERROR,
                      ACE_TEXT("%D [WebConnection:%t] %M %N:%l "
-                              "AgentStream register_handler failed; "
+                              "AgentStream register_with_reactor failed; "
                               "tearing down agent stream\n")));
           delete as;
         } else {
@@ -2181,10 +2184,13 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
         // Construct + register the BrowserStream on the same reactor.
         auto *bs = new BrowserStream(*bridge, raw, meta);
         bs->reactor(reactor());
-        if (reactor()->register_handler(bs, ACE_Event_Handler::READ_MASK) == -1) {
+        // register_with_reactor() registers for READ_MASK *and* arms the
+        // keep-alive WS-PING timer; on partial failure it rolls the
+        // registration back, so `delete bs` here is always safe.
+        if (bs->register_with_reactor() == -1) {
           ACE_ERROR((LM_ERROR,
                      ACE_TEXT("%D [WebConnection:%t] %M %N:%l "
-                              "BrowserStream register_handler failed; "
+                              "BrowserStream register_with_reactor failed; "
                               "tearing down browser stream sid=%u\n"),
                      bs->stream_id()));
           delete bs;
