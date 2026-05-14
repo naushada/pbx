@@ -16,7 +16,7 @@
 #
 # Optional env (sensible defaults):
 #   CLOUD_PORT          Heroku port                  (default: 443)
-#   MONGO_DB_NAME       Mongo database name          (default: pbx)
+#   MONGO_DB_NAME       Mongo database name          (default: pabx)
 #   ARI_USER / ARI_PASS Asterisk REST creds          (default: asterisk/asterisk)
 #   TURN_PUBLIC_PORT    Society's public TURN UDP    (default: 3478)
 #
@@ -102,7 +102,7 @@ services:
       TLS_CERT:          /opt/pbx-agent/certs/agent.crt
       TLS_KEY:           /opt/pbx-agent/certs/agent.key
       TLS_CA:            /opt/pbx-agent/certs/cloud-ca.pem
-      MONGO_URI:         mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pbx}
+      MONGO_URI:         mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pabx}
       AGENT_SOCIETY_ID:  ${AGENT_SOCIETY_ID:?AGENT_SOCIETY_ID required}
       ASTERISK_HOST:     pbx-asterisk
       ASTERISK_PORT:     "8088"
@@ -141,8 +141,8 @@ services:
       TLS_KEY:       /opt/wsdbagent/certs/agent.key
       TLS_CA:        /opt/wsdbagent/certs/cloud-ca.pem
       TLS_HOSTNAME:  ${TLS_HOSTNAME:-}      # pin InnerTLS server CN if set
-      MONGO_URI:     mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pbx}
-      MONGO_DB_NAME: ${MONGO_DB_NAME:-pbx}
+      MONGO_URI:     mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pabx}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-pabx}
       MONGO_POOL:    ${MONGO_POOL:-10}
     volumes:
       - ${CERTS_DIR:?CERTS_DIR required}:/opt/wsdbagent/certs:ro

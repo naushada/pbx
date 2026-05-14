@@ -29,10 +29,17 @@ heroku config:set \
   TURN_SHARED_SECRET=<32 random bytes, base64> \
   TURN_URL='turn:turn.example.local:3478?transport=udp' \
   PBX_AUTH_STRICT=1 \
+  REMOTE_DB=1 \
   --app pabx
 ```
 
 The UI bundles into the same `pabx` Heroku app — no separate UI app or `BACKEND_ORIGIN` to set.
+
+**Per the xpmile pattern, the cloud does not have a `DB_URI` configured on Heroku.** All Mongo data lives on-prem in each society's `pbx-mongo` container; `REMOTE_DB=1` tells the cloud to route every `db.get_documents()` / `db.create_document()` call through the `wsdbproxy` accept side (cloud-side) into the matching society's `pbx-wsdbagent` tunnel (on-prem). When that tunnel is down, DB-touching REST handlers short-circuit with `[]` via the [`db_available()` guard](./controls.md#11-db-availability-guard-on-rest-handlers).
+
+If you ever want to deviate (e.g. add a Heroku Mongo addon for cloud-side caching), set `DB_URI=mongodb://…/pabx` and leave `REMOTE_DB` unset — the cloud will connect directly. **Don't set both** — the cloud picks `--remote-db` first.
+
+The Mongo database name is `pabx` (matches the Heroku app name; the project + container names keep the `pbx-` prefix). All connection URIs in both pbx-agent and pbx-wsdbagent append `…/pabx`.
 
 The VAPID key file ships into the cloud image at build time (multi-stage) or is mounted via Heroku's filesystem (Heroku doesn't really have a secrets-mount story; the file lives inside the image). For the MVP we accept that VAPID key material is baked into the container layer — rotation means rebuilding + redeploying.
 

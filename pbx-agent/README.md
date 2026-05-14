@@ -467,7 +467,7 @@ The `pbx-agent` container is built from [`docker/Dockerfile.agent`](../docker/Do
 | `TLS_CERT`           | `--tls-cert`       | `/opt/pbx-agent/certs/agent.crt` | Mounted via `CERTS_DIR` bind. |
 | `TLS_KEY`            | `--tls-key`        | `/opt/pbx-agent/certs/agent.key` | |
 | `TLS_CA`             | `--tls-ca`         | `/opt/pbx-agent/certs/cloud-ca.pem` | |
-| `MONGO_URI`          | `--mongo-uri`      | `mongodb://pbx-mongo:27017/pbx` | Service DNS via the `pbx-net` bridge. |
+| `MONGO_URI`          | `--mongo-uri`      | `mongodb://pbx-mongo:27017/pabx` | Service DNS via the `pbx-net` bridge. DB name is `pabx`, matching the Heroku app name. |
 | `AGENT_SOCIETY_ID`   | `--society-id`     | _(required)_             | Mongo ObjectId or short code matching the society document. |
 | `ASTERISK_HOST`/`_PORT` | `--asterisk-host`/`-port` | `pbx-asterisk:8088` | chan_pjsip WS endpoint. |
 | `ARI_APP`            | `--ari-app`        | `pbx`                    | Stasis app name in `extensions.conf`. |

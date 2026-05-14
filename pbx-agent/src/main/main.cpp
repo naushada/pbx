@@ -121,7 +121,7 @@ void print_usage(const char *prog) {
                       "  --tls-cert          <path>  Client cert (PEM) for mTLS to Heroku\n"
                       "  --tls-key           <path>  Client private key (PEM)\n"
                       "  --tls-ca            <path>  CA cert (PEM) to verify Heroku's cert\n"
-                      "  --mongo-uri         <uri>   MongoDB URI (e.g. mongodb://localhost:27017/pbx)\n"
+                      "  --mongo-uri         <uri>   MongoDB URI (e.g. mongodb://localhost:27017/pabx)\n"
                       "  --society-id        <id>    Society id this agent serves\n"
                       "  --asterisk-host     <host>  Asterisk hostname     (default: 127.0.0.1)\n"
                       "  --asterisk-port     <n>     Asterisk port         (default: 8088)\n"

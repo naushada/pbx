@@ -34,6 +34,8 @@ See:
 | 3   | `AriWsClient` — plain-TCP WS client for Asterisk `/ari/events`; HTTP Basic auth; pushes each JSON event into `AriClient::on_event` | ✅ Complete |
 | 3   | `HandoffOrdering` source-invariant test — guards the xpmile-CLAUDE.md `remove_handler → m_handle=INVALID → publish` ordering for all 3 WS upgrade branches (`/sip-ws`, `/agent`, `/ws/db`) | ✅ Complete |
 | 4   | Production wiring — `pbx-agent` + `pbx-cloud` binaries, `AsteriskWsFactory` (real chan_pjsip WS), `AriRestClient` (admission `continue`), real `PushSender` (AceHttpsClient + VAPID), `docker-compose.{agent,heroku}.yml`, `Dockerfile.{agent,cloud,ui}`, `deploy-heroku.sh` | ✅ Complete (see [§ Layer 4 detail](#layer-4--production-wiring-complete)) |
+| 4   | Cloud REST handlers — `subscriber/login` (dev-mode), `subscriber` directory, `push-vapid-key`, `turn-credentials`, `push-subscribe`. `db_available()` env-var guard short-circuits DB-touching handlers when Mongo isn't configured (defends against Heroku H12 timeouts) | ✅ Complete |
+| 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of xpmile's standalone DB-tunnel binary + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Source committed; verifying live |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
 ### Test totals: **425 / 425** (C++ 352 + UI karma 61 + UI Playwright 12)
@@ -357,9 +359,44 @@ The corresponding cloud log line — visible via `heroku logs --tail --app pabx`
 
 | Limitation | Why | Workaround |
 |---|---|---|
-| **mTLS for `/agent` is not actually verified.** | Heroku Common Runtime terminates TLS at the router; the dyno only sees plain HTTP/WS. The agent's `--tls-cert` / `--tls-key` are present but never round-tripped against a verifiable peer. | Move to Heroku Private Spaces (TLS pass-through), or use a proxy in front of the dyno. |
-| **Cloud doesn't run with `--remote-db`.** | We haven't seeded a Mongo connection on Heroku. The cloud's `MicroServicePbx::handle_directory_GET` / `handle_cdr_GET` short-circuit with `[]` via `db_available()` instead of routing through the agent's wsdbagent tunnel. | Add `DB_URI=mongodb://localhost:…` config var **or** flip `REMOTE_DB=1` + ensure the on-prem agent is up before queries arrive. |
+| **mTLS for `/agent` is not actually verified.** | Heroku Common Runtime terminates TLS at the router; the dyno only sees plain HTTP/WS. The agent's `--tls-cert` / `--tls-key` are present but never round-tripped against a verifiable peer. **`/ws/db` already gets around this** via ACE InnerTLS layered over the outer WSS — the same pattern is pending for the `/agent` SIP tunnel (slice D3). | Add InnerTLS to `AceSslTransport` (D3), or move to Heroku Private Spaces (TLS pass-through). |
+| **Cloud doesn't run with `--remote-db` yet.** | The on-prem `pbx-wsdbagent` container exists (D1+D2 committed) but `REMOTE_DB=1` hasn't been flipped on Heroku because it'd block REST handlers until the wsdbagent is live. | D4: `heroku config:set REMOTE_DB=1 --app pabx` **after** `pbx-wsdbagent` is verified connected. |
 | **Login is dev-mode permissive.** | The subscribers collection isn't seeded. `handle_subscriber_login_POST` returns a synthetic session for any non-empty credentials. | Run the CSV-import flow (`POST /api/v1/society/<id>/subscribers/import`) once Mongo is wired, then set `PBX_AUTH_STRICT=1`. |
+
+### On-prem topology (after D1+D2)
+
+```
+                                    Heroku app `pabx`
+                                    ─────────────────
+Browser ──────────HTTPS───────────► pabx-…herokuapp.com
+                                       │
+                                       ├─► /webui/*           (SPA assets)
+                                       ├─► /api/v1/*          (REST → wsdbproxy when REMOTE_DB)
+                                       ├─► /sip-ws            (browser → SipBridge → CloudTunnelEndpoint)
+                                       ├─► /agent             (← pbx-agent     SIP tunnel, plain WSS today)
+                                       └─► /ws/db             (← pbx-wsdbagent DB tunnel, WS + InnerTLS)
+                                                                ▲                 ▲
+                                                                │                 │
+                              ┌─────────────────────────────────┴─────────────────┴─────┐
+                              │ docker-compose.agent.yml on the society host             │
+                              │                                                          │
+                              │   pbx-agent       — SIP tunnel, ARI, AsteriskWsFactory   │
+                              │   pbx-wsdbagent   — DB tunnel (wss+InnerTLS) → pbx-mongo │
+                              │   pbx-mongo       — collections under `pabx.*`           │
+                              │   pbx-asterisk    — chan_pjsip + ConfBridge              │
+                              │   pbx-coturn      — STUN/TURN (host net)                 │
+                              └──────────────────────────────────────────────────────────┘
+```
+
+### Mongo database name
+
+The database name is **`pabx`** (matching the Heroku app name). Project / container / binary names retain the `pbx-` prefix (`pbx-mongo`, `pbx-agent`, `pbx-wsdbagent`, `pbx-cloud`). Connection URIs in both agents append `…/pabx`:
+
+```sh
+MONGO_URI="mongodb://pbx-mongo:27017/pabx"
+```
+
+This is the default in `docker/Dockerfile.{agent,wsdbagent}` and `.env.agent.example`.
 
 ### Optional: standalone UI behind a reverse proxy
 

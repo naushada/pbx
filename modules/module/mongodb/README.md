@@ -4,7 +4,7 @@
 
 Thin, thread-safe wrapper around `mongocxx::pool`. One `MongodbClient` per process (the `mongocxx::instance` is a singleton). Every worker thread in the `webservice` module's `MicroService` pool shares the same client; `pool::acquire()` is thread-safe so no external locking is required.
 
-Database name for onprem-pbx is **`pbx`** ([`DESIGN.md §4`](../../../DESIGN.md#4-data-model-mongodb)). Connection URI in both pbx-agent and the wsdbagent-tunneled cloud points at `mongodb://<host>/pbx`.
+Database name for onprem-pbx is **`pabx`** ([`DESIGN.md §4`](../../../DESIGN.md#4-data-model-mongodb)). Connection URI in both `pbx-agent` and the `wsdbagent`-tunneled cloud points at `mongodb://<host>/pabx`. (Project + container names retain the `pbx-` prefix; only the Mongo DB name is `pabx`, matching the Heroku app name.)
 
 ## Collections
 
