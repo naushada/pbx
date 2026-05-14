@@ -23,6 +23,23 @@ COPY CMakeLists.txt /src/
 COPY modules/      /src/modules/
 COPY test/         /src/test/
 
+# ── InnerTLS material (xpmile pattern, DESIGN.md §11) ──────────────
+# The repo CA + an in-build-stage fresh server key signs into a leaf
+# cert. The CA private key (ca.key) is consumed here and then deleted
+# from the build context so it doesn't end up in any layer the runtime
+# stage inherits. Only ca.crt + server.{crt,key} survive into runtime.
+COPY certs/innertls/ /tmp/repo-certs/
+RUN mkdir -p /src/certs && \
+    openssl genrsa -out /src/certs/server.key 2048 && \
+    openssl req -new -key /src/certs/server.key \
+        -out /src/certs/server.csr \
+        -subj "/O=onprem-pbx/CN=pabx.herokuapp.com" && \
+    openssl x509 -req -days 365 -in /src/certs/server.csr \
+        -CA /tmp/repo-certs/ca.crt -CAkey /tmp/repo-certs/ca.key -CAcreateserial \
+        -out /src/certs/server.crt && \
+    cp /tmp/repo-certs/ca.crt /src/certs/ca.crt && \
+    rm -f /src/certs/server.csr /src/certs/ca.srl /tmp/repo-certs/ca.key
+
 WORKDIR /src/build
 RUN cmake -DBUILD_TESTS=OFF -DBUILD_BINARIES=ON .. \
  && make -j"$(nproc)" pbx-cloud
@@ -75,6 +92,13 @@ RUN ldconfig
 RUN mkdir -p /opt/pbx-cloud/certs /opt/pbx-cloud/vapid /opt/webgui/webui
 COPY --from=cpp-builder /src/build/pbx-cloud /opt/pbx-cloud/pbx-cloud
 
+# InnerTLS material baked into the cloud image. ca.crt is the shared
+# CA both peers verify against; server.{crt,key} is the cloud's
+# identity that pbx-wsdbagent verifies (CN = pabx.herokuapp.com).
+COPY --from=cpp-builder /src/certs/ca.crt     /opt/pbx-cloud/certs/ca.crt
+COPY --from=cpp-builder /src/certs/server.crt /opt/pbx-cloud/certs/server.crt
+COPY --from=cpp-builder /src/certs/server.key /opt/pbx-cloud/certs/server.key
+
 # UI bundle. The webservice's static-file handler resolves to
 # `../webgui/webui/<path>` relative to its WORKDIR (see
 # modules/module/webservice/src/webservice.cpp). This path is inherited
@@ -94,9 +118,9 @@ ENV PORT="8080" \
     DB_NAME="pabx" \
     REMOTE_DB="" \
     AGENT_PORT="" \
-    TLS_CERT="" \
-    TLS_KEY="" \
-    TLS_CA="" \
+    TLS_CERT="/opt/pbx-cloud/certs/server.crt" \
+    TLS_KEY="/opt/pbx-cloud/certs/server.key" \
+    TLS_CA="/opt/pbx-cloud/certs/ca.crt" \
     VAPID_KEY_PATH="" \
     VAPID_SUBJECT=""
 

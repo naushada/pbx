@@ -45,6 +45,15 @@ certs/agent-deployed/       # cloud↔agent mTLS leaf + CA pin
 !certs/.gitkeep
 !certs/*.template
 
+# InnerTLS material (xpmile pattern):
+#   - certs/innertls/{ca,server,client}.crt — committed (public certs)
+#   - certs/innertls/*.key                  — gitignored (private keys)
+#   - certs/innertls/generate.sh            — committed
+!certs/innertls/*.crt
+!certs/innertls/generate.sh
+certs/innertls/*.key
+certs/innertls/*.srl
+
 # Logs
 *.log
 logs/
