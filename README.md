@@ -38,17 +38,17 @@ See:
 | 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of xpmile's standalone DB-tunnel binary + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Source committed; verifying live |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
-### Test totals: **444 / 444** (C++ 371 + UI karma 61 + UI Playwright 12)
+### Test totals: **448 / 448** (C++ 375 + UI karma 61 + UI Playwright 12)
 
 | Layer | Suites | Tests |
 |-------|--------|------:|
 | 0     | HttpParser 20 + MessageParserBase 8 + SipParser 17 + SipFrame 10 | **55** |
-| 1     | SipBridge 14 + MicroServicePbx 20 + MicroServiceRouting 8 + PushSender 8 | **50** |
+| 1     | SipBridge 14 + MicroServicePbx 23 + MicroServiceRouting 9 + PushSender 8 | **54** |
 | 2     | SipFrameDemux 14 + CloudConnector 15 + AriClient 11 + CloudTunnelEndpoint 12 | **52** |
 | 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 | **59** |
 | 4     | AsteriskWsFactory 13 + AriRestClient 14 + AceHttpsClient 13 | **40** |
 | regression | inherited xpmile suites (verbatim copy) | **115** |
-| **Total** | **36 suites** | **371** |
+| **Total** | **36 suites** | **375** |
 
 | UI suite | Tests |
 |----------|------:|

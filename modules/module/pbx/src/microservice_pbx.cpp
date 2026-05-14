@@ -366,6 +366,13 @@ std::string handle_subscriber_import_POST(const std::string &req,
     json subscriber = {
         {"societyId",          society_id},
         {"flatId",             flat_id},
+        // Denormalized human flat string ("A-204") alongside the `flatId`
+        // foreign key — the directory filters/displays on it and the UI
+        // dials by it. Same human-string-copy pattern as `cdr.fromFlat`
+        // (DESIGN.md §4). `flat_no` is a required CSV column so this is
+        // always set; only `flatId` is empty for non-residents (the flat
+        // is validated + resolved to an id for residents only).
+        {"flatNumber",         flat_no},
         {"name",               name},
         {"email",              email},
         {"phone",              phone},
@@ -654,6 +661,16 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
   json arr;
   try { arr = json::parse(result); } catch (...) { arr = json::array(); }
   if (!arr.is_array()) arr = json::array();
+
+  // Strip server-only secrets from every row — the directory must never
+  // expose the bcrypt portal hash or the SIP digest credential (sipHa1).
+  // Same secrets `handle_subscriber_login_POST` strips from its response.
+  for (auto &row : arr) {
+    if (row.is_object()) {
+      row.erase("portalPasswordHash");
+      row.erase("sipHa1");
+    }
+  }
 
   if (!flat_prefix.empty()) {
     json filtered = json::array();

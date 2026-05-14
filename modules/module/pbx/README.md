@@ -206,7 +206,8 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 | URI                                      | Method | Function                                  | Behaviour |
 |------------------------------------------|--------|-------------------------------------------|-----------|
 | `/api/v1/society`                        | `POST` | `handle_society_POST`                     | Create society; generates `sipRealm`, `turnSharedSecret`, defaults `maxConcurrentCalls=5`, `ringTimeoutSec=30`. 409 on duplicate `code`. |
-| `/api/v1/subscriber/import?societyId=…`  | `POST` | `handle_subscriber_import_POST`           | CSV body (`flat_number,name,email,phone,role`). Generates `sipUsername`, `sipPassword`, `portalPassword` per row; stores **only** `sipHa1` (MD5(user:realm:pwd)) and `portalPasswordHash` (bcrypt). Returns the plaintexts in a downloadable CSV (one-shot). Idempotent on `(societyId, email)`. 400 with row index if a flat is unknown. |
+| `/api/v1/subscriber/import?societyId=…`  | `POST` | `handle_subscriber_import_POST`           | CSV body (`flat_number,name,email,phone,role`). Generates `sipUsername`, `sipPassword`, `portalPassword` per row; stores **only** `sipHa1` (MD5(user:realm:pwd)) and `portalPasswordHash` (bcrypt), plus a denormalized `flatNumber` (the directory filters/displays on it). Returns the plaintexts in a downloadable CSV (one-shot). Idempotent on `(societyId, email)`. 400 with row index if a flat is unknown. |
+| `/api/v1/subscriber?societyId=…&flatPrefix=…` | `GET` | `handle_directory_GET`                 | Society-scoped subscriber directory; optional case-insensitive `flatPrefix` filter on the denormalized `flatNumber`. Strips `portalPasswordHash` and `sipHa1` from every row. 400 if `societyId` is missing; `[]` when no DB is configured. |
 | `/api/v1/cdr?societyId=…`                | `GET`  | `handle_cdr_GET`                          | Returns the society's CDR rows as JSON. 400 if `societyId` is missing. |
 | `/api/v1/push/subscribe`                 | `POST` | `handle_push_subscribe_POST`              | Persists a Web Push subscription (`subscriberId`, `endpoint`, `p256dh`, `auth`). 400 on missing fields. |
 | `/api/v1/subscriber/login`               | `POST` | `handle_subscriber_login_POST`            | Body `{email, password}`. Strict mode (`PBX_AUTH_STRICT=1`): Mongo lookup by email + bcrypt `verify_password` + `status=="active"`; dev mode synthesises a profile. On success writes a `sessions` row and replies with a `Set-Cookie: session=…; HttpOnly; Secure; SameSite=Strict` header + `{token, subscriber}` body. 401/403 on bad/disabled. |
@@ -218,15 +219,17 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 - **portalPasswordHash**: `MongodbClient::hash_password()` (xpmile-provided bcrypt) for the portal login.
 - **Random secrets**: `OPENSSL_RAND_bytes` over a 62-char alphanumeric alphabet (fallback to `std::random_device` if `RAND_bytes` fails). `sipPassword`/`portalPassword` are 16 chars, `sipUsername` is 10 chars prefixed `u_`, `turnSharedSecret` is 32 chars.
 
-### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 20 tests)
+### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 23 tests)
 
 `MicroServicePbx.SocietyCreate_201`, `SocietyCreate_DuplicateCode_409`.
 
-`SubscriberImport_GeneratesCreds` — asserts `sipHa1` + `portalPasswordHash` ARE in the inserted doc, plaintext `sipPassword` and `portalPassword` are NOT.
+`SubscriberImport_GeneratesCreds` — asserts `sipHa1` + `portalPasswordHash` + the denormalized `flatNumber` ARE in the inserted doc, plaintext `sipPassword` and `portalPassword` are NOT.
 
 `SubscriberImport_RejectsBadFlat` — error body names the offending row index and flat number.
 
 `SubscriberImport_Idempotent` — re-importing a row whose email already exists adds a `skipped` line and does not insert again.
+
+`Directory_FiltersByFlatPrefix` — case-insensitive `flatPrefix` filter on `flatNumber`; `Directory_StripsSecrets` — `portalPasswordHash`/`sipHa1` never in the response; `Directory_MissingSocietyId_400`.
 
 `CdrList_FiltersBySociety`, `CdrList_MissingSocietyId_400`.
 
