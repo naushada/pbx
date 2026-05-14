@@ -1,0 +1,55 @@
+# systemd unit for the on-prem PBX stack. Brings up MongoDB + Asterisk
+# + coturn + pbx-agent + pbx-wsdbagent at boot, and tears them down
+# cleanly on shutdown.
+#
+# The compose file already declares `restart: unless-stopped` on every
+# service, which handles per-container crashes. This unit is what
+# starts podman-compose in the first place after a host reboot — none
+# of the compose `restart` policies fire until something runs the
+# compose-up command.
+#
+# Install: scripts/install-systemd.sh
+# Manual:
+#   sudo cp systemd/onprem-pbx.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now onprem-pbx.service
+#   sudo systemctl status onprem-pbx.service
+
+[Unit]
+Description=onprem-pbx control plane (MongoDB + Asterisk + coturn + agent + wsdbagent)
+Documentation=https://github.com/naushada/onprem-pbx/blob/main/docs/design/operations/restart-survival.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# The working directory must hold docker-compose.agent.yml plus the
+# certs/ tree. The installer either points this at the repo clone or
+# copies the files to /opt/onprem-pbx; see install-systemd.sh.
+WorkingDirectory=/opt/onprem-pbx
+
+# .env supplies CLOUD_HOST, AGENT_SOCIETY_ID, CERTS_DIR (and any
+# optional overrides like CLOUD_PORT or MONGO_DB_NAME). The leading
+# dash makes the file optional so the unit doesn't fail loudly if the
+# operator hasn't created .env yet; podman-compose will then complain
+# itself with a much clearer error.
+EnvironmentFile=-/opt/onprem-pbx/.env
+
+# podman-compose's install path varies by distro (pip vs apt). Make
+# both common locations searchable so the unit works on Ubuntu, Debian,
+# Fedora, and Arch without per-host tweaks.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+ExecStart=/usr/bin/env podman-compose -f docker-compose.agent.yml up -d
+ExecStop=/usr/bin/env podman-compose -f docker-compose.agent.yml down
+
+# Cross-arch builds (amd64 binaries on aarch64 hosts via qemu) and the
+# initial Mongo healthcheck can together push first-boot above the
+# systemd default of 90s. Five minutes covers a fresh image pull on a
+# slow uplink too.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
