@@ -106,15 +106,23 @@ std::string handle_turn_credentials_GET(const std::string &req,
 /// Returns `{"ok": true, "ts": <unix-ms>}`. Does not touch the DB.
 std::string handle_ping_GET(const std::string &req, IMongodbClient &db);
 
-/// Pre-upgrade auth check for /sip-ws. The cloud only allows SIP-WS
-/// upgrades from browsers with a valid portal session cookie — defence in
-/// depth so anonymous browsers cannot open a path to Asterisk through the
-/// tunnel.
-///
-/// @return Empty string if the upgrade may proceed; otherwise a complete
-/// 401 Unauthorized response that the caller should send and then close
-/// the socket.
-std::string handle_sipws_upgrade(const std::string &req);
+/// Result of the /sip-ws pre-upgrade auth check.
+struct SipWsUpgrade {
+  /// Non-empty → a complete HTTP error response the caller should send
+  /// before closing the socket. When empty, the upgrade may proceed.
+  std::string error;
+  /// Valid only when `error` is empty: the JSON payload for the bridge's
+  /// `OPEN` frame, identifying the subscriber behind this stream —
+  /// `{"societyId","sipUsername","clientUA"}` (DESIGN.md §7).
+  std::string open_meta;
+};
+
+/// Pre-upgrade auth + identity resolution for /sip-ws. The browser presents
+/// its portal session as a `?token=` query param (browsers can't set headers
+/// on `new WebSocket`) or a `session=` cookie; this resolves it against the
+/// `sessions` collection, rejecting an absent / unknown / expired session,
+/// and on success builds the `OPEN`-frame metadata from the session record.
+SipWsUpgrade handle_sipws_upgrade(const std::string &req, IMongodbClient &db);
 
 } // namespace MicroServicePbx
 

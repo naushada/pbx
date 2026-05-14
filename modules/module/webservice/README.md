@@ -41,13 +41,13 @@ The Layer 2 "info log only" stub is retired. `AgentStream`'s 10-test suite cover
 
 When a WS upgrade for `/sip-ws` arrives:
 
-1. Call `MicroServicePbx::handle_sipws_upgrade(request)`. Non-empty return = 401 (no `session=…` cookie). Send and close.
+1. Call `MicroServicePbx::handle_sipws_upgrade(request, *parent().mongodbcInst())` (503 if the Mongo client is null). It resolves the browser's `?token=`/`session=` cookie against the `sessions` collection and returns a `SipWsUpgrade{error, open_meta}` — a non-empty `error` (401 for an absent/unknown/expired session) is sent and the socket closed.
 2. If the control plane isn't fully wired (`cloudTunnelEndpoint()` / `sipBridge()` null, or no agent connected) → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers so monitoring can distinguish the failure modes.
-3. Otherwise: complete the WS handshake (`101 Switching Protocols` + `Sec-WebSocket-Accept`), perform the xpmile-mechanic hand-off (`remove_handler → m_handle = INVALID → publish raw fd`), construct a [`BrowserStream`](../pbx/README.md#browserstream--ace-event-handler-for-the-browsers-sip-ws-socket) on the raw fd, register it with the same reactor, and release this WebConnection from the pool.
+3. Otherwise: complete the WS handshake (`101 Switching Protocols` + `Sec-WebSocket-Accept`), perform the xpmile-mechanic hand-off (`remove_handler → m_handle = INVALID → publish raw fd`), construct a [`BrowserStream`](../pbx/README.md#browserstream--ace-event-handler-for-the-browsers-sip-ws-socket) on the raw fd **with the resolved `open_meta`** (`{societyId, sipUsername, clientUA}`), register it with the same reactor, and release this WebConnection from the pool.
 
 `BrowserStream` (in the `pbx/` module) owns the socket lifetime from there. Its 9-test suite covers WS decode/encode, ping/pong, the keep-alive ping timer, close handling, and frame-boundary edge cases via `socketpair()` — no reactor needed for unit tests.
 
-Auth-gate behaviour is still pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade` / `Auth_AllowsSipWsUpgrade_WithSessionCookie`.
+Session validation + identity resolution is pinned by `MicroServicePbx.Auth_RejectsAnonymousSipWsUpgrade`, `Auth_AllowsSipWsUpgrade_WithSessionCookie`, `SipWsUpgrade_ResolvesSubscriberMeta_FromQueryToken`, `SipWsUpgrade_RejectsUnknownToken`, `SipWsUpgrade_RejectsExpiredSession`.
 
 The xpmile `/ws/db` upgrade branch is **unchanged** — three upgrades (`/ws/db`, `/agent`, `/sip-ws`) now coexist on the same `WebConnection::handle_input` path with the same hand-off mechanics.
 

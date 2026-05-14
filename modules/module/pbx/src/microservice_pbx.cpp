@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -26,15 +27,19 @@ namespace {
 
 // ── Small response helpers ────────────────────────────────────────────────────
 
+// `extra_headers`, when non-empty, must be complete CRLF-terminated header
+// line(s) — they are emitted verbatim after Content-Type (e.g. `Set-Cookie`).
 std::string http_response(int code, const std::string &reason,
                           const std::string &body,
-                          const std::string &content_type = "application/json") {
+                          const std::string &content_type = "application/json",
+                          const std::string &extra_headers = {}) {
   std::ostringstream os;
   os << "HTTP/1.1 " << code << " " << reason << "\r\n"
      << "Connection: keep-alive\r\n"
      << "Access-Control-Allow-Origin: *\r\n"
      << "Content-Length: " << body.size() << "\r\n"
      << "Content-Type: " << content_type << "\r\n"
+     << extra_headers
      << "\r\n"
      << body;
   return os.str();
@@ -484,14 +489,56 @@ std::string hmac_sha1(const std::string &key, const std::string &msg) {
 
 } // namespace
 
+namespace {
+
+// Portal session lifetime. The /sip-ws upgrade rejects a session whose
+// `expiresAt` is in the past (see handle_sipws_upgrade).
+constexpr long kSessionTtlSec = 24 * 60 * 60;
+
 // Mint a 16-byte random bearer token, hex-encoded → 32 chars. Returns
 // empty on RAND_bytes failure (caller turns that into a 500).
-namespace {
 std::string mint_bearer_token() {
   unsigned char token_bytes[16];
   if (RAND_bytes(token_bytes, sizeof(token_bytes)) != 1) return {};
   return hex_encode(token_bytes, sizeof(token_bytes));
 }
+
+// Persist a portal session and build the 200 login response. The token is
+// returned three ways: as the `sessions` doc key, as a `Set-Cookie` header,
+// and in the JSON body — the UI needs the raw value for the /sip-ws
+// `?token=` query param (browsers can't set headers on `new WebSocket`).
+std::string finish_login(IMongodbClient &db, const json &subscriber,
+                         const std::string &email,
+                         const std::string &society_id,
+                         const std::string &sip_username,
+                         const std::string &role) {
+  const std::string token = mint_bearer_token();
+  if (token.empty())
+    return response_error(500, "Internal Server Error", "RAND_bytes failed");
+
+  const long now = static_cast<long>(::time(nullptr));
+  // `token` is a plain field, not `_id`: MongodbClient::create_document
+  // assumes an ObjectId `_id` in its return path. A unique index on
+  // `sessions.token` is expected (same convention as the other collections).
+  const json session = {
+      {"token",       token},
+      {"email",       email},
+      {"societyId",   society_id},
+      {"sipUsername", sip_username},
+      {"role",        role},
+      {"createdAt",   now},
+      {"expiresAt",   now + kSessionTtlSec},
+  };
+  db.create_document(db.get_database(), "sessions", session.dump());
+
+  const std::string set_cookie =
+      "Set-Cookie: session=" + token +
+      "; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=" +
+      std::to_string(kSessionTtlSec) + "\r\n";
+  const json rsp = {{"token", token}, {"subscriber", subscriber}};
+  return http_response(200, "OK", rsp.dump(), "application/json", set_cookie);
+}
+
 } // namespace
 
 std::string handle_subscriber_login_POST(const std::string &req,
@@ -549,31 +596,32 @@ std::string handle_subscriber_login_POST(const std::string &req,
       return response_error(403, "Forbidden", "Account disabled");
     }
 
+    // Capture the identity fields for the session BEFORE stripping secrets.
+    const std::string society_id =
+        subscriber.value("societyId", std::string{});
+    const std::string sip_username =
+        subscriber.value("sipUsername", std::string{});
+    const std::string role =
+        subscriber.value("role", std::string{"resident"});
+
     // Never return the secrets: the bcrypt portal hash and the SIP digest
     // credential (sipHa1) must not leave the server.
     subscriber.erase("portalPasswordHash");
     subscriber.erase("sipHa1");
 
-    const std::string token = mint_bearer_token();
-    if (token.empty())
-      return response_error(500, "Internal Server Error", "RAND_bytes failed");
-
-    json rsp = {{"token", token}, {"subscriber", subscriber}};
-    return http_response(200, "OK", rsp.dump());
+    return finish_login(db, subscriber, email, society_id, sip_username, role);
   }
 
   // Dev mode: accept any non-empty {email, password}, synthesise a profile.
-  const std::string token = mint_bearer_token();
-  if (token.empty())
-    return response_error(500, "Internal Server Error", "RAND_bytes failed");
-
-  json subscriber = {
+  // The session is persisted just like strict mode so the /sip-ws upgrade
+  // path stays mode-agnostic — it always resolves the token via `sessions`.
+  const json subscriber = {
       {"email",       email},
       {"displayName", email},
       {"role",        "resident"},
   };
-  json rsp = {{"token", token}, {"subscriber", subscriber}};
-  return http_response(200, "OK", rsp.dump());
+  return finish_login(db, subscriber, email, /*society_id=*/"dev",
+                      /*sip_username=*/email, /*role=*/"resident");
 }
 
 std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
@@ -678,29 +726,60 @@ std::string handle_turn_credentials_GET(const std::string &req,
   return http_response(200, "OK", rsp.dump());
 }
 
-std::string handle_sipws_upgrade(const std::string &req) {
+SipWsUpgrade handle_sipws_upgrade(const std::string &req, IMongodbClient &db) {
   // Browsers can't set arbitrary headers on `new WebSocket(url)`, so the
   // UI passes its bearer via `?token=<value>` (see
   // ui/src/common/sip.service.ts and the comment in sip-ua-sipjs.ts).
-  // Accept either the query-string token or a legacy `session=` cookie
-  // — older builds/tests still use the cookie path.
-  const std::string uri    = raw_uri_with_query(req);
-  const std::string token  = query_param(uri, "token");
-
+  // Accept either the query-string token or a `session=` cookie — both
+  // resolve to the same `sessions.token`.
   Http parsed(req);
-  const std::string cookie  = parsed.get_element("Cookie");
-  const std::string session = cookie_value(cookie, "session");
+  std::string token = query_param(raw_uri_with_query(req), "token");
+  if (token.empty())
+    token = cookie_value(parsed.get_element("Cookie"), "session");
 
-  if (token.empty() && session.empty()) {
-    return response_error(401, "Unauthorized",
-                          "SIP-WS upgrade requires ?token=<bearer> or a "
-                          "session= cookie tied to a portal login");
+  if (token.empty()) {
+    return {response_error(401, "Unauthorized",
+                           "SIP-WS upgrade requires ?token=<bearer> or a "
+                           "session= cookie tied to a portal login"),
+            {}};
   }
 
-  // The bridge wrapper that owns the upgrade hand-off is responsible
-  // for validating the token/session against Mongo. We only enforce
-  // that *some* proof of login was presented.
-  return {};
+  // Resolve the token against the portal `sessions` collection (written by
+  // handle_subscriber_login_POST → finish_login).
+  const json query = {{"token", token}};
+  const std::string record = db.get_document("sessions", query.dump(), "{}");
+  if (record.empty()) {
+    return {response_error(401, "Unauthorized",
+                           "unknown or expired portal session"),
+            {}};
+  }
+
+  json session;
+  try { session = json::parse(record); }
+  catch (...) {
+    return {response_error(500, "Internal Server Error",
+                           "session record is not valid JSON"),
+            {}};
+  }
+
+  // Reject an expired session. `expiresAt` is the unix timestamp stamped at
+  // login; a missing / non-numeric field fails closed.
+  const long now = static_cast<long>(::time(nullptr));
+  if (!session.contains("expiresAt") || !session["expiresAt"].is_number() ||
+      session["expiresAt"].get<long>() <= now) {
+    return {response_error(401, "Unauthorized",
+                           "unknown or expired portal session"),
+            {}};
+  }
+
+  // Identity resolved — build the OPEN-frame metadata (DESIGN.md §7). The
+  // bridge ships this byte-faithfully to the agent in the OPEN frame.
+  const json open_meta = {
+      {"societyId",   session.value("societyId", std::string{})},
+      {"sipUsername", session.value("sipUsername", std::string{})},
+      {"clientUA",    parsed.get_element("User-Agent")},
+  };
+  return {/*error=*/std::string{}, open_meta.dump()};
 }
 
 } // namespace MicroServicePbx

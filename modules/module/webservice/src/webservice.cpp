@@ -2126,10 +2126,23 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
           !ws_http.get_element("sec-websocket-key").empty();
 
       if (is_sip_ws_upgrade) {
-        const std::string auth_rsp =
-            MicroServicePbx::handle_sipws_upgrade(request);
-        if (!auth_rsp.empty()) {
-          m_stream.send_n(auth_rsp.data(), auth_rsp.size());
+        // Resolve the browser's portal session against Mongo — this both
+        // gates the upgrade and yields the subscriber identity carried in
+        // the bridge's OPEN frame.
+        IMongodbClient *db = parent().mongodbcInst();
+        if (!db) {
+          const std::string stub =
+              "HTTP/1.1 503 Service Unavailable\r\n"
+              "Content-Length: 0\r\n"
+              "Connection: close\r\n"
+              "X-PBX-Hint: mongo client unavailable\r\n\r\n";
+          m_stream.send_n(stub.data(), stub.size());
+          return -1;
+        }
+        const MicroServicePbx::SipWsUpgrade upgrade =
+            MicroServicePbx::handle_sipws_upgrade(request, *db);
+        if (!upgrade.error.empty()) {
+          m_stream.send_n(upgrade.error.data(), upgrade.error.size());
           return -1;
         }
 
@@ -2164,12 +2177,10 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
                                     "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
         m_stream.send_n(rsp.data(), rsp.size());
 
-        // Open metadata for the bridge: identify the subscriber from the
-        // session cookie if we can. Today's placeholder just stamps the
-        // raw fd; the cookie/session lookup lands when we wire portal
-        // session storage in Mongo.
-        const std::string meta = "{\"sourceFd\":" + std::to_string(
-                                     static_cast<int>(m_handle)) + "}";
+        // Open metadata for the bridge: the subscriber identity resolved
+        // from the portal session — `{societyId, sipUsername, clientUA}`
+        // (handle_sipws_upgrade / DESIGN.md §7).
+        const std::string meta = upgrade.open_meta;
 
         m_handedOff = true;
         ACE_HANDLE raw = m_handle;
