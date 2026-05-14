@@ -2,11 +2,14 @@
 
 VoIP PBX for residential societies. Heroku-hosted control plane (C++ / ACE) + on-prem `pbx-agent` (C++ / ACE + Asterisk + coturn + MongoDB) + Angular web softphone (SIP.js + WebRTC). Sibling project to [xpmile](../xpmile).
 
+**Live**: <https://pabx-5fbf3550f938.herokuapp.com/webui/> — single Heroku app (`pabx`) serving UI at `/webui/` + REST + SIP-over-WS + `/agent` mTLS tunnel. UI assets at `/webui/main.js`, `/webui/favicon.svg`, `/webui/sw.js`. SPA login is dev-mode permissive — any non-empty `societyCode` / `flatNumber` / `password` returns a synthetic session until the CSV-import flow + `PBX_AUTH_STRICT=1` are wired.
+
 See:
 
 - [PRD.md](./PRD.md) — product requirements, personas, success metrics.
 - [DESIGN.md](./DESIGN.md) — architecture, components, data model, call flows, media security.
 - [TDD-PLAN.md](./TDD-PLAN.md) — test layers and implementation order.
+- [docs/design/security/](./docs/design/security/) — threat model, auth, controls, media, secrets.
 
 ## Status
 
@@ -51,7 +54,20 @@ See:
 | Playwright E2E — login, dashboard, directory, history, settings | **12** |
 | **UI total** | **73** |
 
-**The MVP is feature-complete end-to-end.** Cloud + agent control plane has real ACE bindings; the on-prem stack composes a working Asterisk/coturn/Mongo/agent topology; the Angular softphone can register over SIP-over-WS, dial directory entries, host inbound calls with VAPID push wakeup, and join a society ConfBridge. Production images for both `pbx-cloud` and `pbx-ui` are smoke-built and deployable to Heroku via `./deploy-heroku.sh deploy-all`.
+**The MVP is feature-complete end-to-end and live.** Cloud + agent control plane has real ACE bindings; the on-prem stack composes a working Asterisk/coturn/Mongo/agent topology; the Angular softphone can register over SIP-over-WS, dial directory entries, host inbound calls with VAPID push wakeup, and join a society ConfBridge. The cloud image (UI bundled) is deployed to Heroku at `pabx-5fbf3550f938.herokuapp.com`, and an on-prem agent dialing from `podman-compose -f docker-compose.agent.yml` has been verified live (cloud logs `GET /agent HTTP/1.1 Upgrade: websocket` ↔ agent logs `AceSslTransport: connected + WS-upgraded`).
+
+### Cloud-side PBX REST endpoints (live)
+
+| Method + Path | Behaviour |
+|---|---|
+| `POST /api/v1/subscriber/login` | Dev-mode permissive auth — accepts any `{societyCode, flatNumber, password}` triple, returns `{token, subscriber}`. Strict mode (set `PBX_AUTH_STRICT=1`) reserved for the bcrypt path once subscribers are seeded. |
+| `GET /api/v1/subscriber?societyId=…&flatPrefix=…` | Society-scoped directory. Returns `[]` when Mongo is unconfigured (see `db_available()` guard). |
+| `GET /api/v1/cdr?societyId=…` | Society-scoped CDR list. Same DB guard. |
+| `GET /api/v1/push-vapid-key` | Returns `{key: $VAPID_PUBLIC_KEY}`. |
+| `GET /api/v1/turn-credentials` | Mints RFC 5766 §5 HMAC-SHA1 creds from `$TURN_SHARED_SECRET` / `$TURN_URL`. TTL 300 s. |
+| `POST /api/v1/push-subscribe` (or legacy `/push/subscribe`) | Persists a Web Push subscription. 503 when Mongo unconfigured. |
+| `POST /api/v1/society` | Create a society. Existing handler (xpmile slice 1). |
+| `POST /api/v1/subscriber/import` | CSV import. Existing handler. |
 
 ## Architecture (end of Layer 3)
 
@@ -223,21 +239,54 @@ See [`ui/README.md`](./ui/README.md) for slice plan and dependency pinning notes
 
 ## Deploy the cloud to Heroku
 
-The cloud side runs one container — `pbx-cloud` — pushed to `registry.heroku.com`:
+The cloud side runs one container — `pbx-cloud` — pushed to `registry.heroku.com/pabx/web`. The simple path is:
 
 ```sh
-# One-time: authenticate the local podman daemon with Heroku's registry.
 HEROKU_APP=pabx ./deploy-heroku.sh login
-
-# Build + push + release in one shot.
 HEROKU_APP=pabx ./deploy-heroku.sh deploy
-
-# Individual subcommands (same as xpmile's deploy-heroku.sh):
-#   build | push | release | logs | open
-HEROKU_APP=pabx ./deploy-heroku.sh logs
+# subcommands: build | push | release | logs | open
 ```
 
-The wrapper is a thin shell around `podman-compose -f docker-compose.heroku.yml build pbx-cloud`, `podman push --format=v2s2`, and `heroku container:release`. The image is the same `docker/Dockerfile.cloud` that produces `localhost/onprem-pbx-cloud:latest` locally, just retagged for Heroku.
+`deploy-heroku.sh` is a thin wrapper around `podman-compose build`, `podman push --format=v2s2`, and `heroku container:release`. **Two practical gotchas** the wrapper handles for you (or that you'll hit if you build by hand):
+
+1. **`podman push` fails partway through with `authentication required` against Heroku's registry** for some blobs. The Heroku container registry uses scope-based auth tokens that podman's bulk-push doesn't always re-acquire mid-transfer. **Workaround**: pipe the image through `skopeo` — it acquires a fresh token per HEAD/PUT and the push completes:
+
+   ```sh
+   podman save -o "$HOME/pbx-cloud.tar" registry.heroku.com/pabx/web
+   podman run --rm -v "$HOME:/work:ro" quay.io/skopeo/stable:latest \
+       copy --dest-creds="_:$(heroku auth:token)" \
+            --format v2s2 --retry-times 5 \
+            docker-archive:/work/pbx-cloud.tar \
+            docker://registry.heroku.com/pabx/web
+   ```
+
+2. **Heroku rejects arm64 images** (Common Runtime is amd64-only). Builds on Apple Silicon **must** use `--platform linux/amd64`. The cached `pbx-cpp-builder:bootstrap` must also be amd64 — re-bootstrap from xpmile's Dockerfile if you've only ever built locally:
+
+   ```sh
+   cd ../xpmile
+   podman build --platform linux/amd64 --target cpp-builder \
+       -f docker/Dockerfile -t pbx-cpp-builder:bootstrap .
+   ```
+
+The first-time Heroku app preparation:
+
+```sh
+heroku stack:set container --app pabx           # flip from buildpack → container stack
+heroku config:set \
+    VAPID_PUBLIC_KEY=<base64url> \
+    TURN_SHARED_SECRET="$(openssl rand -base64 32)" \
+    TURN_URL='turn:turn.pbx.local:3478?transport=udp' \
+    --app pabx
+# Add `PBX_AUTH_STRICT=1 DB_URI=mongodb://…` once the subscribers
+# collection is seeded; until then the cloud runs in dev-mode.
+```
+
+After a release, smoke-check with [`scripts/verify-deploy.sh`](./scripts/verify-deploy.sh):
+
+```sh
+./scripts/verify-deploy.sh remote
+# 7/7 probes passed — UI index/main.js/favicon/sw.js + SPA fallback + REST reachability
+```
 
 ### UI is bundled into the cloud image
 
@@ -261,6 +310,56 @@ URL surface (single Heroku app, single dyno):
 The SPA's `<base href>` is set to `/webui/` so all asset paths resolve under the same prefix.
 
 Verify a deployment with `./scripts/verify-deploy.sh remote` — probes seven URLs and reports pass/fail.
+
+### Connect the on-prem stack to the live cloud
+
+Once the cloud is running on Heroku, bring up the on-prem stack on any host (your dev laptop is fine) so the agent dials `/agent` over the public Internet:
+
+```sh
+# 1. Generate self-signed mTLS material + replace the cloud CA with
+#    the system trust bundle. Heroku's router uses a real CA-signed
+#    cert at the edge; the agent's --tls-ca must therefore trust the
+#    real root, not our self-signed CA. mTLS client-cert verification
+#    is effectively a no-op (Heroku terminates TLS before the dyno
+#    ever sees the cert) so the leaf is only for the future where
+#    we deploy behind a TLS-passthrough load balancer.
+mkdir -p certs/agent-deployed && cd certs/agent-deployed
+openssl genrsa -out cloud-ca.key 2048
+openssl req -x509 -new -nodes -key cloud-ca.key -sha256 -days 365 \
+    -subj '/CN=onprem-pbx-ca' -out cloud-ca.tmp.pem
+openssl genrsa -out agent.key 2048
+openssl req -new -key agent.key -subj '/CN=pbx-agent-dev' -out agent.csr
+openssl x509 -req -in agent.csr -CA cloud-ca.tmp.pem -CAkey cloud-ca.key \
+    -CAcreateserial -days 365 -sha256 -out agent.crt
+rm -f agent.csr cloud-ca.srl cloud-ca.tmp.pem cloud-ca.key
+cp /etc/ssl/cert.pem cloud-ca.pem        # macOS system bundle
+cd ../..
+
+# 2. Fill in .env from the example.
+cp .env.agent.example .env
+$EDITOR .env       # set CLOUD_HOST=pabx-5fbf3550f938.herokuapp.com, AGENT_SOCIETY_ID=…
+
+# 3. Build the amd64 agent image (Heroku is amd64; podman-compose --build
+#    doesn't honour `localhost/` FROM lines, so build manually first).
+podman build --platform linux/amd64 -f docker/Dockerfile.agent \
+    -t onprem-pbx-agent:latest .
+
+# 4. Up the stack. mongo + asterisk + coturn + pbx-agent.
+podman-compose -f docker-compose.agent.yml up -d
+podman logs pbx-agent | tail -10
+#   ... AceSslTransport: connected + WS-upgraded pabx-5fbf3550f938.herokuapp.com:443/agent
+#   ... AriWsClient: connected to Asterisk ARI pbx-asterisk:8088 (app=pbx)
+```
+
+The corresponding cloud log line — visible via `heroku logs --tail --app pabx` — is `GET /agent HTTP/1.1 ... Upgrade: websocket`. The tunnel is now alive end-to-end.
+
+### Known limitations of the current Heroku deployment
+
+| Limitation | Why | Workaround |
+|---|---|---|
+| **mTLS for `/agent` is not actually verified.** | Heroku Common Runtime terminates TLS at the router; the dyno only sees plain HTTP/WS. The agent's `--tls-cert` / `--tls-key` are present but never round-tripped against a verifiable peer. | Move to Heroku Private Spaces (TLS pass-through), or use a proxy in front of the dyno. |
+| **Cloud doesn't run with `--remote-db`.** | We haven't seeded a Mongo connection on Heroku. The cloud's `MicroServicePbx::handle_directory_GET` / `handle_cdr_GET` short-circuit with `[]` via `db_available()` instead of routing through the agent's wsdbagent tunnel. | Add `DB_URI=mongodb://localhost:…` config var **or** flip `REMOTE_DB=1` + ensure the on-prem agent is up before queries arrive. |
+| **Login is dev-mode permissive.** | The subscribers collection isn't seeded. `handle_subscriber_login_POST` returns a synthetic session for any non-empty credentials. | Run the CSV-import flow (`POST /api/v1/society/<id>/subscribers/import`) once Mongo is wired, then set `PBX_AUTH_STRICT=1`. |
 
 ### Optional: standalone UI behind a reverse proxy
 

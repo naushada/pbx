@@ -15,12 +15,14 @@ The three are intentionally independent. Compromising the portal token doesn't y
 ## 1. Subscriber portal — bearer flow
 
 ### Login
-1. UI `LoginComponent` posts `{ societyId, flatNumber, password }` to `POST /api/v1/subscriber/login`.
-2. Cloud verifies against the `subscribers` collection.
+1. UI `LoginComponent` posts `{ societyCode, flatNumber, password }` to `POST /api/v1/subscriber/login`.
+2. **Cloud handler (current — dev-mode permissive).** `MicroServicePbx::handle_subscriber_login_POST` validates the three fields are non-empty and returns a synthetic subscriber + a 16-byte hex bearer (`RAND_bytes`). **It does not yet check Mongo.** This was intentional: the Heroku deploy has no seeded `subscribers` collection, and the goal of the MVP slice was to make the end-to-end flow demonstrable. When `PBX_AUTH_STRICT=1` is set, the handler short-circuits with `503 Service Unavailable` instead of issuing a session — that path will become the real bcrypt-against-`portalPasswordHash` check once CSV-import has populated the collection.
 3. On success, cloud returns `{ token, subscriber }` JSON.
 4. `AuthService.setSession(token, subscriber)` writes both into `localStorage`:
-   - `pbxui:auth-token` — opaque server-issued string
+   - `pbxui:auth-token` — opaque server-issued string (32 hex chars from `crypto.RAND_bytes`)
    - `pbxui:subscriber` — JSON object (societyId, flatNumber, displayName, sipUser, role)
+
+**Risk of dev-mode**: anyone can sign in. The deployment **must not** be marketed to society admins or carry real data until strict mode is on. The deploy currently has no PII; the synthetic subscriber's `societyId` is whatever the user typed.
 
 ### Session reuse across reloads
 On every load `AuthService` rehydrates from `localStorage` and re-emits the subscriber via `PubsubsvcService.onSubscriber`. Cached state surviving reloads is a deliberate choice — Web Push wakeup needs the SW to be able to focus a logged-in app without prompting again.
@@ -91,6 +93,19 @@ Cert lifecycle:
 ### Why mTLS, not bearer
 - A bearer issued to the agent is bearer-immutable for its lifetime — an agent compromise stays in until the bearer expires.
 - mTLS gives us a hardware-rooted (or filesystem-rooted) credential the cloud verifies on every dial. Combined with `CloudConnector`'s exponential-backoff reconnect, an attacker can't replay an old session — they need the private key, which never leaves the on-prem host.
+
+## Live cloud routes the UI hits
+
+| Method + Path | Handler | Status |
+|---|---|---|
+| `POST /api/v1/subscriber/login` | `handle_subscriber_login_POST` | ✅ Dev-mode; returns synthetic session |
+| `GET /api/v1/subscriber?societyId=…&flatPrefix=…` | `handle_directory_GET` | ✅ Returns `[]` when DB unconfigured |
+| `GET /api/v1/cdr?societyId=…` | `handle_cdr_GET` | ✅ Returns `[]` when DB unconfigured |
+| `GET /api/v1/push-vapid-key` | `handle_push_vapid_key_GET` | ✅ Reads `$VAPID_PUBLIC_KEY` env |
+| `GET /api/v1/turn-credentials` | `handle_turn_credentials_GET` | ✅ HMAC-SHA1 over `$TURN_SHARED_SECRET` |
+| `POST /api/v1/push-subscribe` | `handle_push_subscribe_POST` | ⚠️ 503 when DB unconfigured |
+
+Dispatch order in `MicroService::dispatch_pbx_routes` matters — the more-specific exact-matches (`/subscriber/login`, `/subscriber/import`) must precede the `/subscriber` prefix-match, otherwise the directory handler would swallow the login POST. The current ordering is documented inline.
 
 ## As-built vs design-doc gap
 

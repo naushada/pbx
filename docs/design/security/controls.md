@@ -156,6 +156,30 @@ In that order. Reversing any two of these leaks the socket, double-frees, or lea
 - Configuration drift between intended secret and deployed secret.
 - Accidental commit of secret material (templates only — `.env.agent.example` has no real values).
 
+## 11. DB-availability guard on REST handlers
+
+**What.** Every PBX REST handler that calls `db.get_documents()` or `db.create_document()` first checks `db_available()` — true only when `DB_URI` or `REMOTE_DB` env is set. If the DB isn't configured the handler returns an empty result (`200 OK []` for GETs, `503 Service Unavailable` for the push-subscribe POST) **without** invoking the Mongo client.
+
+**Where.**
+- `modules/module/pbx/src/microservice_pbx.cpp`: anonymous-namespace helpers `env_or()` + `db_available()`; each DB-backed handler short-circuits at the top.
+
+**Failure modes defended.**
+- Heroku H12 timeouts (the Mongo C driver blocks for 30 + s waiting for a connection that will never arrive when the cloud is running without a DB addon — Heroku then 503s the request and the worker recovers but spends real time blocked).
+- Worker thread starvation under traffic when many handlers are mid-`get_documents()` against an unreachable Mongo.
+
+**Trade-off.** This is a deployment-state guard, not a correctness one. With a real DB, the guard is a no-op. Once `--remote-db` is wired through the wsdbagent tunnel (see `auth.md` § live cloud routes), the guard still helps short-circuit during agent-tunnel drops.
+
+## 12. Dev-mode permissive login (temporary)
+
+**What.** `MicroServicePbx::handle_subscriber_login_POST` accepts any non-empty `{societyCode, flatNumber, password}` triple and returns a synthetic subscriber + a random bearer token. When `PBX_AUTH_STRICT=1` is set, the handler refuses with `503` instead of issuing a session — that's the path that will hold the real bcrypt check against `subscribers.portalPasswordHash` once CSV-import has seeded the collection.
+
+**Where.**
+- `modules/module/pbx/src/microservice_pbx.cpp` — `handle_subscriber_login_POST`.
+
+**Failure modes defended (in dev-mode).** None — this is explicitly an open door for the MVP demo. **Risk**: anyone hitting the live URL gets a usable session and full read access to the empty/anonymised endpoints. Mitigation: the deploy has no PII to expose; the synthetic subscriber's `societyId` field reflects whatever the caller typed, so no cross-society leakage is possible.
+
+**Promotion plan.** Set `PBX_AUTH_STRICT=1` once the cloud has a `DB_URI` or the agent's wsdbagent tunnel is live, and replace the `503` branch with the real bcrypt check.
+
 ## Cross-references
 
 - Auth flows: [`auth.md`](./auth.md)

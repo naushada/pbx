@@ -55,7 +55,7 @@ Three implicit assumptions hold the whole model together:
 
 1. **One society = one pbx-agent.** All Mongo data, all Asterisk endpoints, the TURN realm, and the agent's mTLS cert are scoped to a single societyId. Cross-society data leakage is impossible by construction — the agent simply doesn't know about other societies.
 2. **The compose-internal network is trusted.** Mongo, Asterisk, and the agent share `pbx-net` with no auth between them. Anything that lands on the society host with bridge-network access has full mongo. This is intentional — adding auth here means rotating it every install and gains nothing because the threat actor inside the bridge network is already root on the host.
-3. **The Heroku app is a public-Internet surface.** mTLS for `/agent`, bearer auth for everything else. Heroku-managed TLS handles the outer layer.
+3. **The Heroku app is a public-Internet surface.** Bearer auth for `/api/*`, query-param token for `/sip-ws`, and a placeholder mTLS handshake for `/agent`. Note the placeholder qualifier: Heroku Common Runtime terminates TLS at the router, so the dyno sees plain HTTP/WS and the agent's `--tls-cert` / `--tls-key` are not actually verified end-to-end. The cert material is in place for the day we move to Heroku Private Spaces or a TLS-passthrough load balancer; treat the current `/agent` accept as authenticated-by-obscurity until then.
 
 ## Deferred controls
 
@@ -68,6 +68,9 @@ These are flagged in `DESIGN.md` §10 but not yet implemented in code. Promoting
 | Quarterly TURN secret rotation | `DESIGN.md` §10 | ❌ Manual | `societies.turnSharedSecret` exists in the data model; no scheduled job rotates it. |
 | MongoDB authentication | `DESIGN.md` (implicit) | ❌ Not enforced | Compose network gates access today. Adding `--auth` is a one-line change but adds another secret to manage. |
 | Two-credential model (portal bcrypt + SIP HA1) | `DESIGN.md` §5 | ⚠️ Partial — see [`auth.md`](./auth.md) | UI login takes a single password; SIP digest model exists conceptually but the import flow + bcrypt verification aren't wired. |
+| Real subscriber-login auth on cloud | `DESIGN.md` §5 | ⚠️ Dev-mode permissive | `handle_subscriber_login_POST` returns a synthetic session for any non-empty triple. `PBX_AUTH_STRICT=1` short-circuits with 503 — that branch will hold the bcrypt check once subscribers are seeded. See [`controls.md` § 12](./controls.md#12-dev-mode-permissive-login-temporary). |
+| mTLS verification on `/agent` | `DESIGN.md` §5 / §10 | ⚠️ Bypassed by Heroku Common Runtime | Heroku terminates TLS at the router; the dyno only sees plain HTTP/WS, so the agent's client cert can't be presented to the cloud process. Mitigation deferred to a Private Spaces deploy (TLS passthrough). |
+| Cloud `--remote-db` routing | `DESIGN.md` §11 | ⚠️ Not enabled on Heroku | DB-touching handlers short-circuit with `[]` (see [`controls.md` § 11](./controls.md#11-db-availability-guard-on-rest-handlers)). Flip `REMOTE_DB=1` once the agent's wsdbagent tunnel is reliably up. |
 
 ## How this maps to the code
 
