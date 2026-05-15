@@ -2,6 +2,7 @@
 #include "cloud_tunnel_endpoint.hpp"
 #include "emailservice.hpp"
 #include "json.hpp"
+#include "presence_cache.hpp"
 #include "push_sender.hpp"
 #include "sip_bridge.hpp"
 #include "webservice.hpp"
@@ -283,7 +284,31 @@ int main(int argc, char *argv[]) {
     auto endpoint = std::make_unique<CloudTunnelEndpoint>(
         CloudTunnelEndpoint::Config{}, &cte_clock);
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
+    auto presence = std::make_unique<InMemoryPresenceCache>();
     endpoint->attach_bridge(bridge.get());
+
+    // REGISTER_STATE: agent reported a SIP REGISTER state change. Capture
+    // the cache by raw ptr — the unique_ptr below moves ownership into
+    // `inst` but the underlying object stays at the same address.
+    {
+      IPresenceCache *cache = presence.get();
+      bridge->set_register_state_handler(
+          [cache](const std::string &payload) {
+            try {
+              const auto j = nlohmann::json::parse(payload);
+              if (!j.contains("societyId")   || !j["societyId"].is_string() ||
+                  !j.contains("sipUsername") || !j["sipUsername"].is_string() ||
+                  !j.contains("online")      || !j["online"].is_boolean()) return;
+              cache->set(j["societyId"].get<std::string>(),
+                         j["sipUsername"].get<std::string>(),
+                         j["online"].get<bool>());
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] register-state handler: %s\n"),
+                         e.what()));
+            }
+          });
+    }
 
     // Wire bridge → cloud-side dispatch hooks.
     //
@@ -339,6 +364,7 @@ int main(int argc, char *argv[]) {
 
     inst.setCloudTunnelEndpoint(std::move(endpoint));
     inst.setSipBridge(std::move(bridge));
+    inst.setPresenceCache(std::move(presence));
 
     // Arm the SipFrame heartbeat tick (DESIGN.md §6.6) — the only
     // periodic work the cloud side does. Schedule before start() blocks.
@@ -364,7 +390,30 @@ int main(int argc, char *argv[]) {
     auto endpoint = std::make_unique<CloudTunnelEndpoint>(
         CloudTunnelEndpoint::Config{}, &cte_clock);
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
+    auto presence = std::make_unique<InMemoryPresenceCache>();
     endpoint->attach_bridge(bridge.get());
+
+    // REGISTER_STATE: agent reported a SIP REGISTER state change. Same
+    // wiring as the remote-db block above; cache moved into `inst` below.
+    {
+      IPresenceCache *cache = presence.get();
+      bridge->set_register_state_handler(
+          [cache](const std::string &payload) {
+            try {
+              const auto j = nlohmann::json::parse(payload);
+              if (!j.contains("societyId")   || !j["societyId"].is_string() ||
+                  !j.contains("sipUsername") || !j["sipUsername"].is_string() ||
+                  !j.contains("online")      || !j["online"].is_boolean()) return;
+              cache->set(j["societyId"].get<std::string>(),
+                         j["sipUsername"].get<std::string>(),
+                         j["online"].get<bool>());
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] register-state handler: %s\n"),
+                         e.what()));
+            }
+          });
+    }
 
     // If VAPID is configured, instantiate PushSender and route the
     // bridge's push handler through it. The handler payload is the
@@ -414,6 +463,7 @@ int main(int argc, char *argv[]) {
 
     inst.setCloudTunnelEndpoint(std::move(endpoint));
     inst.setSipBridge(std::move(bridge));
+    inst.setPresenceCache(std::move(presence));
 
     // Arm the SipFrame heartbeat tick (DESIGN.md §6.6) — the only
     // periodic work the cloud side does. Schedule before start() blocks.

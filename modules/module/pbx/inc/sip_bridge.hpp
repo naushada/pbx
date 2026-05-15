@@ -114,6 +114,15 @@ public:
   using CdrPushHandler = std::function<void(const std::string &payload)>;
   void set_cdr_push_handler(CdrPushHandler h);
 
+  /// Install a handler called when the bridge sees a `REGISTER_STATE`
+  /// frame from the agent. Payload is the JSON
+  /// `{societyId, sipUsername, online}` the agent emitted on an
+  /// `EndpointStateChange` ARI event. Production wires this to the
+  /// `IPresenceCache` so `handle_directory_GET` can serve a real
+  /// `online` field; tests substitute a recorder.
+  using RegisterStateHandler = std::function<void(const std::string &payload)>;
+  void set_register_state_handler(RegisterStateHandler h);
+
   // ── Out-of-band tunnel ops (cloud → agent) ─────────────────────────────
 
   /// `IRevocationSink`: a subscriber was disabled/removed on the cloud.
@@ -141,8 +150,9 @@ private:
   std::uint32_t m_next_stream_id;
   std::unordered_map<std::uint32_t, BrowserSink *> m_browsers;
   std::string m_recv_buffer; // partial-frame accumulator for tunnel side
-  PushNotifyHandler m_push_handler;
-  CdrPushHandler    m_cdr_handler;
+  PushNotifyHandler    m_push_handler;
+  CdrPushHandler       m_cdr_handler;
+  RegisterStateHandler m_register_state_handler;
 };
 
 #endif // SIP_BRIDGE_HPP

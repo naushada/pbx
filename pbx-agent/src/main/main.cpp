@@ -309,6 +309,19 @@ int main(int argc, char *argv[]) {
         }
       });
 
+  // Asterisk reported a SIP REGISTER state change → publish it to the
+  // cloud's presence cache via a REGISTER_STATE SipFrame. Stream-id 0
+  // (control op, not tied to any browser stream).
+  ari_client.set_register_state_handler(
+      [&](const std::string &sip_username, bool online) {
+        const nlohmann::json payload = {
+            {"societyId",   society_id},
+            {"sipUsername", sip_username},
+            {"online",      online},
+        };
+        connector.send_frame(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
+      });
+
   AsteriskWsFactory asterisk_factory(reactor, demux, ast_host,
                                        static_cast<std::uint16_t>(ast_port),
                                        "/ws");

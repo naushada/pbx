@@ -5,6 +5,7 @@
 #include "json.hpp"
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -153,6 +154,15 @@ public:
   /// no-such-endpoint / ARI error / empty channel list is a silent no-op.
   void revoke_subscriber(const std::string &sip_username);
 
+  /// Install a callback fired on every Asterisk `EndpointStateChange`
+  /// ARI event. Production wires this to a `CloudConnector::send_frame`
+  /// emitting a `REGISTER_STATE` SipFrame so the cloud's presence cache
+  /// stays in sync; tests substitute a recorder. Only `PJSIP/<resource>`
+  /// endpoints fire the callback — other technologies are ignored.
+  using RegisterStateHandler = std::function<void(
+      const std::string &sip_username, bool online)>;
+  void set_register_state_handler(RegisterStateHandler h);
+
   // ── Observability ──────────────────────────────────────────────────────
 
   int active_bridges() const { return m_active_bridges; }
@@ -181,6 +191,7 @@ private:
   void handle_bridge_destroyed(const nlohmann::json &);
   void handle_channel_entered_bridge(const nlohmann::json &);
   void handle_channel_destroyed(const nlohmann::json &);
+  void handle_endpoint_state_change (const nlohmann::json &);
 
   bool over_admission_cap() const { return m_active_bridges >= m_cfg.max_concurrent_calls; }
 
@@ -193,6 +204,8 @@ private:
 
   std::unordered_map<std::string, ChannelCtx> m_channels;
   std::unordered_map<std::string, BridgeCtx>  m_bridges;
+
+  RegisterStateHandler m_register_state_handler;
 };
 
 #endif // ARI_CLIENT_HPP

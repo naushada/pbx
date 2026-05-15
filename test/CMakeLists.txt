@@ -57,6 +57,8 @@ file(GLOB SOURCES "*.cc"
     "../modules/module/pbx/test/browser_stream_test.cc"
     "../modules/module/pbx/src/agent_stream.cpp"
     "../modules/module/pbx/test/agent_stream_test.cc"
+    # presence_cache is header-only (no .cpp); just the test.
+    "../modules/module/pbx/test/presence_cache_test.cc"
     # ── pbx-agent (Layer 2) ───────────────────────────────────────────
     "../pbx-agent/src/main/sip_frame_demux.cpp"
     "../pbx-agent/src/test/sip_frame_demux_test.cc"

@@ -19,8 +19,10 @@ AriClient::AriClient(Config cfg, IAriRest &rest, IMongodbClient &db,
     : m_cfg(std::move(cfg)), m_rest(rest), m_db(db), m_router(router) {}
 
 void AriClient::start() {
-  // v1 wants channel + bridge events to drive admission control and CDR.
-  m_rest.subscribe(m_cfg.app_name, {"channel:", "bridge:"});
+  // v1 wants channel + bridge events for admission control + CDR, and
+  // endpoint events so the cloud's presence cache hears about REGISTER
+  // state changes (DESIGN.md §4 directory `online` field).
+  m_rest.subscribe(m_cfg.app_name, {"channel:", "bridge:", "endpoint:"});
 }
 
 void AriClient::on_event(const std::string &json_event) {
@@ -40,7 +42,37 @@ void AriClient::on_event(const std::string &json_event) {
   else if (type == "ChannelEnteredBridge")
                                         handle_channel_entered_bridge(j);
   else if (type == "ChannelDestroyed")  handle_channel_destroyed(j);
+  else if (type == "EndpointStateChange")
+                                        handle_endpoint_state_change(j);
   // Other event types intentionally ignored.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EndpointStateChange — agent → cloud REGISTER state replication.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AriClient::handle_endpoint_state_change(const json &j) {
+  if (!m_register_state_handler) return;
+  if (!j.contains("endpoint") || !j["endpoint"].is_object()) return;
+  const auto &ep = j["endpoint"];
+
+  // Only PJSIP endpoints are subscribers — other technologies (e.g. local,
+  // sim, IAX2 fixtures) are noise on the presence cache.
+  const std::string tech = ep.value("technology", std::string{});
+  if (tech != "PJSIP") return;
+
+  const std::string resource = ep.value("resource", std::string{});
+  if (resource.empty()) return;
+
+  // ARI endpoint.state is one of "online", "offline", "unknown" — anything
+  // not "online" maps to offline (safe default for the directory's call
+  // button gating).
+  const std::string state = ep.value("state", std::string{});
+  m_register_state_handler(resource, state == "online");
+}
+
+void AriClient::set_register_state_handler(RegisterStateHandler h) {
+  m_register_state_handler = std::move(h);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

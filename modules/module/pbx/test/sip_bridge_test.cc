@@ -265,6 +265,34 @@ TEST(SipBridge, OnTunnelCdrPush_InvokesCdrHandler)
     EXPECT_EQ(payload, got[0]);
 }
 
+TEST(SipBridge, OnTunnelRegisterState_InvokesRegisterStateHandler)
+{
+    FakeTunnel  tun;
+    SipBridge   bridge(&tun);
+
+    std::vector<std::string> got;
+    bridge.set_register_state_handler(
+        [&got](const std::string &payload) { got.push_back(payload); });
+
+    const std::string payload =
+        R"({"societyId":"s1","sipUsername":"u_abc","online":true})";
+    EXPECT_TRUE(bridge.on_tunnel_bytes(
+        SipFrame::encode(SipFrame::Op::REGISTER_STATE, 0, payload)));
+
+    ASSERT_EQ(1u, got.size());
+    EXPECT_EQ(payload, got[0]);
+}
+
+TEST(SipBridge, OnTunnelRegisterState_NoHandler_IsSilentlyIgnored)
+{
+    FakeTunnel  tun;
+    SipBridge   bridge(&tun);  // no handler installed
+    EXPECT_TRUE(bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::REGISTER_STATE, 0,
+        R"({"societyId":"s1","sipUsername":"u_x","online":true})")))
+        << "an un-handled control frame must not be a protocol error";
+}
+
 TEST(SipBridge, OnAgentReconnect_NewStreamIdsOnly)
 {
     FakeTunnel  tun1;

@@ -41,6 +41,12 @@ enum class Op : std::uint8_t {
                              // payload is JSON {societyId, sipUsername}. The
                              // agent tears down that subscriber's live Asterisk
                              // channels via ARI. stream-id is unused (0).
+  REGISTER_STATE     = 0x13, // agent -> cloud: a subscriber's SIP REGISTER
+                             // state changed. Payload JSON
+                             // {societyId, sipUsername, online}. Driven by
+                             // Asterisk's `EndpointStateChange` ARI event; the
+                             // cloud caches it for the directory's `online`
+                             // column. stream-id is unused (0).
 };
 
 struct Frame {

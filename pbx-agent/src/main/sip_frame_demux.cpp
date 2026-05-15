@@ -103,8 +103,9 @@ void SipFrameDemux::dispatch_frame(const SipFrame::Frame &f) {
     return;
   case Op::PONG:
   case Op::ERR:
-  case Op::PUSH_NOTIFY: // PUSH_NOTIFY is agent → cloud only; ignore if seen here.
-  case Op::CDR_PUSH:    // CDR_PUSH is also agent → cloud only.
+  case Op::PUSH_NOTIFY:    // PUSH_NOTIFY is agent → cloud only; ignore if seen here.
+  case Op::CDR_PUSH:       // CDR_PUSH is also agent → cloud only.
+  case Op::REGISTER_STATE: // REGISTER_STATE is also agent → cloud only.
     return;
   }
 }
