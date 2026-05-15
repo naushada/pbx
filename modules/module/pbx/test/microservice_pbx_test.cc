@@ -176,6 +176,15 @@ std::string make_ws_upgrade(const std::string &uri,
   return os.str();
 }
 
+// RAII: handlers that touch Mongo (`handle_cdr_GET`, `handle_directory_GET`,
+// `handle_push_subscribe_POST`) short-circuit to an empty/503 response
+// unless `db_available()` — i.e. `DB_URI` or `REMOTE_DB` is set in the
+// environment. Flip `DB_URI` on for the test, restore on scope exit.
+struct DbAvailableEnv {
+  DbAvailableEnv()  { ::setenv("DB_URI", "mongodb://test/pabx", 1); }
+  ~DbAvailableEnv() { ::unsetenv("DB_URI"); }
+};
+
 } // namespace
 
 // ── Society create ────────────────────────────────────────────────────────────
@@ -341,6 +350,8 @@ TEST(MicroServicePbx, SubscriberImport_Idempotent)
 
 TEST(MicroServicePbx, CdrList_FiltersBySociety)
 {
+    DbAvailableEnv db_env;  // handle_cdr_GET short-circuits to []+200
+                            // unless DB_URI/REMOTE_DB is set.
     TestDb db;
     db.getDocs["cdr"].push_back(
         {R"("societyId":"s1")",
@@ -366,6 +377,8 @@ TEST(MicroServicePbx, CdrList_MissingSocietyId_400)
 
 TEST(MicroServicePbx, PushSubscribe_PersistsEndpoint)
 {
+    DbAvailableEnv db_env;  // handle_push_subscribe_POST short-circuits to
+                            // 503 unless DB_URI/REMOTE_DB is set.
     TestDb db;
     const std::string body =
         R"({"subscriberId":"sub1","endpoint":"https://push.example/abc",)"
@@ -394,14 +407,6 @@ TEST(MicroServicePbx, PushSubscribe_RejectsMissingFields)
 // ── Subscriber directory ──────────────────────────────────────────────────────
 
 namespace {
-// RAII: `handle_directory_GET` (and the other DB-touching handlers) short-
-// circuit to an empty/503 response unless db_available() — i.e. DB_URI or
-// REMOTE_DB is set. Flip DB_URI on for the test, restore on scope exit.
-struct DbAvailableEnv {
-  DbAvailableEnv()  { ::setenv("DB_URI", "mongodb://test/pabx", 1); }
-  ~DbAvailableEnv() { ::unsetenv("DB_URI"); }
-};
-
 // A `subscribers` doc as handle_subscriber_import_POST writes it — including
 // the secrets the directory must strip.
 json directory_row(const std::string &flat_number, const std::string &name,
@@ -1217,6 +1222,7 @@ TEST(MicroServiceRouting, RoutesSubscriberImportPost)
 
 TEST(MicroServiceRouting, RoutesCdrGet)
 {
+    DbAvailableEnv db_env;  // handle_cdr_GET short-circuits without DB_URI.
     TestDb db;
     db.getDocs["cdr"].push_back(
         {R"("societyId":"s1")", R"([{"_id":"c1","societyId":"s1"}])"});
@@ -1229,6 +1235,8 @@ TEST(MicroServiceRouting, RoutesCdrGet)
 
 TEST(MicroServiceRouting, RoutesPushSubscribePost)
 {
+    DbAvailableEnv db_env;  // handle_push_subscribe_POST short-circuits
+                            // without DB_URI.
     TestDb db;
     MicroService e;
     const std::string req = make_post(
