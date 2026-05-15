@@ -606,6 +606,34 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_DisabledAccount_403)
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
 }
 
+TEST(MicroServicePbx, SubscriberLogin_Strict_PassesAutoAnswerThrough)
+{
+    // The kiosk auto-answer feature (DESIGN.md §9) needs the
+    // `subscribers.autoAnswer` flag to reach the UI in the login profile;
+    // strict-mode login already returns the full doc minus secrets, but
+    // pin that here so a future "strip more fields" change can't silently
+    // break it.
+    StrictAuthEnv strict;
+    TestDb db;
+    json sub = json::parse(
+        subscriber_doc("kiosk@example.com", "pw", "active", "guard"));
+    sub["autoAnswer"] = true;
+    db.getDoc["subscribers"].push_back(
+        {R"("email":"kiosk@example.com")", sub.dump()});
+
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"kiosk@example.com","password":"pw"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    const json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_TRUE(body["subscriber"].contains("autoAnswer"))
+        << "autoAnswer must reach the UI for the kiosk feature to work";
+    EXPECT_TRUE(body["subscriber"]["autoAnswer"].get<bool>());
+    EXPECT_EQ("guard", body["subscriber"]["role"]);
+}
+
 TEST(MicroServicePbx, SubscriberLogin_Strict_GuardRole_LongerTtl)
 {
     StrictAuthEnv strict;
