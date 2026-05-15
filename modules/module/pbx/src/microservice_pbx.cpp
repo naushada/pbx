@@ -729,34 +729,44 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
   try { arr = json::parse(result); } catch (...) { arr = json::array(); }
   if (!arr.is_array()) arr = json::array();
 
-  // Strip server-only secrets from every row — the directory must never
-  // expose the bcrypt portal hash or the SIP digest credential (sipHa1).
-  // Same secrets `handle_subscriber_login_POST` strips from its response.
-  for (auto &row : arr) {
-    if (row.is_object()) {
-      row.erase("portalPasswordHash");
-      row.erase("sipHa1");
-    }
-  }
+  // Project every row to the UI's `DirectoryEntry` shape
+  // (ui/src/common/app-globals.ts) — `{flatNumber, displayName, sipUri,
+  // online}`. The persisted `subscribers` doc uses different field names
+  // (`name` vs `displayName`, `sipUsername` vs `sipUri`) and carries
+  // server-only secrets (`sipHa1`, `portalPasswordHash`) the directory
+  // must never leak; building a fresh object with only the four
+  // DirectoryEntry fields renames AND strips in one pass.
+  //
+  // The SIP URI form matches what `SipService.placeCall` uses on the UI
+  // (`sip:<flatNumber>@pbx.<societyId>`); `online` (last-known REGISTER
+  // state) isn't tracked cloud-side yet — emitted as `false`, a future
+  // item populates it from agent-reported REGISTER/UNREGISTER frames.
+  const auto matches_prefix = [&](const std::string &flat) -> bool {
+    if (flat_prefix.empty()) return true;
+    if (flat.size() < flat_prefix.size()) return false;
+    return std::equal(flat_prefix.begin(), flat_prefix.end(), flat.begin(),
+                      [](char a, char b) {
+                        return std::tolower(static_cast<unsigned char>(a)) ==
+                               std::tolower(static_cast<unsigned char>(b));
+                      });
+  };
 
-  if (!flat_prefix.empty()) {
-    json filtered = json::array();
-    for (auto &row : arr) {
-      if (!row.contains("flatNumber") || !row["flatNumber"].is_string()) continue;
-      const std::string flat = row["flatNumber"].get<std::string>();
-      if (flat.size() < flat_prefix.size()) continue;
-      if (std::equal(flat_prefix.begin(), flat_prefix.end(), flat.begin(),
-                     [](char a, char b) {
-                       return std::tolower(static_cast<unsigned char>(a)) ==
-                              std::tolower(static_cast<unsigned char>(b));
-                     })) {
-        filtered.push_back(row);
-      }
-    }
-    arr = std::move(filtered);
-  }
+  json out = json::array();
+  for (const auto &row : arr) {
+    if (!row.is_object()) continue;
+    if (!row.contains("flatNumber") || !row["flatNumber"].is_string())
+      continue;
+    const std::string flat = row["flatNumber"].get<std::string>();
+    if (!matches_prefix(flat)) continue;
 
-  return http_response(200, "OK", arr.dump());
+    out.push_back({
+        {"flatNumber",  flat},
+        {"displayName", row.value("name", std::string{})},
+        {"sipUri",      "sip:" + flat + "@pbx." + society_id},
+        {"online",      false},
+    });
+  }
+  return http_response(200, "OK", out.dump());
 }
 
 namespace {

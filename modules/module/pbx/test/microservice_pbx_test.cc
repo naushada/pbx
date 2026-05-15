@@ -440,27 +440,43 @@ TEST(MicroServicePbx, Directory_FiltersByFlatPrefix)
         EXPECT_EQ('A', row["flatNumber"].get<std::string>().front());
 }
 
-TEST(MicroServicePbx, Directory_StripsSecrets)
+TEST(MicroServicePbx, Directory_ProjectsToDirectoryEntryShape)
 {
+    // The UI types this endpoint as `DirectoryEntry { flatNumber,
+    // displayName, sipUri, online }` (ui/src/common/app-globals.ts).
+    // Server-side projection renames the persisted fields and strips
+    // everything else — including the SIP/portal secrets.
     DbAvailableEnv db_env;
     TestDb db;
     json rows = json::array({directory_row("A-101", "Asha", "u_a101")});
     db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
 
-    // No prefix → returns the whole society; the secrets must still be gone.
     const std::string req = make_get("/api/v1/subscriber?societyId=s1");
     std::string rsp = MicroServicePbx::handle_directory_GET(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 
     json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
     ASSERT_EQ(1u, arr.size());
-    EXPECT_FALSE(arr[0].contains("portalPasswordHash"))
-        << "the bcrypt portal hash must never leave the server";
-    EXPECT_FALSE(arr[0].contains("sipHa1"))
-        << "the SIP digest credential must never leave the server";
-    // Non-secret fields the UI needs are still present.
-    EXPECT_EQ("A-101", arr[0]["flatNumber"]);
-    EXPECT_EQ("u_a101", arr[0]["sipUsername"]);
+    const auto &row = arr[0];
+
+    // The four DirectoryEntry fields, all populated.
+    EXPECT_EQ("A-101",                row["flatNumber"]);
+    EXPECT_EQ("Asha",                 row["displayName"]);  // <- `name` aliased
+    EXPECT_EQ("sip:A-101@pbx.s1",     row["sipUri"]);
+    EXPECT_EQ(false,                  row["online"]);
+
+    // Persisted-doc field names the UI doesn't speak must NOT bleed through.
+    EXPECT_FALSE(row.contains("name"))            << "renamed to displayName";
+    EXPECT_FALSE(row.contains("sipUsername"))     << "replaced by sipUri";
+    EXPECT_FALSE(row.contains("role"))            << "not in DirectoryEntry";
+    EXPECT_FALSE(row.contains("status"))          << "not in DirectoryEntry";
+    EXPECT_FALSE(row.contains("flatId"))          << "internal join key";
+    EXPECT_FALSE(row.contains("societyId"))       << "redundant — request param";
+
+    // Secrets stay server-side (the projection is the new strip — never
+    // again at risk of a "forgot to erase a new field" leak).
+    EXPECT_FALSE(row.contains("portalPasswordHash"));
+    EXPECT_FALSE(row.contains("sipHa1"));
 }
 
 TEST(MicroServicePbx, Directory_MissingSocietyId_400)
