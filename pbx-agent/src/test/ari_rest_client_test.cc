@@ -103,6 +103,89 @@ TEST(AriRestClient, BuildContinueRequest_EscapesChannelId)
               req.find("/ari/channels/weird%2Fcid/continue"));
 }
 
+// ── build_originate_request ───────────────────────────────────────────────────
+
+TEST(AriRestClient, BuildOriginateRequest_PathAndQuery)
+{
+    const std::string req = AriRestClient::build_originate_request(
+        "PJSIP/u_alice", "pbx", "outbound,ch-1", "ch-1-leg-0", "A-101",
+        "127.0.0.1", "YWJj");
+
+    // endpoint slash + appArgs comma must be percent-encoded so they
+    // stay query-value bytes, not path/param separators.
+    EXPECT_NE(std::string::npos,
+              req.find("POST /ari/channels"
+                       "?endpoint=PJSIP%2Fu_alice"
+                       "&app=pbx"
+                       "&appArgs=outbound%2Cch-1"
+                       "&channelId=ch-1-leg-0"
+                       "&callerId=A-101 HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Host: 127.0.0.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Connection: close\r\n"));
+}
+
+TEST(AriRestClient, BuildOriginateRequest_OmitsEmptyCallerId)
+{
+    const std::string req = AriRestClient::build_originate_request(
+        "PJSIP/u_a", "pbx", "outbound,ch-1", "leg-0", "", "h", "YWJj");
+    // No trailing &callerId= when there's no caller id to send.
+    EXPECT_EQ(std::string::npos, req.find("callerId"));
+    EXPECT_NE(std::string::npos, req.find("&channelId=leg-0 HTTP/1.1\r\n"));
+}
+
+// ── build_create_bridge_request ───────────────────────────────────────────────
+
+TEST(AriRestClient, BuildCreateBridgeRequest_PathAndQuery)
+{
+    const std::string req = AriRestClient::build_create_bridge_request(
+        "ch-1-bridge", "mixing", "127.0.0.1", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("POST /ari/bridges?type=mixing&bridgeId=ch-1-bridge "
+                       "HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
+}
+
+// ── build_add_channel_request ─────────────────────────────────────────────────
+
+TEST(AriRestClient, BuildAddChannelRequest_PathAndQuery)
+{
+    const std::string req = AriRestClient::build_add_channel_request(
+        "ch-1-bridge", "ch-1", "127.0.0.1", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("POST /ari/bridges/ch-1-bridge/addChannel"
+                       "?channel=ch-1 HTTP/1.1\r\n"));
+}
+
+TEST(AriRestClient, BuildAddChannelRequest_EscapesBridgeId)
+{
+    const std::string req = AriRestClient::build_add_channel_request(
+        "weird/bid", "cid", "h", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("/ari/bridges/weird%2Fbid/addChannel"));
+}
+
+// ── build_hangup_request ──────────────────────────────────────────────────────
+
+TEST(AriRestClient, BuildHangupRequest_MethodAndQuery)
+{
+    const std::string req = AriRestClient::build_hangup_request(
+        "ch-1", "answered", "127.0.0.1", "YWJj");
+    // A DELETE, not a POST — the verb is baked into the request line.
+    EXPECT_NE(std::string::npos,
+              req.find("DELETE /ari/channels/ch-1?reason=answered "
+                       "HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Connection: close\r\n"));
+}
+
+TEST(AriRestClient, BuildHangupRequest_EscapesChannelId)
+{
+    const std::string req = AriRestClient::build_hangup_request(
+        "weird/cid", "normal", "h", "YWJj");
+    EXPECT_NE(std::string::npos, req.find("/ari/channels/weird%2Fcid?"));
+}
+
 // ── parse_response ────────────────────────────────────────────────────────────
 
 TEST(AriRestClient, ParseResponse_204NoContent)
@@ -158,5 +241,17 @@ TEST(AriRestClient, UnreachableHost_ReturnsStatusZero)
     EXPECT_TRUE(r.body.empty());
 
     r = client.continue_in_dialplan("ch", "pbx-busy", "s", 1);
+    EXPECT_EQ(0, r.status);
+
+    r = client.originate("PJSIP/u_a", "pbx", "outbound,ch", "leg-0", "A-101");
+    EXPECT_EQ(0, r.status);
+
+    r = client.create_bridge("ch-bridge", "mixing");
+    EXPECT_EQ(0, r.status);
+
+    r = client.add_channel_to_bridge("ch-bridge", "ch");
+    EXPECT_EQ(0, r.status);
+
+    r = client.hangup("ch", "normal");
     EXPECT_EQ(0, r.status);
 }

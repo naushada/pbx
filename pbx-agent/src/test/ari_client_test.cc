@@ -1,4 +1,5 @@
 #include "ari_client.hpp"
+#include "call_router.hpp"
 #include "mongodbc.hpp"
 #include "json.hpp"
 #include <gtest/gtest.h>
@@ -25,8 +26,11 @@ public:
     std::string extension;
     int         priority;
   };
+  struct HangupCall { std::string channel_id, reason; };
   std::vector<SubscribeCall> subscribes;
   std::vector<ContinueCall>  continues;
+  std::vector<std::string>   originate_endpoints;
+  std::vector<HangupCall>    hangups;
   Response                   continue_response{200, ""};
   Response                   subscribe_response{204, ""};
 
@@ -40,6 +44,27 @@ public:
                                  const std::string &ext, int prio) override {
     continues.push_back({cid, ctx, ext, prio});
     return continue_response;
+  }
+
+  // CallRouter's REST surface — recorded so AriClient↔CallRouter wiring
+  // can be asserted; the routing logic itself is covered by
+  // call_router_test.
+  Response originate(const std::string &endpoint, const std::string &,
+                      const std::string &, const std::string &,
+                      const std::string &) override {
+    originate_endpoints.push_back(endpoint);
+    return {200, ""};
+  }
+  Response create_bridge(const std::string &, const std::string &) override {
+    return {200, ""};
+  }
+  Response add_channel_to_bridge(const std::string &,
+                                  const std::string &) override {
+    return {204, ""};
+  }
+  Response hangup(const std::string &cid, const std::string &reason) override {
+    hangups.push_back({cid, reason});
+    return {204, ""};
   }
 };
 
@@ -103,6 +128,19 @@ std::string stasis_start(const std::string &channel_id,
   return j.dump();
 }
 
+// An originated leg re-entering Stasis on answer carries the
+// "outbound,<callerChannelId>" appArgs CallRouter tagged it with.
+std::string stasis_start_leg(const std::string &leg_channel_id,
+                              const std::string &caller_channel_id) {
+  json j;
+  j["type"]             = "StasisStart";
+  j["application"]      = "pbx";
+  j["channel"]["id"]    = leg_channel_id;
+  j["channel"]["state"] = "Up";
+  j["args"]             = json::array({"outbound", caller_channel_id});
+  return j.dump();
+}
+
 std::string bridge_created(const std::string &bridge_id,
                             const std::string &bridge_type = "mixing") {
   json j;
@@ -161,7 +199,8 @@ TEST(AriClient, SubscribesToChannelEvents)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.start();
 
@@ -181,7 +220,8 @@ TEST(AriClient, BridgeCreated_IncrementsActiveCount)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event(bridge_created("br-1"));
     EXPECT_EQ(1, c.active_bridges());
@@ -196,7 +236,8 @@ TEST(AriClient, BridgeDestroyed_DecrementsActiveCount_NeverNegative)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event(bridge_created("br-1"));
     c.on_event(bridge_created("br-2"));
@@ -220,7 +261,8 @@ TEST(AriClient, AdmissionCap_ReturnsBusyAtFive)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);  // cap = 5
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);  // cap = 5
 
     // Five calls already up (bridges 1..5).
     for (int i = 1; i <= 5; ++i)
@@ -244,7 +286,8 @@ TEST(AriClient, AdmissionCap_AllowsUnderCap)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event(bridge_created("br-1"));
     c.on_event(bridge_created("br-2"));
@@ -260,7 +303,8 @@ TEST(AriClient, HangupEvent_WritesCdr)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event(stasis_start("ch-1", "A-101", "B-204"));
     c.on_event(bridge_created("br-1"));
@@ -288,7 +332,8 @@ TEST(AriClient, HangupEvent_BusyCauseNormalised)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event(stasis_start("ch-1", "A-101", "B-204"));
     c.on_event(channel_destroyed("ch-1", "User busy"));
@@ -302,7 +347,8 @@ TEST(AriClient, ChannelDestroyed_WithoutStasisStart_NoCdr)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     // Stray ChannelDestroyed for a channel we never observed (e.g. it
     // never entered Stasis). Must NOT write a phantom CDR.
@@ -316,7 +362,8 @@ TEST(AriClient, ConferenceBridgeEvents_TaggedAsConference)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     // Three subscribers on the same flat join a conference bridge.
     c.on_event(stasis_start("ch-1", "A-204", "*204"));
@@ -337,7 +384,8 @@ TEST(AriClient, TwoChannelsInBridge_StaysAsP2p)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event(stasis_start("ch-1", "A-101", "B-204"));
     c.on_event(bridge_created("br-1", "mixing"));
@@ -350,13 +398,64 @@ TEST(AriClient, TwoChannelsInBridge_StaysAsP2p)
     EXPECT_EQ("p2p", cdr["type"]);
 }
 
+// ── CallRouter wiring ────────────────────────────────────────────────────────
+
+TEST(AriClient, CallerStasisStart_DelegatedToRouter)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    // TestDb resolves no subscribers, so CallRouter treats the dialed
+    // extension as "no route" and hangs the caller channel up — which is
+    // observable proof the caller StasisStart was handed to the router.
+    c.on_event(stasis_start("ch-1", "A-101", "B-204"));
+
+    ASSERT_EQ(1u, rest.hangups.size());
+    EXPECT_EQ("ch-1", rest.hangups[0].channel_id);
+    // A caller channel still gets a CDR context (unlike an outbound leg).
+    c.on_event(channel_destroyed("ch-1"));
+    EXPECT_EQ(1u, db.inserts.size());
+}
+
+TEST(AriClient, OutboundLegStasisStart_NoAdmissionCheck_NoCdrContext)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    // Five calls already up — at the admission cap.
+    for (int i = 1; i <= 5; ++i)
+        c.on_event(bridge_created("br-" + std::to_string(i)));
+
+    // An originated leg answers. It belongs to an already-admitted call,
+    // so it must NOT be bounced to the busy handler...
+    c.on_event(stasis_start_leg("leg-1", "ch-1"));
+    EXPECT_TRUE(rest.continues.empty())
+        << "an outbound leg is not itself subject to admission control";
+
+    // ...and it must NOT accrue its own CDR context — its later
+    // ChannelDestroyed writes no phantom CDR row (the logical call's CDR
+    // is keyed on the caller channel).
+    c.on_event(channel_destroyed("leg-1"));
+    EXPECT_EQ(0u, db.inserts.size());
+
+    // It WAS delegated to the router: with no caller "ch-1" tracked,
+    // CallRouter hangs the stray leg up.
+    ASSERT_EQ(1u, rest.hangups.size());
+    EXPECT_EQ("leg-1", rest.hangups[0].channel_id);
+}
+
 // ── Malformed input tolerance ────────────────────────────────────────────────
 
 TEST(AriClient, IgnoresMalformedJson)
 {
     FakeAriRest rest;
     TestDb      db;
-    AriClient   c(default_cfg(), rest, db);
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
 
     c.on_event("not-json-at-all");
     c.on_event("{}");
