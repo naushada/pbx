@@ -99,6 +99,13 @@ public:
   /// or `"answered"` (the latter for forked-ring legs that lost the race).
   virtual Response hangup(const std::string &channel_id,
                            const std::string &reason) = 0;
+
+  /// `GET /ari/endpoints/{tech}/{resource}` — fetch one endpoint's state.
+  /// The response body carries a `channel_ids` array of the channels that
+  /// endpoint currently owns; `AriClient::revoke_subscriber` uses it to
+  /// find (and hang up) a revoked subscriber's live calls.
+  virtual Response get_endpoint(const std::string &tech,
+                                 const std::string &resource) = 0;
 };
 
 /// Resolves dialed extensions and drives the forked-ring originate/bridge
@@ -138,6 +145,13 @@ public:
   /// Process one parsed ARI event. JSON shape is whatever Asterisk
   /// sent us — we extract the fields we need and tolerate the rest.
   void on_event(const std::string &json_event);
+
+  /// Tear down a subscriber's live calls. Looks up the
+  /// `PJSIP/<sip_username>` endpoint via ARI and hangs up every channel
+  /// it currently owns. Driven by a `SUBSCRIBER_REVOKED` tunnel frame —
+  /// the cloud admin disabled or removed the subscriber. Best-effort: a
+  /// no-such-endpoint / ARI error / empty channel list is a silent no-op.
+  void revoke_subscriber(const std::string &sip_username);
 
   // ── Observability ──────────────────────────────────────────────────────
 

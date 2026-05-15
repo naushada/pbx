@@ -44,6 +44,35 @@ void AriClient::on_event(const std::string &json_event) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// revoke_subscriber — cut a disabled/removed subscriber's live calls.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AriClient::revoke_subscriber(const std::string &sip_username) {
+  if (sip_username.empty()) return;
+
+  // Ask Asterisk which channels the subscriber's endpoint currently owns.
+  // The endpoint resource is the bare sipUsername (the `PJSIP/` tech prefix
+  // is how CallRouter addresses it on originate, too).
+  const IAriRest::Response r = m_rest.get_endpoint("PJSIP", sip_username);
+  if (r.status < 200 || r.status >= 300)
+    return; // unknown endpoint / ARI error — nothing we can do
+
+  json ep;
+  try { ep = json::parse(r.body); } catch (...) { return; }
+  if (!ep.is_object() || !ep.contains("channel_ids") ||
+      !ep["channel_ids"].is_array())
+    return;
+
+  // Hang every one of them up. A revoked subscriber should have no live
+  // media at all — the cloud already dropped their session + status.
+  for (const auto &cid : ep["channel_ids"]) {
+    if (!cid.is_string()) continue;
+    const std::string id = cid.get<std::string>();
+    if (!id.empty()) m_rest.hangup(id, "normal");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // StasisStart — first time we see a new channel. Admission decision here.
 // ─────────────────────────────────────────────────────────────────────────────
 

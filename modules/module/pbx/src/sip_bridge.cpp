@@ -1,5 +1,9 @@
 #include "sip_bridge.hpp"
 
+#include "json.hpp"
+
+using json = nlohmann::json;
+
 SipBridge::SipBridge(TunnelSink *tunnel)
     : m_tunnel(tunnel), m_next_stream_id(1) {}
 
@@ -95,6 +99,10 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
   case Op::OPEN:
     // OPEN is cloud→agent only. Agent must never originate it. Drop.
     return;
+  case Op::SUBSCRIBER_REVOKED:
+    // SUBSCRIBER_REVOKED is cloud→agent only — the bridge *emits* it (see
+    // revoke()), it never receives one. Drop if the agent echoes it back.
+    return;
   case Op::PUSH_NOTIFY:
     if (m_push_handler) m_push_handler(f.payload);
     return;
@@ -110,6 +118,19 @@ void SipBridge::set_push_notify_handler(PushNotifyHandler h) {
 
 void SipBridge::set_cdr_push_handler(CdrPushHandler h) {
   m_cdr_handler = std::move(h);
+}
+
+void SipBridge::revoke(const std::string &society_id,
+                       const std::string &sip_username) {
+  // Best-effort: if the agent tunnel is down there is nothing to notify —
+  // the cloud-side session-row deletion + `/sip-ws` status gate still
+  // keep the subscriber out; this frame only cuts a *currently live* call.
+  if (!m_tunnel) return;
+  const json payload = {{"societyId", society_id},
+                        {"sipUsername", sip_username}};
+  // stream-id 0 — SUBSCRIBER_REVOKED is a tunnel-wide control frame, not
+  // tied to any one browser stream.
+  m_tunnel->send_frame(SipFrame::Op::SUBSCRIBER_REVOKED, 0, payload.dump());
 }
 
 void SipBridge::close_stream(std::uint32_t stream_id,

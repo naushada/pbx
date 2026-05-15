@@ -135,6 +135,19 @@ std::string raw_uri_with_query(const std::string &req) {
   return line.substr(sp1 + 1, sp2 - sp1 - 1);
 }
 
+// Trailing path segment after a fixed prefix, query string stripped.
+// e.g. ("PUT /api/v1/subscriber/u_abc?societyId=s1 …", "/api/v1/subscriber/")
+//      → "u_abc". Empty if the prefix doesn't match or nothing follows it.
+std::string path_suffix(const std::string &req, const std::string &prefix) {
+  std::string uri = raw_uri_with_query(req);
+  const auto q = uri.find('?');
+  if (q != std::string::npos) uri.resize(q);
+  if (uri.size() <= prefix.size() ||
+      uri.compare(0, prefix.size(), prefix) != 0)
+    return {};
+  return uri.substr(prefix.size());
+}
+
 // Minimal CSV row split. Trims trailing \r. Does not handle quoted fields —
 // not needed for the import format (`flat_number,name,email,phone,role`).
 std::vector<std::string> split_csv_row(std::string line) {
@@ -692,6 +705,101 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
   return http_response(200, "OK", arr.dump());
 }
 
+namespace {
+
+// Both lifecycle handlers address a subscriber by sipUsername-in-path +
+// societyId-in-query, and both must confirm the row exists first. This
+// pulls (sipUsername, societyId) out of @p req and the existence check
+// into one place. On any problem it fills @p err with the ready HTTP
+// error response and returns false.
+bool resolve_lifecycle_target(const std::string &req, IMongodbClient &db,
+                              std::string &sip_username,
+                              std::string &society_id, std::string &filter,
+                              std::string &err) {
+  sip_username = path_suffix(req, "/api/v1/subscriber/");
+  if (sip_username.empty()) {
+    err = response_error(400, "Bad Request",
+                         "Missing subscriber sipUsername in path");
+    return false;
+  }
+  society_id = query_param(raw_uri_with_query(req), "societyId");
+  if (society_id.empty()) {
+    err = response_error(400, "Bad Request",
+                         "Missing required query param: societyId");
+    return false;
+  }
+  // Society-scoped: an admin of one society can't touch another's rows.
+  filter = json{{"societyId", society_id},
+                {"sipUsername", sip_username}}.dump();
+  if (db.get_document("subscribers", filter, "{}").empty()) {
+    err = response_error(404, "Not Found", "Unknown subscriber");
+    return false;
+  }
+  return true;
+}
+
+} // namespace
+
+std::string handle_subscriber_status_PUT(const std::string &req,
+                                         IMongodbClient &db,
+                                         IRevocationSink *revoke) {
+  std::string sip_username, society_id, filter, err;
+  if (!resolve_lifecycle_target(req, db, sip_username, society_id, filter, err))
+    return err;
+
+  Http parsed(req);
+  json body;
+  try { body = json::parse(parsed.body()); }
+  catch (...) {
+    return response_error(400, "Bad Request", "Invalid JSON body");
+  }
+  if (!body.contains("status") || !body["status"].is_string())
+    return response_error(400, "Bad Request", "Missing field: status");
+  const std::string status = body["status"].get<std::string>();
+  if (status != "active" && status != "disabled")
+    return response_error(400, "Bad Request",
+                          R"(status must be "active" or "disabled")");
+
+  // Flip subscribers.status for this (societyId, sipUsername) row.
+  const json update = {{"$set", {{"status", status}}}};
+  db.update_collection("subscribers", filter, update.dump());
+
+  // Disabling revokes; re-enabling ("active") is a plain status flip.
+  // Revocation is three guards: the status flip above (caught by the
+  // strict-mode /sip-ws gate + login gate), deleting every `sessions`
+  // row (so the bearer can't be re-resolved), and signalling the agent
+  // to hang up a call that is live right now.
+  if (status == "disabled") {
+    db.delete_document("sessions", filter);
+    if (revoke) revoke->revoke(society_id, sip_username);
+  }
+
+  const json rsp = {{"status", "success"},
+                    {"sipUsername", sip_username},
+                    {"subscriberStatus", status}};
+  return http_response(200, "OK", rsp.dump());
+}
+
+std::string handle_subscriber_DELETE(const std::string &req,
+                                     IMongodbClient &db,
+                                     IRevocationSink *revoke) {
+  std::string sip_username, society_id, filter, err;
+  if (!resolve_lifecycle_target(req, db, sip_username, society_id, filter, err))
+    return err;
+
+  // Remove the subscriber doc first, so a /sip-ws upgrade racing this
+  // delete re-checks `subscribers` and sees it gone. Then revoke exactly
+  // as the disable path does: drop the sessions, cut the live call.
+  db.delete_document("subscribers", filter);
+  db.delete_document("sessions", filter);
+  if (revoke) revoke->revoke(society_id, sip_username);
+
+  const json rsp = {{"status", "success"},
+                    {"sipUsername", sip_username},
+                    {"removed", true}};
+  return http_response(200, "OK", rsp.dump());
+}
+
 std::string handle_push_vapid_key_GET(const std::string & /*req*/,
                                       IMongodbClient & /*db*/) {
   const std::string key = env_or("VAPID_PUBLIC_KEY");
@@ -787,6 +895,35 @@ SipWsUpgrade handle_sipws_upgrade(const std::string &req, IMongodbClient &db) {
     return {response_error(401, "Unauthorized",
                            "unknown or expired portal session"),
             {}};
+  }
+
+  // Subscriber-lifecycle gate: a subscriber disabled or removed AFTER this
+  // session was minted must not keep /sip-ws for the rest of the 24h TTL.
+  // The session row may still be valid (admin disable also deletes it, but
+  // a still-open tab can be mid-upgrade) — so re-check `subscribers` here.
+  // Strict mode only: dev-mode sessions ("societyId":"dev") have no backing
+  // `subscribers` row. Mirrors the status gate in handle_subscriber_login_POST.
+  if (env_or("PBX_AUTH_STRICT") == "1") {
+    const json sub_query = {
+        {"societyId",   session.value("societyId", std::string{})},
+        {"sipUsername", session.value("sipUsername", std::string{})}};
+    const std::string sub_record =
+        db.get_document("subscribers", sub_query.dump(), "{}");
+    if (sub_record.empty()) {
+      // Subscriber removed — the session is orphaned.
+      return {response_error(403, "Forbidden",
+                             "subscriber no longer exists"),
+              {}};
+    }
+    json subscriber;
+    try { subscriber = json::parse(sub_record); }
+    catch (...) { subscriber = json::object(); }
+    if (subscriber.contains("status") && subscriber["status"].is_string() &&
+        subscriber["status"].get<std::string>() != "active") {
+      return {response_error(403, "Forbidden",
+                             "subscriber account is disabled"),
+              {}};
+    }
   }
 
   // Identity resolved — build the OPEN-frame metadata (DESIGN.md §7). The

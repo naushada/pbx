@@ -27,12 +27,15 @@ public:
     int         priority;
   };
   struct HangupCall { std::string channel_id, reason; };
+  struct EndpointCall { std::string tech, resource; };
   std::vector<SubscribeCall> subscribes;
   std::vector<ContinueCall>  continues;
   std::vector<std::string>   originate_endpoints;
   std::vector<HangupCall>    hangups;
+  std::vector<EndpointCall>  endpoint_lookups;
   Response                   continue_response{200, ""};
   Response                   subscribe_response{204, ""};
+  Response                   get_endpoint_response{200, "{}"};
 
   Response subscribe(const std::string &app,
                       const std::vector<std::string> &sources) override {
@@ -65,6 +68,11 @@ public:
   Response hangup(const std::string &cid, const std::string &reason) override {
     hangups.push_back({cid, reason});
     return {204, ""};
+  }
+  Response get_endpoint(const std::string &tech,
+                         const std::string &resource) override {
+    endpoint_lookups.push_back({tech, resource});
+    return get_endpoint_response;
   }
 };
 
@@ -446,6 +454,74 @@ TEST(AriClient, OutboundLegStasisStart_NoAdmissionCheck_NoCdrContext)
     // CallRouter hangs the stray leg up.
     ASSERT_EQ(1u, rest.hangups.size());
     EXPECT_EQ("leg-1", rest.hangups[0].channel_id);
+}
+
+// ── revoke_subscriber: live-call teardown ────────────────────────────────────
+
+TEST(AriClient, RevokeSubscriber_HangsUpEveryChannelOfTheEndpoint)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    rest.get_endpoint_response = {
+        200, R"({"resource":"u_a","channel_ids":["ch-1","ch-2"]})"};
+
+    c.revoke_subscriber("u_a");
+
+    // The endpoint was looked up by PJSIP tech + bare sipUsername...
+    ASSERT_EQ(1u, rest.endpoint_lookups.size());
+    EXPECT_EQ("PJSIP", rest.endpoint_lookups[0].tech);
+    EXPECT_EQ("u_a",   rest.endpoint_lookups[0].resource);
+    // ...and every channel it owns was hung up.
+    ASSERT_EQ(2u, rest.hangups.size());
+    EXPECT_EQ("ch-1", rest.hangups[0].channel_id);
+    EXPECT_EQ("ch-2", rest.hangups[1].channel_id);
+    EXPECT_EQ("normal", rest.hangups[0].reason);
+}
+
+TEST(AriClient, RevokeSubscriber_NoActiveChannels_NoHangups)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    rest.get_endpoint_response = {200, R"({"resource":"u_a","channel_ids":[]})"};
+    c.revoke_subscriber("u_a");
+
+    EXPECT_EQ(1u, rest.endpoint_lookups.size());
+    EXPECT_TRUE(rest.hangups.empty()) << "endpoint idle → nothing to tear down";
+}
+
+TEST(AriClient, RevokeSubscriber_UnknownEndpointOrGarbage_NoHangups)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    rest.get_endpoint_response = {404, ""};        // no such endpoint
+    c.revoke_subscriber("u_ghost");
+    EXPECT_TRUE(rest.hangups.empty());
+
+    rest.get_endpoint_response = {200, "not json"}; // ARI returned garbage
+    c.revoke_subscriber("u_a");
+    EXPECT_TRUE(rest.hangups.empty()) << "malformed body → silent no-op, no crash";
+}
+
+TEST(AriClient, RevokeSubscriber_EmptyUsername_IsNoOp)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    c.revoke_subscriber("");
+
+    EXPECT_TRUE(rest.endpoint_lookups.empty());
+    EXPECT_TRUE(rest.hangups.empty());
 }
 
 // ── Malformed input tolerance ────────────────────────────────────────────────

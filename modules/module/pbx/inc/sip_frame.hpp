@@ -29,14 +29,18 @@ constexpr std::size_t  kHeaderSize = 10;
 constexpr std::size_t  kMaxPayload = 1 * 1024 * 1024;  // 1 MiB cap per DESIGN.md §7
 
 enum class Op : std::uint8_t {
-  OPEN        = 0x01,  // cloud -> agent: open a stream-id with browser meta
-  DATA        = 0x02,  // bidirectional: raw SIP-WS frame bytes
-  CLOSE       = 0x03,  // bidirectional: terminate stream-id
-  PING        = 0x04,  // bidirectional: heartbeat
-  PONG        = 0x05,  // bidirectional: heartbeat ack
-  ERR         = 0x06,  // bidirectional: protocol violation
-  PUSH_NOTIFY = 0x10,  // agent -> cloud: trigger Web Push for incoming INVITE
-  CDR_PUSH    = 0x11,  // agent -> cloud: finalized CDR (BSON payload)
+  OPEN              = 0x01,  // cloud -> agent: open a stream-id with browser meta
+  DATA              = 0x02,  // bidirectional: raw SIP-WS frame bytes
+  CLOSE             = 0x03,  // bidirectional: terminate stream-id
+  PING              = 0x04,  // bidirectional: heartbeat
+  PONG              = 0x05,  // bidirectional: heartbeat ack
+  ERR               = 0x06,  // bidirectional: protocol violation
+  PUSH_NOTIFY       = 0x10,  // agent -> cloud: trigger Web Push for incoming INVITE
+  CDR_PUSH          = 0x11,  // agent -> cloud: finalized CDR (BSON payload)
+  SUBSCRIBER_REVOKED = 0x12, // cloud -> agent: a subscriber was disabled/removed;
+                             // payload is JSON {societyId, sipUsername}. The
+                             // agent tears down that subscriber's live Asterisk
+                             // channels via ARI. stream-id is unused (0).
 };
 
 struct Frame {

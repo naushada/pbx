@@ -58,6 +58,7 @@ DecodeResult decode(const std::string &buf) {
     case Op::OPEN: case Op::DATA: case Op::CLOSE:
     case Op::PING: case Op::PONG: case Op::ERR:
     case Op::PUSH_NOTIFY: case Op::CDR_PUSH:
+    case Op::SUBSCRIBER_REVOKED:
       break;
     default:
       r.status = Status::Invalid;

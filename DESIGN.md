@@ -323,6 +323,7 @@ All integer fields are big-endian. Header is fixed at 10 bytes. `payload-len > 1
 | 0x06 | ERROR        | both ways           | `{ code, msg }` — protocol violation; sender closes the tunnel |
 | 0x10 | PUSH_NOTIFY  | agent → cloud       | `{ subscriberId, callerFlat, callId }` — agent saw INVITE arrive, cloud should VAPID-push |
 | 0x11 | CDR_PUSH     | agent → cloud       | BSON CDR doc — replicates finalized CDR to cloud for portal reads |
+| 0x12 | SUBSCRIBER_REVOKED | cloud → agent | `{ societyId, sipUsername }` (JSON) — an admin disabled/removed the subscriber; the agent hangs up that subscriber's live Asterisk channels via ARI. stream-id unused (0). |
 
 Parsed in C++ with `ACE_InputCDR` / `ACE_OutputCDR` buffers (or hand-rolled big-endian readers — `ACE_CDR` defaults to platform-native byte order, so explicit `ACE_CDR::swap_4(...)` calls are required when targeting wire-format).
 

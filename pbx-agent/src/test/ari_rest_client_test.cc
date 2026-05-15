@@ -186,6 +186,27 @@ TEST(AriRestClient, BuildHangupRequest_EscapesChannelId)
     EXPECT_NE(std::string::npos, req.find("/ari/channels/weird%2Fcid?"));
 }
 
+// ── build_get_endpoint_request ────────────────────────────────────────────────
+
+TEST(AriRestClient, BuildGetEndpointRequest_PathAndAuth)
+{
+    const std::string req = AriRestClient::build_get_endpoint_request(
+        "PJSIP", "u_abc123", "127.0.0.1", "YWJj");
+    // A GET — verb baked into the request line, both path parts present.
+    EXPECT_NE(std::string::npos,
+              req.find("GET /ari/endpoints/PJSIP/u_abc123 HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Host: 127.0.0.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Connection: close\r\n"));
+}
+
+TEST(AriRestClient, BuildGetEndpointRequest_EscapesResource)
+{
+    const std::string req = AriRestClient::build_get_endpoint_request(
+        "PJSIP", "weird/res", "h", "YWJj");
+    EXPECT_NE(std::string::npos, req.find("/ari/endpoints/PJSIP/weird%2Fres "));
+}
+
 // ── parse_response ────────────────────────────────────────────────────────────
 
 TEST(AriRestClient, ParseResponse_204NoContent)
@@ -253,5 +274,8 @@ TEST(AriRestClient, UnreachableHost_ReturnsStatusZero)
     EXPECT_EQ(0, r.status);
 
     r = client.hangup("ch", "normal");
+    EXPECT_EQ(0, r.status);
+
+    r = client.get_endpoint("PJSIP", "u_a");
     EXPECT_EQ(0, r.status);
 }

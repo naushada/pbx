@@ -34,6 +34,10 @@ public:
   // Captured writes for assertions.
   struct Insert { std::string coll; std::string doc; };
   std::vector<Insert> inserts;
+  struct Update { std::string coll; std::string filter; std::string doc; };
+  std::vector<Update> updates;
+  struct Delete { std::string coll; std::string filter; };
+  std::vector<Delete> deletes;
 
   const std::string &get_database() const override { return m_db; }
 
@@ -55,15 +59,20 @@ public:
 
   std::int32_t create_bulk_document(const std::string &, const std::string &,
                                     const std::string &) override { return 0; }
-  bool update_collection(const std::string &, const std::string &,
-                         const std::string &) override { return false; }
+  bool update_collection(const std::string &coll, const std::string &filter,
+                         const std::string &doc) override {
+    updates.push_back({coll, filter, doc});
+    return true;
+  }
   std::int32_t update_bulk_document(const std::string &,
                                     const std::vector<std::string> &,
                                     const std::vector<std::string> &) override {
     return 0;
   }
-  bool delete_document(const std::string &, const std::string &) override {
-    return false;
+  bool delete_document(const std::string &coll,
+                       const std::string &filter) override {
+    deletes.push_back({coll, filter});
+    return true;
   }
   std::string get_documents(const std::string &coll, const std::string &query,
                             const std::string & /*proj*/) override {
@@ -118,6 +127,39 @@ std::string make_get(const std::string &uri,
      << "\r\n";
   return os.str();
 }
+
+std::string make_put(const std::string &uri, const std::string &body,
+                      const std::string &content_type = "application/json") {
+  std::ostringstream os;
+  os << "PUT " << uri << " HTTP/1.1\r\n"
+     << "Host: test\r\n"
+     << "Content-Type: " << content_type << "\r\n"
+     << "Content-Length: " << body.size() << "\r\n"
+     << "\r\n"
+     << body;
+  return os.str();
+}
+
+std::string make_delete(const std::string &uri) {
+  std::ostringstream os;
+  os << "DELETE " << uri << " HTTP/1.1\r\n"
+     << "Host: test\r\n"
+     << "Content-Length: 0\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// Records every revoke() the lifecycle handlers fire — stands in for the
+// production SipBridge (which emits the SUBSCRIBER_REVOKED tunnel frame).
+class FakeRevocationSink : public IRevocationSink {
+public:
+  struct Call { std::string society_id; std::string sip_username; };
+  std::vector<Call> calls;
+  void revoke(const std::string &society_id,
+              const std::string &sip_username) override {
+    calls.push_back({society_id, sip_username});
+  }
+};
 
 std::string make_ws_upgrade(const std::string &uri,
                              const std::string &cookie_header = {}) {
@@ -563,6 +605,161 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_DisabledAccount_403)
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
 }
 
+// ── Subscriber lifecycle: disable / re-enable / remove ────────────────────────
+
+namespace {
+// Seed a subscribers row addressable by (societyId=soc1, sipUsername=u_abc123)
+// — the shape resolve_lifecycle_target() looks up.
+void seed_lifecycle_subscriber(TestDb &db, const std::string &status = "active") {
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "irrelevant-pass", status)});
+}
+} // namespace
+
+TEST(MicroServicePbx, SubscriberStatus_Disable_FlipsStatus_DropsSessions_Revokes)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db);
+    FakeRevocationSink revoke;
+
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"disabled"})");
+    std::string rsp =
+        MicroServicePbx::handle_subscriber_status_PUT(req, db, &revoke);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    // subscribers.status flipped to "disabled" via $set.
+    ASSERT_EQ(1u, db.updates.size());
+    EXPECT_EQ("subscribers", db.updates[0].coll);
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find(R"("status":"disabled")"));
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find("$set"));
+
+    // Every portal session for this subscriber is dropped.
+    ASSERT_EQ(1u, db.deletes.size());
+    EXPECT_EQ("sessions", db.deletes[0].coll);
+    EXPECT_NE(std::string::npos, db.deletes[0].filter.find(R"("sipUsername":"u_abc123")"));
+
+    // The agent is signalled to cut any live call.
+    ASSERT_EQ(1u, revoke.calls.size());
+    EXPECT_EQ("soc1",     revoke.calls[0].society_id);
+    EXPECT_EQ("u_abc123", revoke.calls[0].sip_username);
+}
+
+TEST(MicroServicePbx, SubscriberStatus_Reenable_FlipsStatusOnly_NoRevoke)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db, "disabled");
+    FakeRevocationSink revoke;
+
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"active"})");
+    std::string rsp =
+        MicroServicePbx::handle_subscriber_status_PUT(req, db, &revoke);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    // The status flip happens...
+    ASSERT_EQ(1u, db.updates.size());
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find(R"("status":"active")"));
+    // ...but re-enabling is NOT a revocation: no session purge, no agent signal.
+    EXPECT_TRUE(db.deletes.empty());
+    EXPECT_TRUE(revoke.calls.empty());
+}
+
+TEST(MicroServicePbx, SubscriberStatus_NullRevokeSink_StillDoesDbWork)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db);
+
+    // No revocation sink wired (e.g. agent tunnel not configured) — the
+    // DB-side revocation must still happen.
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"disabled"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_status_PUT(req, db);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_EQ(1u, db.updates.size());
+    EXPECT_EQ(1u, db.deletes.size());  // sessions still purged
+}
+
+TEST(MicroServicePbx, SubscriberStatus_UnknownSubscriber_404)
+{
+    TestDb db;  // nothing seeded
+    FakeRevocationSink revoke;
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_ghost?societyId=soc1", R"({"status":"disabled"})");
+    std::string rsp =
+        MicroServicePbx::handle_subscriber_status_PUT(req, db, &revoke);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 404 Not Found"));
+    EXPECT_TRUE(db.updates.empty());
+    EXPECT_TRUE(db.deletes.empty());
+    EXPECT_TRUE(revoke.calls.empty());
+}
+
+TEST(MicroServicePbx, SubscriberStatus_MissingSocietyId_400)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db);
+    const std::string req =
+        make_put("/api/v1/subscriber/u_abc123", R"({"status":"disabled"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_status_PUT(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+}
+
+TEST(MicroServicePbx, SubscriberStatus_BadStatusValue_400)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db);
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"frozen"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_status_PUT(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+    EXPECT_TRUE(db.updates.empty()) << "must not write on a bad status value";
+}
+
+TEST(MicroServicePbx, SubscriberDelete_RemovesDoc_DropsSessions_Revokes)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db);
+    FakeRevocationSink revoke;
+
+    const std::string req =
+        make_delete("/api/v1/subscriber/u_abc123?societyId=soc1");
+    std::string rsp =
+        MicroServicePbx::handle_subscriber_DELETE(req, db, &revoke);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    // Both the subscriber doc and its sessions are deleted.
+    ASSERT_EQ(2u, db.deletes.size());
+    EXPECT_EQ("subscribers", db.deletes[0].coll);
+    EXPECT_EQ("sessions",    db.deletes[1].coll);
+
+    ASSERT_EQ(1u, revoke.calls.size());
+    EXPECT_EQ("u_abc123", revoke.calls[0].sip_username);
+}
+
+TEST(MicroServicePbx, SubscriberDelete_UnknownSubscriber_404)
+{
+    TestDb db;  // nothing seeded
+    const std::string req =
+        make_delete("/api/v1/subscriber/u_ghost?societyId=soc1");
+    std::string rsp = MicroServicePbx::handle_subscriber_DELETE(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 404 Not Found"));
+    EXPECT_TRUE(db.deletes.empty());
+}
+
+TEST(MicroServicePbx, SubscriberDelete_MissingSocietyId_400)
+{
+    TestDb db;
+    seed_lifecycle_subscriber(db);
+    const std::string req = make_delete("/api/v1/subscriber/u_abc123");
+    std::string rsp = MicroServicePbx::handle_subscriber_DELETE(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+}
+
 // ── SIP-WS upgrade: session validation + identity resolution ──────────────────
 
 namespace {
@@ -650,6 +847,72 @@ TEST(MicroServicePbx, SipWsUpgrade_RejectsExpiredSession)
     EXPECT_TRUE(up.open_meta.empty());
 }
 
+// ── SIP-WS upgrade: subscriber-lifecycle gate (strict mode) ───────────────────
+
+TEST(MicroServicePbx, SipWsUpgrade_Strict_RejectsDisabledSubscriber)
+{
+    StrictAuthEnv strict;
+    TestDb db;
+    // A still-valid session, but the subscriber was disabled after it was minted.
+    db.getDoc["sessions"].push_back(
+        {R"("token":"tok")", session_doc("tok", kFarFuture)});
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "disabled")});
+
+    const std::string req = make_ws_upgrade("/sip-ws?token=tok");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_NE(std::string::npos, up.error.find("HTTP/1.1 403 Forbidden"));
+    EXPECT_TRUE(up.open_meta.empty());
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_Strict_RejectsRemovedSubscriber)
+{
+    StrictAuthEnv strict;
+    TestDb db;  // session valid, but no `subscribers` row at all (removed)
+    db.getDoc["sessions"].push_back(
+        {R"("token":"tok")", session_doc("tok", kFarFuture)});
+
+    const std::string req = make_ws_upgrade("/sip-ws?token=tok");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_NE(std::string::npos, up.error.find("HTTP/1.1 403 Forbidden"));
+    EXPECT_TRUE(up.open_meta.empty());
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_Strict_AllowsActiveSubscriber)
+{
+    StrictAuthEnv strict;
+    TestDb db;
+    db.getDoc["sessions"].push_back(
+        {R"("token":"tok")", session_doc("tok", kFarFuture)});
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "active")});
+
+    const std::string req = make_ws_upgrade("/sip-ws?token=tok");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_TRUE(up.error.empty()) << "active subscriber → upgrade proceeds";
+    ASSERT_FALSE(up.open_meta.empty());
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_DevMode_SkipsSubscriberStatusCheck)
+{
+    // PBX_AUTH_STRICT unset — a dev-mode session has no backing `subscribers`
+    // row, so the status gate must be skipped entirely (else dev mode breaks).
+    TestDb db;
+    db.getDoc["sessions"].push_back(
+        {R"("token":"tok")", session_doc("tok", kFarFuture)});
+
+    const std::string req = make_ws_upgrade("/sip-ws?token=tok");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+
+    EXPECT_TRUE(up.error.empty()) << "dev mode → no subscriber lookup";
+    ASSERT_FALSE(up.open_meta.empty());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Route-wiring: MicroService::dispatch_pbx_routes() picks the right handler.
 // Asserts the dispatch table only — handler correctness is owned by the
@@ -728,6 +991,33 @@ TEST(MicroServiceRouting, RoutesSubscriberGet)
                 // which is enough to confirm dispatch picked the handler.
     MicroService e;
     const std::string req = make_get("/api/v1/subscriber?societyId=s1");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+}
+
+TEST(MicroServiceRouting, RoutesSubscriberStatusPut)
+{
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "active")});
+    MicroService e;  // no owning WebServer → null revoke sink, DB work only
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"disabled"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_EQ(1u, db.updates.size());
+}
+
+TEST(MicroServiceRouting, RoutesSubscriberDelete)
+{
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "active")});
+    MicroService e;
+    const std::string req =
+        make_delete("/api/v1/subscriber/u_abc123?societyId=soc1");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 }

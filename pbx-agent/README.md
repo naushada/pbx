@@ -8,13 +8,13 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 
 | Class             | Source-of-truth file                   | Status | Role |
 |-------------------|----------------------------------------|--------|------|
-| `SipFrameDemux`   | `src/main/sip_frame_demux.{hpp,cpp}`   | ✅ Complete | Receives frames off the cloud tunnel; opens (or reuses) a per-stream local socket to Asterisk's `ws://127.0.0.1:8088/ws`; pipes bytes in both directions. |
+| `SipFrameDemux`   | `src/main/sip_frame_demux.{hpp,cpp}`   | ✅ Complete | Receives frames off the cloud tunnel; opens (or reuses) a per-stream local socket to Asterisk's `ws://127.0.0.1:8088/ws`; pipes bytes in both directions. Also routes the cloud→agent `SUBSCRIBER_REVOKED` control frame to an installed handler. |
 | `CloudConnector`  | `src/main/cloud_connector.{hpp,cpp}`   | ✅ Complete | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel, reconnect with exponential backoff (1 s → 30 s cap), buffers outbound frames during transient drops, and runs the SipFrame-level heartbeat (PING every 15 s of inbound silence; drop + reconnect after 3 unanswered). Pure-logic core uses an injected `ITransport`/`ITransportFactory`; the concrete `AceSslTransport` lives in `src/main/ace_ssl_transport.{hpp,cpp}` (Layer 3). |
 | `AceSslTransport` | `src/main/ace_ssl_transport.{hpp,cpp}` | ✅ Complete (Layer 3) | Concrete `ITransport` for `CloudConnector`. ACE_SSL_Context + ACE_SSL_SOCK_Connector dial; HTTP WebSocket upgrade to `/agent`; post-upgrade WS-frame layer on top of the SSL stream. Includes the matching `AceSslTransportFactory` that plugs into `CloudConnector::ITransportFactory`. |
 | `AriWsClient`     | `src/main/ari_ws_client.{hpp,cpp}`     | ✅ Complete (Layer 3) | Plain-TCP WS client to Asterisk `/ari/events`. HTTP Basic auth in the upgrade request (kept out of the URL so the password doesn't end up in webserver logs). Pushes each inbound JSON text frame to `AriClient::on_event`. Reconnect is the caller's concern. |
 | `AsteriskWsFactory` + `AsteriskStream` | `src/main/asterisk_ws_factory.{hpp,cpp}` | ✅ Complete (Layer 4) | Per-stream plain-TCP WS adapter from `SipFrameDemux` to chan_pjsip's `ws://127.0.0.1:8088/ws` endpoint. Same dual-pattern as `AgentStream`: ACE-owned `AsteriskStream` + non-owning back-pointer adapter held by the demux. Advertises `Sec-WebSocket-Protocol: sip` per RFC 7118 §4. No auth at WS layer — SIP digest happens inside the SIP REGISTERs. |
-| `AriRestClient`   | `src/main/ari_rest_client.{hpp,cpp}`   | ✅ Complete (Layer 4) | Plain-HTTP/1.1 client for the Asterisk ARI surface `AriClient`/`CallRouter` drive — `subscribe`, `continue`, `originate`, `create_bridge`, `addChannel`, `hangup` (`DELETE`). HTTP Basic auth in the `Authorization` header (NOT in `?api_key=` — Asterisk logs full URLs). Synchronous; one fresh `ACE_SOCK_Stream` per call, `Connection: close`. URL-encodes path components + query values per RFC 3986. |
-| `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Classifies each `StasisStart` as a caller leg or an originated leg, tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count, and delegates dialing to `CallRouter`. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
+| `AriRestClient`   | `src/main/ari_rest_client.{hpp,cpp}`   | ✅ Complete (Layer 4) | Plain-HTTP/1.1 client for the Asterisk ARI surface `AriClient`/`CallRouter` drive — `subscribe`, `continue`, `originate`, `create_bridge`, `addChannel`, `hangup` (`DELETE`), `get_endpoint` (`GET`). HTTP Basic auth in the `Authorization` header (NOT in `?api_key=` — Asterisk logs full URLs). Synchronous; one fresh `ACE_SOCK_Stream` per call, `Connection: close`. URL-encodes path components + query values per RFC 3986. |
+| `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Classifies each `StasisStart` as a caller leg or an originated leg, tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count, delegates dialing to `CallRouter`, and tears down a revoked subscriber's live channels (`revoke_subscriber`). WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
 | `CallRouter`      | `src/main/call_router.{hpp,cpp}`       | ✅ Complete (state machine) | Resolves a dialed extension to its SIP targets (`"0"` → guards, else the flat's active subscribers) and drives the forked-ring call: originate a leg per target, bridge the first to answer, tear the losers down. No targets / all legs fail / caller bails — all hang the right channels up. Pure event-driven state machine over `IAriRest` + `IMongodbClient`. |
 | `MongoSink`       | (uses [`mongodb/`](../modules/module/mongodb/README.md)) | ⏳ Layer 2 | Persists CDR rows and replicates subscriber records pushed from the cloud over `OPEN` frames. |
 
@@ -54,6 +54,10 @@ public:
   void on_tunnel_disconnect ();
   void set_tunnel           (TunnelSink* tunnel);
 
+  // Out-of-band tunnel ops (cloud → agent)
+  using SubscriberRevokedHandler = std::function<void(const std::string& payload)>;
+  void set_subscriber_revoked_handler(SubscriberRevokedHandler);
+
   // Asterisk-side (called by the production socket binding)
   void on_asterisk_data (std::uint32_t stream_id, const std::string& bytes);
   void on_asterisk_eof  (std::uint32_t stream_id, const std::string& reason);
@@ -73,11 +77,12 @@ public:
 - **CLOSE from cloud** → call `IAsteriskStream::close(reason)` and forget the stream.
 - **Asterisk EOF** (`on_asterisk_eof`) → emit `CLOSE(stream_id, reason)` upstream and forget.
 - **PING from cloud** → reply `PONG(0, "")`.
+- **`SUBSCRIBER_REVOKED` from cloud** → hand the JSON `{societyId, sipUsername}` payload to the installed `SubscriberRevokedHandler` (production: `AriClient::revoke_subscriber`, which hangs up that subscriber's live Asterisk channels). Not tied to a stream-id; an un-handled frame is a silent no-op, not a protocol error.
 - **`PUSH_NOTIFY`/`CDR_PUSH`** (agent → cloud only) ignored if seen here.
 - **Invalid frame** → `on_tunnel_bytes` returns `false`; caller drops the tunnel.
 - **Tunnel disconnect** → close every Asterisk stream with reason `"tunnel_lost"`, clear the map.
 
-### Behaviour pinned by tests (`src/test/sip_frame_demux_test.cc` — 14 tests)
+### Behaviour pinned by tests (`src/test/sip_frame_demux_test.cc` — 16 tests)
 
 OPEN behavior: `OnOpenFrame_OpensLocalAsteriskSocket`, `OnOpenFrame_FactoryRefusal_EmitsCloseUpstream`, `OnOpenFrame_DuplicateStreamId_IsIdempotent`.
 
@@ -88,6 +93,8 @@ Asterisk → cloud: `OnAsteriskData_WrapsInDataFrame`, `OnAsteriskData_UnknownSt
 CLOSE from either side: `OnTunnelClose_ClosesAsteriskStream`.
 
 Heartbeat + framing: `PingTriggersPong`, `PartialFrameAcrossReads`.
+
+Out-of-band ops: `SubscriberRevoked_InvokesHandlerWithPayload` (the `{societyId, sipUsername}` payload reaches the handler; no stream opened, nothing sent upstream), `SubscriberRevoked_NoHandler_IsSilentlyIgnored`.
 
 Lifecycle / safety: `OnTunnelDisconnect_ClosesAllAsteriskStreams`, `OnInvalidFrame_ReturnsFalse`.
 
@@ -391,10 +398,12 @@ public:
                                           const std::string& channel_id) = 0;
   virtual Response hangup(const std::string& channel_id,
                            const std::string& reason) = 0;
+  virtual Response get_endpoint(const std::string& tech,
+                                 const std::string& resource) = 0;
 };
 ```
 
-Production: an HTTP client against `http://127.0.0.1:8088/ari/…` with the configured ARI credentials. Tests: `FakeAriRest` that records every call. The same interface is shared by `AriClient` (subscribe + admission `continue`) and `CallRouter` (originate / bridge / hangup).
+Production: an HTTP client against `http://127.0.0.1:8088/ari/…` with the configured ARI credentials. Tests: `FakeAriRest` that records every call. The same interface is shared by `AriClient` (subscribe + admission `continue` + `get_endpoint` for revocation) and `CallRouter` (originate / bridge / hangup).
 
 The WebSocket event stream is **external** to `AriClient` — production wires an ARI WS client that calls `client.on_event(json_string)` per event. Tests drive `on_event` directly with hand-rolled JSON. This keeps `AriClient` itself testable without any networking.
 
@@ -415,6 +424,7 @@ public:
 
   void start();                                  // POSTs the subscribe call
   void on_event(const std::string& json_event);  // dispatches by `type`
+  void revoke_subscriber(const std::string& sip_username);  // live-call teardown
   int  active_bridges() const;
 };
 ```
@@ -434,7 +444,9 @@ public:
 
 A `ChannelDestroyed` for a channel we never saw in `StasisStart` is dropped — no phantom CDR.
 
-### Behaviour pinned by tests (`src/test/ari_client_test.cc` — 13 tests)
+**Subscriber revocation.** `revoke_subscriber(sip_username)` is driven by a `SUBSCRIBER_REVOKED` tunnel frame (cloud admin disabled/removed the subscriber). It does `IAriRest::get_endpoint("PJSIP", sip_username)`, parses the response's `channel_ids` array, and `hangup`s every channel the endpoint currently owns. Best-effort: an unknown endpoint, an ARI error, a malformed body, or an empty username is a silent no-op.
+
+### Behaviour pinned by tests (`src/test/ari_client_test.cc` — 17 tests)
 
 Subscription: `SubscribesToChannelEvents` (REST subscribe called with `app_name` + `channel:`/`bridge:` event sources).
 
@@ -447,6 +459,8 @@ CDR: `HangupEvent_WritesCdr` (full doc: `societyId`, `callId`, `fromFlat`, `toFl
 Conference detection: `ConferenceBridgeEvents_TaggedAsConference` (3 channels in a `mixing` bridge → `type=conference`, includes `conferenceBridge`), `TwoChannelsInBridge_StaysAsP2p`.
 
 CallRouter wiring: `CallerStasisStart_DelegatedToRouter` (a caller `StasisStart` reaches `CallRouter` — observable as the no-route hangup — and still accrues a CDR context), `OutboundLegStasisStart_NoAdmissionCheck_NoCdrContext` (an `outbound,…`-tagged leg, even over the admission cap, is not bounced to busy and writes no phantom CDR — it's delegated to the router instead).
+
+Subscriber revocation: `RevokeSubscriber_HangsUpEveryChannelOfTheEndpoint` (looks the endpoint up by `PJSIP` + bare sipUsername, hangs up every `channel_id`), `RevokeSubscriber_NoActiveChannels_NoHangups`, `RevokeSubscriber_UnknownEndpointOrGarbage_NoHangups` (404 or non-JSON body → silent no-op), `RevokeSubscriber_EmptyUsername_IsNoOp`.
 
 Robustness: `IgnoresMalformedJson` (bad JSON, empty object, unknown event type — all silently dropped, no state changed).
 

@@ -68,6 +68,8 @@ public:
                                   const std::string &channel_id) override;
   Response hangup(const std::string &channel_id,
                    const std::string &reason) override;
+  Response get_endpoint(const std::string &tech,
+                         const std::string &resource) override;
 
   // ── Pure-logic helpers (public for unit tests) ───────────────────────
 
@@ -102,6 +104,12 @@ public:
   /// A `DELETE`, not a `POST` — the verb is baked into the request line.
   static std::string build_hangup_request(
       const std::string &channel_id, const std::string &reason,
+      const std::string &host, const std::string &basic_auth);
+
+  /// A `GET` — `/ari/endpoints/{tech}/{resource}`. Both path components
+  /// are percent-encoded (`PJSIP` + a bare sipUsername in practice).
+  static std::string build_get_endpoint_request(
+      const std::string &tech, const std::string &resource,
       const std::string &host, const std::string &basic_auth);
 
   /// Parse an HTTP/1.1 response. Returns {status, body}. status == 0

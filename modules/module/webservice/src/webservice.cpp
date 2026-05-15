@@ -249,6 +249,23 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "POST" && uri.compare(0, 25, "/api/v1/subscriber/import") == 0)
     return MicroServicePbx::handle_subscriber_import_POST(req, dbInst);
 
+  // Prefix-match: PUT/DELETE /api/v1/subscriber/<sipUsername>?societyId=…
+  // — admin disable/re-enable + removal. The trailing path segment (the
+  // `/` after `subscriber`) keeps these distinct from the POST-only
+  // /subscriber/login and /subscriber/import above and the GET directory
+  // below. The revocation sink is the SipBridge — null when this
+  // MicroService has no owning WebServer (the routing unit tests), in
+  // which case the handlers still do their DB work, just without the
+  // cloud→agent SUBSCRIBER_REVOKED signal.
+  if ((method == "PUT" || method == "DELETE") &&
+      uri.compare(0, 19, "/api/v1/subscriber/") == 0) {
+    IRevocationSink *revoke = m_parent ? webServer().sipBridge() : nullptr;
+    return (method == "PUT")
+               ? MicroServicePbx::handle_subscriber_status_PUT(req, dbInst,
+                                                               revoke)
+               : MicroServicePbx::handle_subscriber_DELETE(req, dbInst, revoke);
+  }
+
   // Prefix-match: GET /api/v1/subscriber[?societyId=…&flatPrefix=…]
   // Comes AFTER the more specific /subscriber/login and /subscriber/import
   // checks above.
