@@ -8,6 +8,7 @@
 //
 //   MongodbClient                    (local Mongo for CDR + subscriber data)
 //   AriClient ◄── AriWsClient        (admission counter + CDR writer)
+//        │  └─ CallRouter            (dialed ext → forked-ring originate/bridge)
 //        │
 //        ▼ PUSH_NOTIFY / CDR_PUSH via …
 //   CloudConnector ◄── AceSslTransportFactory   (outbound mTLS to Heroku)
@@ -20,6 +21,7 @@
 #include "ari_rest_client.hpp"
 #include "ari_ws_client.hpp"
 #include "asterisk_ws_factory.hpp"
+#include "call_router.hpp"
 #include "cloud_connector.hpp"
 #include "mongodbc.hpp"
 #include "sip_frame_demux.hpp"
@@ -217,10 +219,15 @@ int main(int argc, char *argv[]) {
   ari_rest_cfg.password = ari_pass;
   AriRestClient ari_rest(ari_rest_cfg);
 
+  // CallRouter resolves a dialed extension to its SIP targets and drives
+  // the forked-ring originate/bridge state machine; AriClient feeds it
+  // the ARI events.
+  CallRouter call_router(society_id, *db, ari_rest, ari_app);
+
   AriClient::Config ari_cfg;
   ari_cfg.society_id = society_id;
   ari_cfg.app_name   = ari_app;
-  AriClient ari_client(ari_cfg, ari_rest, *db);
+  AriClient ari_client(ari_cfg, ari_rest, *db, call_router);
   ari_client.start();  // POSTs the subscription to Asterisk
 
   AriWsClient::Config ari_ws_cfg;

@@ -13,8 +13,9 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 | `AceSslTransport` | `src/main/ace_ssl_transport.{hpp,cpp}` | ✅ Complete (Layer 3) | Concrete `ITransport` for `CloudConnector`. ACE_SSL_Context + ACE_SSL_SOCK_Connector dial; HTTP WebSocket upgrade to `/agent`; post-upgrade WS-frame layer on top of the SSL stream. Includes the matching `AceSslTransportFactory` that plugs into `CloudConnector::ITransportFactory`. |
 | `AriWsClient`     | `src/main/ari_ws_client.{hpp,cpp}`     | ✅ Complete (Layer 3) | Plain-TCP WS client to Asterisk `/ari/events`. HTTP Basic auth in the upgrade request (kept out of the URL so the password doesn't end up in webserver logs). Pushes each inbound JSON text frame to `AriClient::on_event`. Reconnect is the caller's concern. |
 | `AsteriskWsFactory` + `AsteriskStream` | `src/main/asterisk_ws_factory.{hpp,cpp}` | ✅ Complete (Layer 4) | Per-stream plain-TCP WS adapter from `SipFrameDemux` to chan_pjsip's `ws://127.0.0.1:8088/ws` endpoint. Same dual-pattern as `AgentStream`: ACE-owned `AsteriskStream` + non-owning back-pointer adapter held by the demux. Advertises `Sec-WebSocket-Protocol: sip` per RFC 7118 §4. No auth at WS layer — SIP digest happens inside the SIP REGISTERs. |
-| `AriRestClient`   | `src/main/ari_rest_client.{hpp,cpp}`   | ✅ Complete (Layer 4) | Plain-HTTP/1.1 client for Asterisk's `/ari/applications/{app}/subscription` and `/ari/channels/{cid}/continue`. HTTP Basic auth in the `Authorization` header (NOT in `?api_key=` — Asterisk logs full URLs). Synchronous; one fresh `ACE_SOCK_Stream` per call, `Connection: close`. URL-encodes path components + query values per RFC 3986. |
-| `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
+| `AriRestClient`   | `src/main/ari_rest_client.{hpp,cpp}`   | ✅ Complete (Layer 4) | Plain-HTTP/1.1 client for the Asterisk ARI surface `AriClient`/`CallRouter` drive — `subscribe`, `continue`, `originate`, `create_bridge`, `addChannel`, `hangup` (`DELETE`). HTTP Basic auth in the `Authorization` header (NOT in `?api_key=` — Asterisk logs full URLs). Synchronous; one fresh `ACE_SOCK_Stream` per call, `Connection: close`. URL-encodes path components + query values per RFC 3986. |
+| `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Classifies each `StasisStart` as a caller leg or an originated leg, tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count, and delegates dialing to `CallRouter`. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
+| `CallRouter`      | `src/main/call_router.{hpp,cpp}`       | ✅ Complete (state machine) | Resolves a dialed extension to its SIP targets (`"0"` → guards, else the flat's active subscribers) and drives the forked-ring call: originate a leg per target, bridge the first to answer, tear the losers down. No targets / all legs fail / caller bails — all hang the right channels up. Pure event-driven state machine over `IAriRest` + `IMongodbClient`. |
 | `MongoSink`       | (uses [`mongodb/`](../modules/module/mongodb/README.md)) | ⏳ Layer 2 | Persists CDR rows and replicates subscriber records pushed from the cloud over `OPEN` frames. |
 
 ---
@@ -380,10 +381,20 @@ public:
                                          const std::string& context,
                                          const std::string& extension,
                                          int priority) = 0;
+  virtual Response originate(const std::string& endpoint, const std::string& app,
+                              const std::string& app_args,
+                              const std::string& channel_id,
+                              const std::string& caller_id) = 0;
+  virtual Response create_bridge(const std::string& bridge_id,
+                                  const std::string& type) = 0;
+  virtual Response add_channel_to_bridge(const std::string& bridge_id,
+                                          const std::string& channel_id) = 0;
+  virtual Response hangup(const std::string& channel_id,
+                           const std::string& reason) = 0;
 };
 ```
 
-Production: an HTTP client against `http://127.0.0.1:8088/ari/…` with the configured ARI credentials. Tests: `FakeAriRest` that records every call.
+Production: an HTTP client against `http://127.0.0.1:8088/ari/…` with the configured ARI credentials. Tests: `FakeAriRest` that records every call. The same interface is shared by `AriClient` (subscribe + admission `continue`) and `CallRouter` (originate / bridge / hangup).
 
 The WebSocket event stream is **external** to `AriClient` — production wires an ARI WS client that calls `client.on_event(json_string)` per event. Tests drive `on_event` directly with hand-rolled JSON. This keeps `AriClient` itself testable without any networking.
 
@@ -400,7 +411,7 @@ public:
     std::string busy_extension       = "s";
     int         busy_priority        = 1;
   };
-  AriClient(Config, IAriRest&, IMongodbClient&);
+  AriClient(Config, IAriRest&, IMongodbClient&, CallRouter&);
 
   void start();                                  // POSTs the subscribe call
   void on_event(const std::string& json_event);  // dispatches by `type`
@@ -412,7 +423,9 @@ public:
 
 **Event dispatch.** `on_event` parses the JSON, reads `type`, and routes to a per-type handler. Malformed JSON and unknown types are silently dropped.
 
-**Admission.** `BridgeCreated` increments `m_active_bridges` (idempotent on duplicate `bridge.id`). `BridgeDestroyed` decrements (clamped — never negative; absorbs duplicate echoes). When `StasisStart` arrives and `m_active_bridges >= Config::max_concurrent_calls`, `AriClient` calls `IAriRest::continue_in_dialplan(channel_id, busy_context, busy_extension, busy_priority)` — Asterisk's dialplan then plays a busy message and hangs up, causing the SIP caller to see 503. No CDR row is written for rejected channels (the channel never entered Stasis).
+**`StasisStart` classification.** A leg `CallRouter` originated re-enters Stasis with appArgs `["outbound", "<callerChannelId>"]`; everything else is a fresh caller leg from the dialplan's `Stasis()`. An originated leg is handed to `CallRouter::on_leg_start` and **skips both admission and CDR context** — it's part of an already-admitted call and the logical call's CDR is keyed on the caller channel, so counting or CDR-ing the leg would double up. A caller leg goes through admission, gets a CDR context, and is handed to `CallRouter::on_caller_start` to fork-ring its targets. Every `ChannelDestroyed` is forwarded to `CallRouter::on_channel_gone` before the CDR step.
+
+**Admission.** `BridgeCreated` increments `m_active_bridges` (idempotent on duplicate `bridge.id`). `BridgeDestroyed` decrements (clamped — never negative; absorbs duplicate echoes). When a caller `StasisStart` arrives and `m_active_bridges >= Config::max_concurrent_calls`, `AriClient` calls `IAriRest::continue_in_dialplan(channel_id, busy_context, busy_extension, busy_priority)` — Asterisk's dialplan then plays a busy message and hangs up, causing the SIP caller to see 503. No CDR row is written for rejected channels (the channel never entered Stasis).
 
 **CDR finalisation.** Three events build the per-call context:
 1. `StasisStart` records `caller_flat = channel.caller.number`, `callee_flat = channel.dialplan.exten` (or `args[0]`), `started_at = now`.
@@ -421,7 +434,7 @@ public:
 
 A `ChannelDestroyed` for a channel we never saw in `StasisStart` is dropped — no phantom CDR.
 
-### Behaviour pinned by tests (`src/test/ari_client_test.cc` — 11 tests)
+### Behaviour pinned by tests (`src/test/ari_client_test.cc` — 13 tests)
 
 Subscription: `SubscribesToChannelEvents` (REST subscribe called with `app_name` + `channel:`/`bridge:` event sources).
 
@@ -433,7 +446,54 @@ CDR: `HangupEvent_WritesCdr` (full doc: `societyId`, `callId`, `fromFlat`, `toFl
 
 Conference detection: `ConferenceBridgeEvents_TaggedAsConference` (3 channels in a `mixing` bridge → `type=conference`, includes `conferenceBridge`), `TwoChannelsInBridge_StaysAsP2p`.
 
+CallRouter wiring: `CallerStasisStart_DelegatedToRouter` (a caller `StasisStart` reaches `CallRouter` — observable as the no-route hangup — and still accrues a CDR context), `OutboundLegStasisStart_NoAdmissionCheck_NoCdrContext` (an `outbound,…`-tagged leg, even over the admission cap, is not bounced to busy and writes no phantom CDR — it's delegated to the router instead).
+
 Robustness: `IgnoresMalformedJson` (bad JSON, empty object, unknown event type — all silently dropped, no state changed).
+
+---
+
+## CallRouter
+
+`pbx-agent`'s dialplan is a thin `Stasis(pbx,${EXTEN})` passthrough — the agent does the routing. `CallRouter` is that routing logic, in two halves: the **resolver** (a Mongo lookup) and the **forked-ring driver** (an event-driven state machine over `IAriRest`). Reactor-thread single-threaded; no internal locking.
+
+### Public API
+
+```cpp
+class CallRouter {
+public:
+  CallRouter(std::string society_id, IMongodbClient&, IAriRest&,
+             std::string app_name = "pbx");
+
+  std::vector<std::string> resolve_targets(const std::string& dialed_ext) const;
+
+  void on_caller_start(const std::string& caller_channel_id,
+                       const std::string& caller_id,
+                       const std::string& dialed_ext);
+  void on_leg_start(const std::string& leg_channel_id,
+                    const std::string& caller_channel_id);
+  void on_channel_gone(const std::string& channel_id);
+
+  std::size_t active_calls() const;
+};
+```
+
+### Behaviour
+
+**Resolver.** `resolve_targets` runs one society-scoped `subscribers` query: `"0"` → every active `role=guard` subscriber (DESIGN.md §9); any other extension is a flat number → every active subscriber whose denormalized `flatNumber` matches (DESIGN.md §6.2). Disabled subscribers, rows with a missing/empty `sipUsername`, unknown flats, empty extensions, and DB errors/garbage JSON all resolve to "no targets".
+
+**Forked-ring driver.** On `on_caller_start`, the router resolves the dialed extension and `originate`s one ringing leg per target — `endpoint=PJSIP/<sipUsername>`, `app=<app_name>`, `appArgs=outbound,<callerChannelId>` (so the answer is recognisable), and a self-assigned `channelId` (so the fork is tracked without round-tripping the originate response). No targets, or every originate failing, → `hangup(caller, "congestion")`. On `on_leg_start`, the **first** leg to answer wins: `create_bridge` + `add_channel_to_bridge` for the caller and that leg, then `hangup(loser, "answered")` for every sibling still ringing; a later answer (lost the race, or its caller already gone) is hung up. On `on_channel_gone`: a ringing leg is dropped, and when the last one dies unanswered the caller gets `hangup(caller, "no_answer")`; the connected leg dying releases the caller with `"normal"`; the caller dying tears down whatever legs are still attached. Idempotent per caller channel id (Asterisk re-emits `StasisStart`).
+
+Conference (`*FLAT`, DESIGN.md §6.3) is **not** in scope here — the resolver treats a `*`-prefixed extension as an ordinary (unmatched) flat number.
+
+### Behaviour pinned by tests (`src/test/call_router_test.cc` — 17 tests)
+
+Resolver (7): `ResolvesFlatToItsSubscribers`, `ResolvesGuardExtensionToGuards`, `UnknownFlatReturnsEmpty`, `ExcludesDisabledSubscribers`, `SkipsRowsWithMissingOrEmptySipUsername`, `EmptyExtensionReturnsEmpty`, `MalformedOrFailedDbReturnsEmpty`.
+
+Originate fan-out: `ForkRing_OriginatesALegPerTarget` (one `originate` per target, correct `app`/`appArgs`/`callerId`/`endpoint`, distinct leg ids), `ForkRing_NoTargets_HangsUpCaller`, `ForkRing_AllOriginatesFail_HangsUpCaller`, `ForkRing_IsIdempotentPerCaller`.
+
+First-answer-wins: `ForkRing_FirstAnswerWins_BridgesAndTearsDownSiblings` (one bridge, caller + winner added, both losers hung up `"answered"`), `ForkRing_LateAnswerLosesTheRace` (no second bridge).
+
+Teardown: `ForkRing_AllLegsFailBeforeAnswer_HangsUpCaller` (`"no_answer"` only once the last leg dies), `ForkRing_CallerHangsUpWhileRinging_TearsDownLegs` (late leg `ChannelDestroyed` echoes are harmless), `ForkRing_ConnectedLegHangsUp_ReleasesCaller`, `ForkRing_LegAnswersAfterCallerGone_IsHungUp`.
 
 ---
 
@@ -488,4 +548,4 @@ podman-compose -f docker-compose.agent.yml logs -f pbx-agent
 
 ## Tests (Layer 2)
 
-`CloudConnector*`, `SipFrameDemux*`, `AriClient*` — see [`TDD-PLAN.md → Layer 2`](../TDD-PLAN.md).
+`CloudConnector*`, `SipFrameDemux*`, `AriClient*`, `CallRouter*` — see [`TDD-PLAN.md → Layer 2`](../TDD-PLAN.md).

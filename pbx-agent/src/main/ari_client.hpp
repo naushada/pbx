@@ -16,7 +16,14 @@
  *
  * Receives parsed ARI events (`StasisStart`, `BridgeCreated`,
  * `BridgeDestroyed`, `ChannelEnteredBridge`, `ChannelDestroyed`, …) and
- * does three jobs:
+ * does four jobs:
+ *
+ *   0. **Call routing** — on a caller's `StasisStart`, hands the dialed
+ *      extension to `CallRouter`, which resolves it to the SIP targets
+ *      and forks a ringing leg per target. An originated leg re-enters
+ *      Stasis tagged `outbound,<callerChannelId>`; `AriClient`
+ *      recognises that tag, routes it to `CallRouter::on_leg_start`,
+ *      and skips admission + CDR for it (a leg is not its own call).
  *
  *   1. **Admission control** — counts active bridges (NOT channels —
  *      a 1:1 call has two channels but a single bridge; see
@@ -64,7 +71,40 @@ public:
                                          const std::string &context,
                                          const std::string &extension,
                                          int priority) = 0;
+
+  /// `POST /ari/channels` — originate a new channel that re-enters the
+  /// Stasis app on answer. `CallRouter` forks one of these per ringing
+  /// target. @p channel_id pre-assigns the channel id (ARI `channelId`
+  /// param) so the fork can be tracked without parsing the response
+  /// body; @p app_args is the comma-joined Stasis arg list the answered
+  /// leg re-enters with (we use `outbound,<callerChannelId>`).
+  virtual Response originate(const std::string &endpoint,
+                              const std::string &app,
+                              const std::string &app_args,
+                              const std::string &channel_id,
+                              const std::string &caller_id) = 0;
+
+  /// `POST /ari/bridges` — create a bridge. @p bridge_id pre-assigns the
+  /// id; @p type is `"mixing"` for both 1:1 and conference calls.
+  virtual Response create_bridge(const std::string &bridge_id,
+                                  const std::string &type) = 0;
+
+  /// `POST /ari/bridges/{bridge_id}/addChannel` — pull a channel into a
+  /// bridge. Adding a still-ringing channel answers it.
+  virtual Response add_channel_to_bridge(const std::string &bridge_id,
+                                          const std::string &channel_id) = 0;
+
+  /// `DELETE /ari/channels/{channel_id}` — hang up. @p reason is an ARI
+  /// hangup reason: `"normal"`, `"busy"`, `"congestion"`, `"no_answer"`,
+  /// or `"answered"` (the latter for forked-ring legs that lost the race).
+  virtual Response hangup(const std::string &channel_id,
+                           const std::string &reason) = 0;
 };
+
+/// Resolves dialed extensions and drives the forked-ring originate/bridge
+/// state machine. Defined in `call_router.hpp`; `AriClient` only holds a
+/// reference, so a forward declaration is enough here.
+class CallRouter;
 
 class AriClient {
 public:
@@ -87,7 +127,8 @@ public:
     int         busy_priority  = 1;
   };
 
-  AriClient(Config cfg, IAriRest &rest, IMongodbClient &db);
+  AriClient(Config cfg, IAriRest &rest, IMongodbClient &db,
+            CallRouter &router);
 
   /// Subscribe the Stasis app for the event sources we care about.
   /// Idempotent — production calls this once at boot; tests call it
@@ -132,6 +173,7 @@ private:
   Config           m_cfg;
   IAriRest        &m_rest;
   IMongodbClient  &m_db;
+  CallRouter      &m_router;
 
   int m_active_bridges = 0;
 

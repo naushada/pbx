@@ -31,7 +31,7 @@ AriRestClient::subscribe(const std::string &app_name,
       m_cfg.username + ":" + m_cfg.password);
   const std::string req = build_subscribe_request(app_name, event_sources,
                                                     m_cfg.host, basic);
-  return do_post(req);
+  return do_request(req);
 }
 
 IAriRest::Response
@@ -43,12 +43,54 @@ AriRestClient::continue_in_dialplan(const std::string &channel_id,
       m_cfg.username + ":" + m_cfg.password);
   const std::string req = build_continue_request(channel_id, context, extension,
                                                    priority, m_cfg.host, basic);
-  return do_post(req);
+  return do_request(req);
 }
 
-// ── do_post ───────────────────────────────────────────────────────────────────
+IAriRest::Response
+AriRestClient::originate(const std::string &endpoint, const std::string &app,
+                          const std::string &app_args,
+                          const std::string &channel_id,
+                          const std::string &caller_id) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_originate_request(
+      endpoint, app, app_args, channel_id, caller_id, m_cfg.host, basic);
+  return do_request(req);
+}
 
-IAriRest::Response AriRestClient::do_post(const std::string &raw_request) {
+IAriRest::Response
+AriRestClient::create_bridge(const std::string &bridge_id,
+                              const std::string &type) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_create_bridge_request(bridge_id, type,
+                                                       m_cfg.host, basic);
+  return do_request(req);
+}
+
+IAriRest::Response
+AriRestClient::add_channel_to_bridge(const std::string &bridge_id,
+                                      const std::string &channel_id) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_add_channel_request(bridge_id, channel_id,
+                                                     m_cfg.host, basic);
+  return do_request(req);
+}
+
+IAriRest::Response
+AriRestClient::hangup(const std::string &channel_id,
+                       const std::string &reason) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_hangup_request(channel_id, reason,
+                                                m_cfg.host, basic);
+  return do_request(req);
+}
+
+// ── do_request ────────────────────────────────────────────────────────────────
+
+IAriRest::Response AriRestClient::do_request(const std::string &raw_request) {
   ACE_SOCK_Stream stream;
   ACE_SOCK_Connector conn;
   ACE_INET_Addr addr(m_cfg.port, m_cfg.host.c_str());
@@ -126,6 +168,84 @@ std::string AriRestClient::build_continue_request(
      << "?context="   << url_encode(context)
      << "&extension=" << url_encode(extension)
      << "&priority="  << priority
+     << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_originate_request ──────────────────────────────────────────────────
+
+std::string AriRestClient::build_originate_request(
+    const std::string &endpoint, const std::string &app,
+    const std::string &app_args, const std::string &channel_id,
+    const std::string &caller_id, const std::string &host,
+    const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "POST /ari/channels"
+     << "?endpoint="  << url_encode(endpoint)
+     << "&app="       << url_encode(app)
+     << "&appArgs="   << url_encode(app_args)
+     << "&channelId=" << url_encode(channel_id);
+  // An empty callerId param confuses some Asterisk builds — leave it off
+  // entirely and let the endpoint's configured CallerID stand.
+  if (!caller_id.empty())
+    os << "&callerId=" << url_encode(caller_id);
+  os << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_create_bridge_request ──────────────────────────────────────────────
+
+std::string AriRestClient::build_create_bridge_request(
+    const std::string &bridge_id, const std::string &type,
+    const std::string &host, const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "POST /ari/bridges"
+     << "?type="     << url_encode(type)
+     << "&bridgeId=" << url_encode(bridge_id)
+     << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_add_channel_request ────────────────────────────────────────────────
+
+std::string AriRestClient::build_add_channel_request(
+    const std::string &bridge_id, const std::string &channel_id,
+    const std::string &host, const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "POST /ari/bridges/" << url_encode(bridge_id) << "/addChannel"
+     << "?channel=" << url_encode(channel_id)
+     << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_hangup_request ─────────────────────────────────────────────────────
+
+std::string AriRestClient::build_hangup_request(
+    const std::string &channel_id, const std::string &reason,
+    const std::string &host, const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "DELETE /ari/channels/" << url_encode(channel_id)
+     << "?reason=" << url_encode(reason)
      << " HTTP/1.1\r\n"
      << "Host: " << host << "\r\n"
      << "Authorization: Basic " << basic_auth << "\r\n"

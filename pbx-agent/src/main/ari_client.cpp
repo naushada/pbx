@@ -1,5 +1,6 @@
 #include "ari_client.hpp"
 
+#include "call_router.hpp"
 #include "json.hpp"
 
 #include <algorithm>
@@ -7,8 +8,15 @@
 
 using json = nlohmann::json;
 
-AriClient::AriClient(Config cfg, IAriRest &rest, IMongodbClient &db)
-    : m_cfg(std::move(cfg)), m_rest(rest), m_db(db) {}
+namespace {
+// appArgs[0] on a StasisStart that belongs to a leg CallRouter
+// originated (vs. a fresh caller leg from the dialplan's Stasis()).
+constexpr char kOutboundTag[] = "outbound";
+} // namespace
+
+AriClient::AriClient(Config cfg, IAriRest &rest, IMongodbClient &db,
+                     CallRouter &router)
+    : m_cfg(std::move(cfg)), m_rest(rest), m_db(db), m_router(router) {}
 
 void AriClient::start() {
   // v1 wants channel + bridge events to drive admission control and CDR.
@@ -45,6 +53,19 @@ void AriClient::handle_stasis_start(const json &j) {
   if (!ch.contains("id") || !ch["id"].is_string()) return;
   const std::string channel_id = ch["id"].get<std::string>();
 
+  // Classify. A leg CallRouter originated re-enters Stasis with appArgs
+  // ["outbound", "<callerChannelId>"]; everything else is a fresh caller
+  // leg from the dialplan's Stasis(). An originated leg is part of an
+  // already-admitted call — it gets neither an admission check (that
+  // would double-count) nor a CDR context (the logical call's CDR is
+  // keyed on the caller channel, not the leg).
+  if (j.contains("args") && j["args"].is_array() && j["args"].size() >= 2 &&
+      j["args"][0].is_string() && j["args"][1].is_string() &&
+      j["args"][0].get<std::string>() == kOutboundTag) {
+    m_router.on_leg_start(channel_id, j["args"][1].get<std::string>());
+    return;
+  }
+
   // Admission: count bridges, not channels. The 6th INVITE (i.e. the
   // one that would create the 6th bridge if accepted) is bounced back
   // to dialplan with `continue` — the dialplan plays a busy message
@@ -74,7 +95,13 @@ void AriClient::handle_stasis_start(const json &j) {
       !j["args"].empty() && j["args"][0].is_string()) {
     cx.callee_flat = j["args"][0].get<std::string>();
   }
+
+  // Hand the dialed extension to the router — it resolves the flat and
+  // forks a ringing leg per target (or hangs the caller up on no route).
+  const std::string caller_flat = cx.caller_flat;
+  const std::string callee_flat = cx.callee_flat;
   m_channels.emplace(channel_id, std::move(cx));
+  m_router.on_caller_start(channel_id, caller_flat, callee_flat);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +162,12 @@ void AriClient::handle_channel_destroyed(const json &j) {
   if (!j.contains("channel") || !j["channel"].is_object()) return;
   const std::string channel_id = j["channel"].value("id", std::string{});
   if (channel_id.empty()) return;
+
+  // Notify the router first: the destroyed channel may be a ringing leg
+  // (drop it; maybe release the caller on all-failed) or the caller
+  // itself (tear down its legs). Legs have no CDR context here, so the
+  // early return below skips them — the router is their only handler.
+  m_router.on_channel_gone(channel_id);
 
   auto it = m_channels.find(channel_id);
   if (it == m_channels.end()) return; // we never saw the StasisStart
