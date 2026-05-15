@@ -109,6 +109,9 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
   case Op::CDR_PUSH:
     if (m_cdr_handler)  m_cdr_handler(f.payload);
     return;
+  case Op::REGISTER_STATE:
+    if (m_register_state_handler) m_register_state_handler(f.payload);
+    return;
   }
 }
 
@@ -118,6 +121,10 @@ void SipBridge::set_push_notify_handler(PushNotifyHandler h) {
 
 void SipBridge::set_cdr_push_handler(CdrPushHandler h) {
   m_cdr_handler = std::move(h);
+}
+
+void SipBridge::set_register_state_handler(RegisterStateHandler h) {
+  m_register_state_handler = std::move(h);
 }
 
 void SipBridge::revoke(const std::string &society_id,

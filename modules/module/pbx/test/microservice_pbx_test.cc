@@ -440,6 +440,62 @@ TEST(MicroServicePbx, Directory_FiltersByFlatPrefix)
         EXPECT_EQ('A', row["flatNumber"].get<std::string>().front());
 }
 
+TEST(MicroServicePbx, Directory_ReadsOnlineFromPresenceCache)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({
+        directory_row("A-101", "Asha", "u_alice"),  // online
+        directory_row("A-102", "Bea",  "u_bea"),    // never seen → offline
+        directory_row("A-103", "Cleo", "u_cleo"),   // explicitly offline
+    });
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    InMemoryPresenceCache presence;
+    presence.set("s1", "u_alice", true);
+    presence.set("s1", "u_cleo",  false);
+    // u_bea is never seen — the directory must default it to offline.
+
+    const std::string req = make_get("/api/v1/subscriber?societyId=s1");
+    std::string rsp =
+        MicroServicePbx::handle_directory_GET(req, db, &presence);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(3u, arr.size());
+
+    // The cache scopes by (societyId, sipUsername) — the projection drops
+    // sipUsername so we look up by flatNumber here.
+    auto online_for = [&](const std::string &flat) {
+        for (const auto &r : arr)
+            if (r["flatNumber"] == flat) return r["online"].get<bool>();
+        ADD_FAILURE() << "no row for " << flat; return false;
+    };
+    EXPECT_TRUE (online_for("A-101"));
+    EXPECT_FALSE(online_for("A-102"));
+    EXPECT_FALSE(online_for("A-103"));
+}
+
+TEST(MicroServicePbx, Directory_OnlineIsScopedBySocietyId)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({directory_row("A-101", "Asha", "u_alice")});
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    // Cache has u_alice online in a DIFFERENT society — must NOT bleed
+    // into our s1 lookup.
+    InMemoryPresenceCache presence;
+    presence.set("other-society", "u_alice", true);
+
+    const std::string req = make_get("/api/v1/subscriber?societyId=s1");
+    std::string rsp =
+        MicroServicePbx::handle_directory_GET(req, db, &presence);
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(1u, arr.size());
+    EXPECT_FALSE(arr[0]["online"]);
+}
+
 TEST(MicroServicePbx, Directory_ProjectsToDirectoryEntryShape)
 {
     // The UI types this endpoint as `DirectoryEntry { flatNumber,

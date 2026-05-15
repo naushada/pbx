@@ -717,7 +717,8 @@ std::string handle_subscriber_login_POST(const std::string &req,
                       /*sip_username=*/email, /*role=*/"resident");
 }
 
-std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
+std::string handle_directory_GET(const std::string &req, IMongodbClient &db,
+                                 const IPresenceCache *presence) {
   const std::string uri          = raw_uri_with_query(req);
   const std::string society_id   = query_param(uri, "societyId");
   const std::string flat_prefix  = query_param(uri, "flatPrefix");
@@ -778,11 +779,20 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db) {
     const std::string flat = row["flatNumber"].get<std::string>();
     if (!matches_prefix(flat)) continue;
 
+    // `online` reads from the cloud-side IPresenceCache. The source row's
+    // `sipUsername` is the cache key — we look it up BEFORE building the
+    // projection (which drops sipUsername). Null cache → false everywhere
+    // (the safe default; the UI's call button is disabled when offline).
+    const std::string sip_user = row.value("sipUsername", std::string{});
+    const bool online = presence && !sip_user.empty()
+        ? presence->is_online(society_id, sip_user)
+        : false;
+
     out.push_back({
         {"flatNumber",  flat},
         {"displayName", row.value("name", std::string{})},
         {"sipUri",      "sip:" + flat + "@pbx." + society_id},
-        {"online",      false},
+        {"online",      online},
     });
   }
   return http_response(200, "OK", out.dump());

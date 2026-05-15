@@ -268,9 +268,13 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
 
   // Prefix-match: GET /api/v1/subscriber[?societyId=…&flatPrefix=…]
   // Comes AFTER the more specific /subscriber/login and /subscriber/import
-  // checks above.
-  if (method == "GET" && uri.compare(0, 18, "/api/v1/subscriber") == 0)
-    return MicroServicePbx::handle_directory_GET(req, dbInst);
+  // checks above. The presence cache feeds the response's `online` field;
+  // null-when-no-WebServer (the routing unit tests) → online stays false.
+  if (method == "GET" && uri.compare(0, 18, "/api/v1/subscriber") == 0) {
+    const IPresenceCache *presence = m_parent ? webServer().presenceCache()
+                                              : nullptr;
+    return MicroServicePbx::handle_directory_GET(req, dbInst, presence);
+  }
 
   // Exact-match: POST /api/v1/society
   if (method == "POST" && uri == "/api/v1/society")

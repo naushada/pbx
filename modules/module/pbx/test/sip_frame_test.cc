@@ -55,6 +55,13 @@ TEST(SipFrame, SerializeRoundTrip_SubscriberRevoked)
                       R"({"societyId":"soc1","sipUsername":"u_abc123"})");
 }
 
+TEST(SipFrame, SerializeRoundTrip_RegisterState)
+{
+    // agent → cloud presence update: stream-id unused (0), JSON payload.
+    expect_round_trip(Op::REGISTER_STATE, 0,
+                      R"({"societyId":"soc1","sipUsername":"u_abc123","online":true})");
+}
+
 // ── Error paths ───────────────────────────────────────────────────────────────
 
 TEST(SipFrame, RejectsBadVersion)

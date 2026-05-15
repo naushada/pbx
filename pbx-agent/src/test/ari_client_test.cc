@@ -177,6 +177,20 @@ std::string channel_entered_bridge(const std::string &channel_id,
   return j.dump();
 }
 
+// Asterisk's EndpointStateChange — driven by REGISTER / qualify-loss for a
+// pjsip endpoint. `state` is one of "online", "offline", "unknown".
+std::string endpoint_state_change(const std::string &tech,
+                                   const std::string &resource,
+                                   const std::string &state) {
+  json j;
+  j["type"]                  = "EndpointStateChange";
+  j["application"]           = "pbx";
+  j["endpoint"]["technology"] = tech;
+  j["endpoint"]["resource"]   = resource;
+  j["endpoint"]["state"]      = state;
+  return j.dump();
+}
+
 std::string channel_destroyed(const std::string &channel_id,
                                 const std::string &cause_txt = "Normal Clearing") {
   json j;
@@ -203,7 +217,7 @@ AriClient::Config default_cfg() {
 
 // ── Start subscribes ─────────────────────────────────────────────────────────
 
-TEST(AriClient, SubscribesToChannelEvents)
+TEST(AriClient, SubscribesToChannelBridgeEndpointEvents)
 {
     FakeAriRest rest;
     TestDb      db;
@@ -215,11 +229,14 @@ TEST(AriClient, SubscribesToChannelEvents)
     ASSERT_EQ(1u, rest.subscribes.size());
     EXPECT_EQ("pbx", rest.subscribes[0].app);
     const auto &srcs = rest.subscribes[0].sources;
-    // Channel and bridge event sources both subscribed.
+    // channel + bridge drive admission/CDR; endpoint drives the cloud's
+    // presence cache via REGISTER_STATE frames.
     EXPECT_NE(srcs.end(),
               std::find(srcs.begin(), srcs.end(), "channel:"));
     EXPECT_NE(srcs.end(),
               std::find(srcs.begin(), srcs.end(), "bridge:"));
+    EXPECT_NE(srcs.end(),
+              std::find(srcs.begin(), srcs.end(), "endpoint:"));
 }
 
 // ── Bridge counter ───────────────────────────────────────────────────────────
@@ -522,6 +539,78 @@ TEST(AriClient, RevokeSubscriber_EmptyUsername_IsNoOp)
 
     EXPECT_TRUE(rest.endpoint_lookups.empty());
     EXPECT_TRUE(rest.hangups.empty());
+}
+
+// ── EndpointStateChange → register-state callback ────────────────────────────
+
+TEST(AriClient, EndpointStateChange_Online_FiresHandlerWithTrue)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    struct Hit { std::string user; bool online; };
+    std::vector<Hit> hits;
+    c.set_register_state_handler(
+        [&hits](const std::string &user, bool online) {
+            hits.push_back({user, online});
+        });
+
+    c.on_event(endpoint_state_change("PJSIP", "u_alice", "online"));
+
+    ASSERT_EQ(1u, hits.size());
+    EXPECT_EQ("u_alice", hits[0].user);
+    EXPECT_TRUE(hits[0].online);
+}
+
+TEST(AriClient, EndpointStateChange_OfflineOrUnknown_FiresHandlerWithFalse)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    struct Hit { std::string user; bool online; };
+    std::vector<Hit> hits;
+    c.set_register_state_handler(
+        [&hits](const std::string &user, bool online) {
+            hits.push_back({user, online});
+        });
+
+    c.on_event(endpoint_state_change("PJSIP", "u_a", "offline"));
+    c.on_event(endpoint_state_change("PJSIP", "u_b", "unknown"));
+
+    ASSERT_EQ(2u, hits.size());
+    EXPECT_FALSE(hits[0].online);
+    EXPECT_FALSE(hits[1].online) << "anything not \"online\" maps to false";
+}
+
+TEST(AriClient, EndpointStateChange_NonPjsipTech_IsIgnored)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    int hits = 0;
+    c.set_register_state_handler([&hits](const std::string &, bool) { ++hits; });
+
+    c.on_event(endpoint_state_change("Local", "loop", "online"));
+    c.on_event(endpoint_state_change("IAX2",  "trunk", "online"));
+
+    EXPECT_EQ(0, hits) << "only PJSIP endpoints feed the presence cache";
+}
+
+TEST(AriClient, EndpointStateChange_NoHandler_IsSilentNoOp)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    // No handler installed — must not crash, must not throw.
+    c.on_event(endpoint_state_change("PJSIP", "u_alice", "online"));
 }
 
 // ── Malformed input tolerance ────────────────────────────────────────────────

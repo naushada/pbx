@@ -59,6 +59,7 @@ DecodeResult decode(const std::string &buf) {
     case Op::PING: case Op::PONG: case Op::ERR:
     case Op::PUSH_NOTIFY: case Op::CDR_PUSH:
     case Op::SUBSCRIBER_REVOKED:
+    case Op::REGISTER_STATE:
       break;
     default:
       r.status = Status::Invalid;

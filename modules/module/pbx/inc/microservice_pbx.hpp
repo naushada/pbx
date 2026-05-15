@@ -2,6 +2,7 @@
 #define MICROSERVICE_PBX_HPP
 
 #include "mongodbc.hpp"
+#include "presence_cache.hpp"
 #include "revocation_sink.hpp"
 #include <string>
 
@@ -77,11 +78,16 @@ std::string handle_subscriber_login_POST(const std::string &req,
                                          IMongodbClient &db);
 
 /// GET /api/v1/subscriber?societyId=<id>&flatPrefix=<prefix>
-/// Returns matching subscribers in the society (case-insensitive
-/// prefix match). For the MVP this returns the contents of the
-/// `subscribers` collection filtered client-side; an empty array if
-/// the collection has no documents.
-std::string handle_directory_GET(const std::string &req, IMongodbClient &db);
+/// Projects each persisted `subscribers` row to the UI's
+/// `DirectoryEntry { flatNumber, displayName, sipUri, online }` shape.
+/// `online` reads from @p presence (the cloud-side `IPresenceCache`,
+/// fed by `REGISTER_STATE` tunnel frames from the agent) — `false` for
+/// any subscriber the cache hasn't seen yet. When @p presence is null
+/// (e.g. `dispatch_pbx_routes` invoked from a routing unit test with
+/// no owning `WebServer`), `online` is `false` for every row — same
+/// safe default the UI's call button keys off.
+std::string handle_directory_GET(const std::string &req, IMongodbClient &db,
+                                 const IPresenceCache *presence = nullptr);
 
 /// PUT /api/v1/subscriber/<sipUsername>?societyId=<id>
 /// Body: `{"status":"active"|"disabled"}` — the admin disable/re-enable

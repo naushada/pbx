@@ -28,6 +28,7 @@
 
 #include "mongodbc.hpp"
 #include "cloud_tunnel_endpoint.hpp"
+#include "presence_cache.hpp"
 #include "sip_bridge.hpp"
 #include "wsdbproxy.hpp"
 
@@ -367,6 +368,15 @@ public:
     m_sipBridge = std::move(b);
   }
 
+  /// Cloud-side presence cache — populated from REGISTER_STATE tunnel
+  /// frames the agent emits on `EndpointStateChange` ARI events.
+  /// Consulted by `handle_directory_GET` to fill the `online` field.
+  /// Null when onprem-pbx isn't enabled here.
+  IPresenceCache *presenceCache() { return m_presenceCache.get(); }
+  void setPresenceCache(std::unique_ptr<IPresenceCache> p) {
+    m_presenceCache = std::move(p);
+  }
+
   /// Return the semaphore used to gate concurrent database access.
   ACE_Semaphore &semaphore() const { return (*m_semaphore.get()); }
 
@@ -382,6 +392,7 @@ private:
   std::unique_ptr<WsDbServer>     m_wsDbServer;
   std::unique_ptr<CloudTunnelEndpoint> m_cloudTunnelEndpoint;
   std::unique_ptr<SipBridge>           m_sipBridge;
+  std::unique_ptr<IPresenceCache>      m_presenceCache;
   std::unique_ptr<ACE_Semaphore>  m_semaphore;
 };
 
