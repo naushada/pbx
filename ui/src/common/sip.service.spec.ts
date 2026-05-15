@@ -388,6 +388,66 @@ describe('SipService', () => {
             expect(states.at(-1)).toEqual({ kind: 'failed', reason: 'mic_denied' });
             expect(ring.stops).toBe(1);
         });
+
+        // ── autoAnswer (guard kiosk feature, DESIGN.md §9) ─────────────
+
+        // onIncoming fires acceptIncoming() asynchronously; flush the
+        // microtask queue so the in-call state has been emitted before
+        // we assert.
+        function flush(): Promise<void> {
+            return new Promise(r => setTimeout(r, 0));
+        }
+
+        it('autoAnswer guard skips the ringtone and goes straight to in-call', async () => {
+            await makeRegistered();
+            // Re-authenticate as a guard with autoAnswer enabled.
+            auth.setSession('tok-xyz', {
+                societyId: 'soc-123', flatNumber: 'GATE', displayName: 'Guard',
+                sipUser: 'u_g1', role: 'guard', autoAnswer: true,
+            });
+
+            const h = fire();
+            await flush();
+
+            expect(h.accepted).toBeTrue();
+            // The kiosk doesn't ring on auto-answer.
+            expect(ring.starts).toBe(0);
+            const last = states.at(-1)!;
+            expect(last.kind).toBe('in-call');
+        });
+
+        it('autoAnswer is ignored when the role is NOT guard', async () => {
+            await makeRegistered();
+            // Defence-in-depth: a resident with autoAnswer accidentally true
+            // must still ring through the normal accept dialog.
+            auth.setSession('tok-xyz', {
+                societyId: 'soc-123', flatNumber: 'A-204', displayName: 'Alice',
+                sipUser: 'A-204', role: 'resident', autoAnswer: true,
+            });
+
+            const h = fire();
+            await flush();
+
+            expect(h.accepted).toBeFalse();
+            expect(ring.starts).toBe(1);
+            expect(states.at(-1)).toEqual({
+                kind: 'incoming', fromFlat: 'C-99', callId: 'call-id-9',
+            });
+        });
+
+        it('guard without autoAnswer rings normally', async () => {
+            await makeRegistered();
+            auth.setSession('tok-xyz', {
+                societyId: 'soc-123', flatNumber: 'GATE', displayName: 'Guard',
+                sipUser: 'u_g1', role: 'guard',  // autoAnswer omitted
+            });
+
+            const h = fire();
+            await flush();
+
+            expect(h.accepted).toBeFalse();
+            expect(ring.starts).toBe(1);
+        });
     });
 
     // ─── slice 5: joinConference ────────────────────────────────────

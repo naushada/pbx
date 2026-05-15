@@ -188,6 +188,17 @@ export class SipService {
             return;
         }
         this.incoming = { handle: h };
+
+        // Guard kiosk auto-answer (DESIGN.md §9). Skip the ringtone +
+        // 'incoming' callState — acceptIncoming() will emit 'in-call' as
+        // soon as the SIP layer accepts. Defence-in-depth role check:
+        // autoAnswer on a resident is ignored, never silently auto-accept.
+        const sub = this.auth.getSubscriber();
+        if (sub?.autoAnswer && sub.role === 'guard') {
+            void this.acceptIncoming();
+            return;
+        }
+
         this.pubsub.emit_callState({
             kind:     'incoming',
             fromFlat: h.info.fromFlat,

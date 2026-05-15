@@ -10,7 +10,12 @@ export interface Subscriber {
     flatNumber:   string;     // "A-204", "B-12", etc. — unique within society
     displayName:  string;     // shown in directory + INVITE From-header
     sipUser:      string;     // SIP digest username (often == flatNumber)
-    role?:        'admin' | 'resident';
+    role?:        'admin' | 'resident' | 'guard';
+    // Guard-only kiosk flag: when true, SipService auto-accepts every
+    // inbound INVITE without ringing or showing the accept dialog
+    // (DESIGN.md §9). Ignored for non-guard roles — defence in depth so
+    // a stray flag on a resident's account can't silently auto-answer.
+    autoAnswer?:  boolean;
 }
 
 // ─── Login response (POST /api/v1/subscriber/login) ────────────────
