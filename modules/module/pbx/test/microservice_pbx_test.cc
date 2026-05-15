@@ -537,7 +537,17 @@ TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
     const std::string body = rsp.substr(rsp.find("\r\n\r\n") + 4);
     json j = json::parse(body);
     EXPECT_FALSE(j["token"].get<std::string>().empty());
-    EXPECT_EQ("anyone@example.com", j["subscriber"]["email"]);
+    // Dev-mode profile mirrors the strict-mode shape so the UI is mode-
+    // agnostic. The email isn't a UI `Subscriber` field — displayName +
+    // sipUser carry it instead.
+    EXPECT_EQ("anyone@example.com", j["subscriber"]["displayName"]);
+    EXPECT_EQ("anyone@example.com", j["subscriber"]["sipUser"]);
+    EXPECT_EQ("dev",                j["subscriber"]["societyId"]);
+    EXPECT_EQ("resident",           j["subscriber"]["role"]);
+    EXPECT_FALSE(j["subscriber"]["autoAnswer"].get<bool>());
+    EXPECT_FALSE(j["subscriber"].contains("email"))
+        << "email isn't in the UI Subscriber type — drop it from the wire";
+
     // The token in the body matches the persisted session row.
     EXPECT_NE(std::string::npos,
               db.inserts[0].doc.find(j["token"].get<std::string>()));
@@ -574,9 +584,20 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_ValidCredentials_200)
     const std::string body = rsp.substr(rsp.find("\r\n\r\n") + 4);
     json j = json::parse(body);
     EXPECT_FALSE(j["token"].get<std::string>().empty());
-    EXPECT_EQ("asha@example.com", j["subscriber"]["email"]);
-    EXPECT_EQ("u_abc123",         j["subscriber"]["sipUsername"]);
-    // Secrets must never leave the server.
+    // Strict-mode profile uses the UI's `Subscriber` field names
+    // (ui/src/common/app-globals.ts), not the persisted-doc names.
+    EXPECT_EQ("Asha Resident", j["subscriber"]["displayName"]);  // <- name
+    EXPECT_EQ("u_abc123",      j["subscriber"]["sipUser"]);      // <- sipUsername
+    EXPECT_EQ("soc1",          j["subscriber"]["societyId"]);
+    EXPECT_EQ("resident",      j["subscriber"]["role"]);
+
+    // Persisted-doc field names the UI doesn't speak (and the secrets)
+    // all stay server-side — the projection IS the strip.
+    EXPECT_FALSE(j["subscriber"].contains("name"));
+    EXPECT_FALSE(j["subscriber"].contains("sipUsername"));
+    EXPECT_FALSE(j["subscriber"].contains("email"));
+    EXPECT_FALSE(j["subscriber"].contains("flatId"));
+    EXPECT_FALSE(j["subscriber"].contains("status"));
     EXPECT_FALSE(j["subscriber"].contains("portalPasswordHash"));
     EXPECT_FALSE(j["subscriber"].contains("sipHa1"));
 }

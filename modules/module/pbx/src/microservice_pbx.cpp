@@ -670,7 +670,7 @@ std::string handle_subscriber_login_POST(const std::string &req,
       return response_error(403, "Forbidden", "Account disabled");
     }
 
-    // Capture the identity fields for the session BEFORE stripping secrets.
+    // Capture identity fields for the session and the response profile.
     const std::string society_id =
         subscriber.value("societyId", std::string{});
     const std::string sip_username =
@@ -678,23 +678,42 @@ std::string handle_subscriber_login_POST(const std::string &req,
     const std::string role =
         subscriber.value("role", std::string{"resident"});
 
-    // Never return the secrets: the bcrypt portal hash and the SIP digest
-    // credential (sipHa1) must not leave the server.
-    subscriber.erase("portalPasswordHash");
-    subscriber.erase("sipHa1");
+    // Project to the UI's `Subscriber` shape (ui/src/common/app-globals.ts):
+    //   { societyId, flatNumber, displayName, sipUser, role, autoAnswer? }
+    // Same projection-as-strip pattern as `handle_directory_GET` (#2b):
+    // build a fresh object with exactly the UI-typed fields and the persisted
+    // doc's secrets (sipHa1, portalPasswordHash) plus its UI-uninteresting
+    // fields (email, flatId, status, _id, phone, …) all stay server-side.
+    // SipService.connect builds `sip:<sipUser>@pbx.<societyId>` from this —
+    // the rename name→displayName / sipUsername→sipUser unblocks
+    // strict-mode SIP registration (which was producing "sip:undefined@…").
+    const json profile = {
+        {"societyId",   society_id},
+        {"flatNumber",  subscriber.value("flatNumber", std::string{})},
+        {"displayName", subscriber.value("name", std::string{})},
+        {"sipUser",     sip_username},
+        {"role",        role},
+        {"autoAnswer",  subscriber.value("autoAnswer", false)},
+    };
 
-    return finish_login(db, subscriber, email, society_id, sip_username, role);
+    return finish_login(db, profile, email, society_id, sip_username, role);
   }
 
-  // Dev mode: accept any non-empty {email, password}, synthesise a profile.
-  // The session is persisted just like strict mode so the /sip-ws upgrade
-  // path stays mode-agnostic — it always resolves the token via `sessions`.
-  const json subscriber = {
-      {"email",       email},
+  // Dev mode: accept any non-empty {email, password}, synthesise a profile
+  // in the same shape strict mode emits. The session is persisted just like
+  // strict mode so the /sip-ws upgrade path stays mode-agnostic — it always
+  // resolves the token via `sessions`. flatNumber is empty in dev (no real
+  // flat assignment); UI dashboards already fall back via
+  // `displayName || flatNumber`.
+  const json profile = {
+      {"societyId",   "dev"},
+      {"flatNumber",  std::string{}},
       {"displayName", email},
+      {"sipUser",     email},
       {"role",        "resident"},
+      {"autoAnswer",  false},
   };
-  return finish_login(db, subscriber, email, /*society_id=*/"dev",
+  return finish_login(db, profile, email, /*society_id=*/"dev",
                       /*sip_username=*/email, /*role=*/"resident");
 }
 
