@@ -198,6 +198,17 @@ std::string cookie_value(const std::string &cookie_header,
   return {};
 }
 
+// Pull the portal session bearer out of a request — UI prefers the
+// `?token=` query param (browsers can't set headers on `new WebSocket`),
+// but the `session=` cookie also works for plain HTTP. Same precedence
+// as handle_sipws_upgrade.
+std::string extract_session_token(const std::string &req) {
+  std::string tok = query_param(raw_uri_with_query(req), "token");
+  if (!tok.empty()) return tok;
+  Http parsed(req);
+  return cookie_value(parsed.get_element("Cookie"), "session");
+}
+
 // ── env-var helpers (shared by every handler) ─────────────────────────────────
 
 std::string env_or(const char *name, const std::string &fallback = {}) {
@@ -512,8 +523,50 @@ std::string hmac_sha1(const std::string &key, const std::string &msg) {
 namespace {
 
 // Portal session lifetime. The /sip-ws upgrade rejects a session whose
-// `expiresAt` is in the past (see handle_sipws_upgrade).
-constexpr long kSessionTtlSec = 24 * 60 * 60;
+// `expiresAt` is in the past (see handle_sipws_upgrade). For active
+// sessions, /api/v1/ping and /sip-ws upgrade slide `expiresAt` forward
+// — these constants are the floor when there's no activity (e.g. a
+// kiosk that's been powered off).
+constexpr long kSessionTtlSec      = 24 * 60 * 60;        // residents: 1 day
+constexpr long kSessionTtlGuardSec = 7 * 24 * 60 * 60;    // guards: 1 week
+
+// Guard kiosks can sit idle through long weekends without a person
+// touching the UI; resident tabs that close are expected to log in
+// fresh. Both classes still expand by sliding refresh while active.
+long ttl_sec_for_role(const std::string &role) {
+  return (role == "guard") ? kSessionTtlGuardSec : kSessionTtlSec;
+}
+
+// Best-effort sliding refresh: bump `expiresAt` on the session matching
+// @p token, using the role-appropriate TTL. Silent on every failure —
+// the caller (handle_ping_GET / handle_sipws_upgrade) MUST NOT fail its
+// response just because a refresh write didn't land. Skips:
+//   - empty token (anonymous request)
+//   - unknown token (no row)
+//   - already-expired session (don't resurrect — the TTL index will
+//     evict it; a new login is the right path)
+void refresh_session_expiry(IMongodbClient &db, const std::string &token) {
+  if (token.empty()) return;
+  const json filter = {{"token", token}};
+  std::string record;
+  try { record = db.get_document("sessions", filter.dump(), "{}"); }
+  catch (...) { return; }
+  if (record.empty()) return;
+
+  json session;
+  try { session = json::parse(record); } catch (...) { return; }
+
+  const long now = static_cast<long>(::time(nullptr));
+  if (!session.contains("expiresAt") || !session["expiresAt"].is_number() ||
+      session["expiresAt"].get<long>() <= now)
+    return; // don't resurrect
+
+  const long ttl =
+      ttl_sec_for_role(session.value("role", std::string{"resident"}));
+  const json update = {{"$set", {{"expiresAt", now + ttl}}}};
+  try { db.update_collection("sessions", filter.dump(), update.dump()); }
+  catch (...) { /* swallowed — best effort */ }
+}
 
 // Mint a 16-byte random bearer token, hex-encoded → 32 chars. Returns
 // empty on RAND_bytes failure (caller turns that into a 500).
@@ -537,6 +590,7 @@ std::string finish_login(IMongodbClient &db, const json &subscriber,
     return response_error(500, "Internal Server Error", "RAND_bytes failed");
 
   const long now = static_cast<long>(::time(nullptr));
+  const long ttl = ttl_sec_for_role(role);
   // `token` is a plain field, not `_id`: MongodbClient::create_document
   // assumes an ObjectId `_id` in its return path. A unique index on
   // `sessions.token` is expected (same convention as the other collections).
@@ -547,14 +601,14 @@ std::string finish_login(IMongodbClient &db, const json &subscriber,
       {"sipUsername", sip_username},
       {"role",        role},
       {"createdAt",   now},
-      {"expiresAt",   now + kSessionTtlSec},
+      {"expiresAt",   now + ttl},
   };
   db.create_document(db.get_database(), "sessions", session.dump());
 
   const std::string set_cookie =
       "Set-Cookie: session=" + token +
       "; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=" +
-      std::to_string(kSessionTtlSec) + "\r\n";
+      std::to_string(ttl) + "\r\n";
   const json rsp = {{"token", token}, {"subscriber", subscriber}};
   return http_response(200, "OK", rsp.dump(), "application/json", set_cookie);
 }
@@ -808,12 +862,17 @@ std::string handle_push_vapid_key_GET(const std::string & /*req*/,
 }
 
 // Lightweight health/keep-alive. The UI hits this every 30s while
-// logged in so the browser can detect cloud reachability and so the
-// cloud sees fresh traffic from each tab (useful for future presence
-// work). Intentionally does not touch the DB tunnel — a tunnel hiccup
-// shouldn't drop a user's UI session.
-std::string handle_ping_GET(const std::string & /*req*/,
-                            IMongodbClient & /*db*/) {
+// logged in (see ui/src/common/keepalive.service.ts) so the browser can
+// detect cloud reachability and so the cloud sees fresh traffic from
+// each tab. Doubles as the **sliding-refresh** signal: a best-effort
+// `expiresAt` bump on the calling session — keeps an always-on guard
+// kiosk from re-logging-in every 24 h. The refresh is fire-and-forget:
+// any DB error is swallowed, the ping always returns 200 (a tunnel
+// hiccup must not drop a user's UI session — the original "no DB"
+// invariant for ping survives in *failure semantics*).
+std::string handle_ping_GET(const std::string &req, IMongodbClient &db) {
+  refresh_session_expiry(db, extract_session_token(req));
+
   const long ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
   json rsp = {{"ok", true}, {"ts", ts_ms}};
@@ -924,6 +983,19 @@ SipWsUpgrade handle_sipws_upgrade(const std::string &req, IMongodbClient &db) {
                              "subscriber account is disabled"),
               {}};
     }
+  }
+
+  // Sliding refresh: every successful upgrade pushes expiresAt forward by
+  // the role-appropriate TTL — a /sip-ws reconnect counts as activity.
+  // Best-effort like the ping path: an upgrade still succeeds if the
+  // write doesn't land.
+  {
+    const long ttl =
+        ttl_sec_for_role(session.value("role", std::string{"resident"}));
+    const json upd_filter = {{"token", token}};
+    const json upd_doc    = {{"$set", {{"expiresAt", now + ttl}}}};
+    try { db.update_collection("sessions", upd_filter.dump(), upd_doc.dump()); }
+    catch (...) { /* swallowed */ }
   }
 
   // Identity resolved — build the OPEN-frame metadata (DESIGN.md §7). The

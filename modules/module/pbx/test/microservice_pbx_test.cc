@@ -485,14 +485,15 @@ struct StrictAuthEnv {
 // A `subscribers` doc whose bcrypt portalPasswordHash matches `password`,
 // shaped like the rows handle_subscriber_import_POST writes.
 std::string subscriber_doc(const std::string &email, const std::string &password,
-                           const std::string &status = "active") {
+                           const std::string &status = "active",
+                           const std::string &role = "resident") {
   json doc = {
       {"_id",                "sub_" + email},
       {"societyId",          "soc1"},
       {"flatId",             "flatA101"},
       {"name",               "Asha Resident"},
       {"email",              email},
-      {"role",               "resident"},
+      {"role",               role},
       {"status",             status},
       {"sipUsername",        "u_abc123"},
       {"sipHa1",             "deadbeefdeadbeefdeadbeefdeadbeef"},
@@ -603,6 +604,32 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_DisabledAccount_403)
         R"({"email":"asha@example.com","password":"s3cret-pass"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_Strict_GuardRole_LongerTtl)
+{
+    StrictAuthEnv strict;
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("email":"guard@example.com")",
+         subscriber_doc("guard@example.com", "pw", "active", "guard")});
+
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"email":"guard@example.com","password":"pw"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    // Cookie Max-Age is the guard TTL (7 days = 604800s), not the resident
+    // default (86400s). Always-on guard kiosks shouldn't re-login daily.
+    EXPECT_NE(std::string::npos, rsp.find("Max-Age=604800"));
+    EXPECT_EQ(std::string::npos, rsp.find("Max-Age=86400"));
+
+    // The persisted `sessions` row carries an expiresAt at least 6 days out.
+    ASSERT_EQ(1u, db.inserts.size());
+    json session = json::parse(db.inserts[0].doc);
+    const long now = static_cast<long>(::time(nullptr));
+    EXPECT_GT(session["expiresAt"].get<long>(), now + 6 * 24 * 60 * 60);
 }
 
 // ── Subscriber lifecycle: disable / re-enable / remove ────────────────────────
@@ -766,19 +793,31 @@ namespace {
 // A `sessions` doc shaped like the one finish_login writes.
 std::string session_doc(const std::string &token, long expires_at,
                          const std::string &society_id = "soc1",
-                         const std::string &sip_username = "u_abc123") {
+                         const std::string &sip_username = "u_abc123",
+                         const std::string &role = "resident") {
   json doc = {
       {"token",       token},
       {"email",       "asha@example.com"},
       {"societyId",   society_id},
       {"sipUsername", sip_username},
-      {"role",        "resident"},
+      {"role",        role},
       {"createdAt",   100},
       {"expiresAt",   expires_at},
   };
   return doc.dump();
 }
 constexpr long kFarFuture = 4102444800L;  // year 2100
+
+// Seed `sessions` with a row addressable by token. The mock matches on a
+// "token":"…" substring of the query, so any (sip-ws / refresh) lookup
+// for this token will resolve to this doc.
+void seed_session(TestDb &db, const std::string &token,
+                  const std::string &role = "resident",
+                  long expires_at = kFarFuture) {
+    db.getDoc["sessions"].push_back(
+        {R"("token":")" + token + R"(")",
+         session_doc(token, expires_at, "soc1", "u_abc123", role)});
+}
 } // namespace
 
 TEST(MicroServicePbx, Auth_RejectsAnonymousSipWsUpgrade)
@@ -911,6 +950,113 @@ TEST(MicroServicePbx, SipWsUpgrade_DevMode_SkipsSubscriberStatusCheck)
 
     EXPECT_TRUE(up.error.empty()) << "dev mode → no subscriber lookup";
     ASSERT_FALSE(up.open_meta.empty());
+}
+
+// ── SIP-WS upgrade: sliding session refresh on success ───────────────────────
+
+TEST(MicroServicePbx, SipWsUpgrade_OnSuccess_BumpsSessionExpiry)
+{
+    TestDb db;
+    seed_session(db, "slide");
+
+    const std::string req = make_ws_upgrade("/sip-ws?token=slide");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+    ASSERT_TRUE(up.error.empty()) << "valid session → upgrade succeeds";
+
+    // The successful upgrade slid expiresAt forward.
+    ASSERT_EQ(1u, db.updates.size());
+    EXPECT_EQ("sessions", db.updates[0].coll);
+    EXPECT_NE(std::string::npos, db.updates[0].filter.find(R"("token":"slide")"));
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find(R"("$set")"));
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find(R"("expiresAt")"));
+}
+
+TEST(MicroServicePbx, SipWsUpgrade_OnFailure_NoBump)
+{
+    TestDb db;  // no sessions seeded → unknown token → 401
+    const std::string req = make_ws_upgrade("/sip-ws?token=ghost");
+    auto up = MicroServicePbx::handle_sipws_upgrade(req, db);
+    EXPECT_NE(std::string::npos, up.error.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(db.updates.empty()) << "rejected upgrade must not refresh";
+}
+
+// ── /api/v1/ping: sliding session refresh ─────────────────────────────────────
+
+TEST(MicroServicePbx, Ping_NoToken_NoDbWrite_AlwaysReturnsOk)
+{
+    TestDb db;
+    const std::string req = make_get("/api/v1/ping");
+    std::string rsp = MicroServicePbx::handle_ping_GET(req, db);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find(R"("ok":true)"));
+    EXPECT_TRUE(db.updates.empty()) << "anonymous ping must not touch sessions";
+}
+
+TEST(MicroServicePbx, Ping_WithQueryToken_RefreshesExpiry)
+{
+    TestDb db;
+    seed_session(db, "tok-x");
+    const std::string req = make_get("/api/v1/ping?token=tok-x");
+    std::string rsp = MicroServicePbx::handle_ping_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    ASSERT_EQ(1u, db.updates.size());
+    EXPECT_EQ("sessions", db.updates[0].coll);
+    EXPECT_NE(std::string::npos, db.updates[0].filter.find(R"("token":"tok-x")"));
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find(R"("$set")"));
+    EXPECT_NE(std::string::npos, db.updates[0].doc.find(R"("expiresAt")"));
+}
+
+TEST(MicroServicePbx, Ping_WithSessionCookie_RefreshesExpiry)
+{
+    TestDb db;
+    seed_session(db, "cookie-tok");
+    const std::string req =
+        make_get("/api/v1/ping", "Cookie: other=1; session=cookie-tok\r\n");
+    std::string rsp = MicroServicePbx::handle_ping_GET(req, db);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    ASSERT_EQ(1u, db.updates.size());
+    EXPECT_NE(std::string::npos,
+              db.updates[0].filter.find(R"("token":"cookie-tok")"));
+}
+
+TEST(MicroServicePbx, Ping_UnknownToken_NoDbWrite)
+{
+    TestDb db;  // no sessions seeded
+    const std::string req = make_get("/api/v1/ping?token=ghost");
+    std::string rsp = MicroServicePbx::handle_ping_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_TRUE(db.updates.empty());
+}
+
+TEST(MicroServicePbx, Ping_ExpiredSession_DoesNotResurrect)
+{
+    TestDb db;
+    seed_session(db, "stale", "resident", /*expires_at=*/1);  // long past
+    const std::string req = make_get("/api/v1/ping?token=stale");
+    std::string rsp = MicroServicePbx::handle_ping_GET(req, db);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_TRUE(db.updates.empty())
+        << "an already-expired session must not be resurrected by a ping";
+}
+
+TEST(MicroServicePbx, Ping_GuardSession_RefreshesByGuardTtl)
+{
+    TestDb db;
+    seed_session(db, "g-tok", "guard");
+    const std::string req = make_get("/api/v1/ping?token=g-tok");
+    std::string rsp = MicroServicePbx::handle_ping_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    ASSERT_EQ(1u, db.updates.size());
+    json upd = json::parse(db.updates[0].doc);
+    const long now = static_cast<long>(::time(nullptr));
+    const long bumped = upd.at("$set").at("expiresAt").get<long>();
+    EXPECT_GT(bumped, now + 6 * 24 * 60 * 60)
+        << "guard refresh must use the guard TTL (≥ 7d), not the resident 1d";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
