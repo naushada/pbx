@@ -186,7 +186,7 @@ sessions: {
                                              //   `Set-Cookie: session=` value
                                              //   and the /sip-ws `?token=`
   email, societyId, sipUsername, role,       // resolved subscriber identity
-  createdAt, expiresAt                       // portal-login session (24 h TTL)
+  createdAt, expiresAt                       // role-based base TTL (resident: 1d, guard: 7d) + sliding refresh on /api/v1/ping and /sip-ws upgrade
 }
 // Written by POST /api/v1/subscriber/login; the /sip-ws upgrade resolves
 // `token` here to build the bridge OPEN-frame metadata. `token` is a plain
