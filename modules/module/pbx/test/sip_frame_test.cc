@@ -48,6 +48,13 @@ TEST(SipFrame, SerializeRoundTrip_PingPong)
     expect_round_trip(Op::PONG, 0, "");
 }
 
+TEST(SipFrame, SerializeRoundTrip_SubscriberRevoked)
+{
+    // cloud → agent revocation: stream-id unused (0), JSON payload.
+    expect_round_trip(Op::SUBSCRIBER_REVOKED, 0,
+                      R"({"societyId":"soc1","sipUsername":"u_abc123"})");
+}
+
 // ── Error paths ───────────────────────────────────────────────────────────────
 
 TEST(SipFrame, RejectsBadVersion)

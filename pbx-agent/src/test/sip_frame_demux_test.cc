@@ -309,3 +309,37 @@ TEST(SipFrameDemux, OnInvalidFrame_ReturnsFalse)
     bad[0] = 0x77;  // bogus version
     EXPECT_FALSE(demux.on_tunnel_bytes(bad));
 }
+
+// ── SUBSCRIBER_REVOKED control frame ─────────────────────────────────────────
+
+TEST(SipFrameDemux, SubscriberRevoked_InvokesHandlerWithPayload)
+{
+    FakeTunnel           tun;
+    FakeAsteriskFactory  fac;
+    SipFrameDemux        demux(&tun, fac);
+
+    std::vector<std::string> got;
+    demux.set_subscriber_revoked_handler(
+        [&got](const std::string &payload) { got.push_back(payload); });
+
+    const std::string payload = R"({"societyId":"soc1","sipUsername":"u_abc123"})";
+    EXPECT_TRUE(demux.on_tunnel_bytes(
+        SipFrame::encode(SipFrame::Op::SUBSCRIBER_REVOKED, 0, payload)));
+
+    ASSERT_EQ(1u, got.size());
+    EXPECT_EQ(payload, got[0]);
+    // It's a control frame — nothing goes back up the tunnel, no stream opened.
+    EXPECT_TRUE(tun.sent.empty());
+    EXPECT_EQ(0u, demux.active_streams());
+}
+
+TEST(SipFrameDemux, SubscriberRevoked_NoHandler_IsSilentlyIgnored)
+{
+    FakeTunnel           tun;
+    FakeAsteriskFactory  fac;
+    SipFrameDemux        demux(&tun, fac);  // no handler installed
+
+    EXPECT_TRUE(demux.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::SUBSCRIBER_REVOKED, 0, R"({"sipUsername":"u_x"})")))
+        << "an un-handled control frame must not be a protocol error";
+}

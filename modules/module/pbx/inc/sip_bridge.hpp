@@ -1,6 +1,7 @@
 #ifndef SIP_BRIDGE_HPP
 #define SIP_BRIDGE_HPP
 
+#include "revocation_sink.hpp"
 #include "sip_frame.hpp"
 #include "tunnel_sink.hpp"
 #include <cstdint>
@@ -49,12 +50,15 @@ public:
   virtual void close(const std::string &reason) = 0;
 };
 
-class SipBridge {
+/// `SipBridge` is also the production `IRevocationSink`: the cloud REST
+/// handlers call `revoke()` and it emits a `SUBSCRIBER_REVOKED` frame
+/// down the agent tunnel.
+class SipBridge : public IRevocationSink {
 public:
   /// @param tunnel  The active tunnel sink. May be replaced later via
   ///                `set_tunnel()` to handle agent reconnects.
   explicit SipBridge(TunnelSink *tunnel);
-  ~SipBridge() = default;
+  ~SipBridge() override = default;
 
   SipBridge(const SipBridge &) = delete;
   SipBridge &operator=(const SipBridge &) = delete;
@@ -109,6 +113,17 @@ public:
   /// substitute a recorder.
   using CdrPushHandler = std::function<void(const std::string &payload)>;
   void set_cdr_push_handler(CdrPushHandler h);
+
+  // ── Out-of-band tunnel ops (cloud → agent) ─────────────────────────────
+
+  /// `IRevocationSink`: a subscriber was disabled/removed on the cloud.
+  /// Emits a `SUBSCRIBER_REVOKED` frame (stream-id 0, JSON payload
+  /// `{societyId, sipUsername}`) down the tunnel so the agent can hang
+  /// up that subscriber's live Asterisk channels. No-op when no tunnel
+  /// is attached (agent disconnected) — the cloud-side session/`/sip-ws`
+  /// guards still hold.
+  void revoke(const std::string &society_id,
+              const std::string &sip_username) override;
 
   // ── Observability (test surface) ───────────────────────────────────────
 

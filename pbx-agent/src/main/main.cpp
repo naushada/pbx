@@ -23,6 +23,7 @@
 #include "asterisk_ws_factory.hpp"
 #include "call_router.hpp"
 #include "cloud_connector.hpp"
+#include "json.hpp"
 #include "mongodbc.hpp"
 #include "sip_frame_demux.hpp"
 
@@ -289,6 +290,24 @@ int main(int argc, char *argv[]) {
   demux_ptr = &demux;
   (void)demux_ptr;
   connector.attach_demux(&demux);
+
+  // A cloud admin disabled/removed a subscriber → the cloud sends a
+  // SUBSCRIBER_REVOKED frame carrying {societyId, sipUsername}. Tear down
+  // that subscriber's live Asterisk calls via ARI. Malformed payloads are
+  // logged-and-dropped — there is nothing to act on.
+  demux.set_subscriber_revoked_handler(
+      [&](const std::string &payload) {
+        try {
+          const auto j = nlohmann::json::parse(payload);
+          if (j.contains("sipUsername") && j["sipUsername"].is_string())
+            ari_client.revoke_subscriber(
+                j["sipUsername"].get<std::string>());
+        } catch (...) {
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [pbx-agent] bad SUBSCRIBER_REVOKED "
+                              "payload; dropped\n")));
+        }
+      });
 
   AsteriskWsFactory asterisk_factory(reactor, demux, ast_host,
                                        static_cast<std::uint16_t>(ast_port),

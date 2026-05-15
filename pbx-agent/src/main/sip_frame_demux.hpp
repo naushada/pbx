@@ -4,6 +4,7 @@
 #include "sip_frame.hpp"
 #include "tunnel_sink.hpp"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -82,6 +83,17 @@ public:
   /// are not migrated.
   void set_tunnel(TunnelSink *tunnel);
 
+  // ── Out-of-band tunnel ops (cloud → agent) ─────────────────────────────
+
+  /// Install a handler called when the demux sees a `SUBSCRIBER_REVOKED`
+  /// frame from the cloud. Payload is the JSON `{societyId, sipUsername}`
+  /// the cloud sent when an admin disabled/removed that subscriber.
+  /// Production wires this to `AriClient::revoke_subscriber` (hangs up
+  /// that subscriber's live Asterisk channels); tests substitute a
+  /// recorder. Not tied to any stream-id — it is a tunnel-wide control op.
+  using SubscriberRevokedHandler = std::function<void(const std::string &payload)>;
+  void set_subscriber_revoked_handler(SubscriberRevokedHandler h);
+
   // ── Asterisk-side entry points ─────────────────────────────────────────
 
   /// Bytes arrived on the local Asterisk socket for @p stream_id.
@@ -105,6 +117,7 @@ private:
   IAsteriskFactory                                           &m_factory;
   std::unordered_map<std::uint32_t, std::unique_ptr<IAsteriskStream>> m_streams;
   std::string                                                 m_recv_buffer;
+  SubscriberRevokedHandler                                    m_revoked_handler;
 };
 
 #endif // SIP_FRAME_DEMUX_HPP

@@ -295,3 +295,44 @@ TEST(SipBridge, OnAgentReconnect_NewStreamIdsOnly)
     EXPECT_EQ(SipFrame::Op::OPEN, tun2.sent[0].op);
     EXPECT_EQ(new_id,             tun2.sent[0].stream_id);
 }
+
+// ── IRevocationSink: revoke() emits SUBSCRIBER_REVOKED ────────────────────────
+
+TEST(SipBridge, Revoke_EmitsSubscriberRevokedFrame)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    bridge.revoke("soc1", "u_abc123");
+
+    ASSERT_EQ(1u, tun.sent.size());
+    EXPECT_EQ(SipFrame::Op::SUBSCRIBER_REVOKED, tun.sent[0].op);
+    EXPECT_EQ(0u, tun.sent[0].stream_id) << "control frame — stream-id unused";
+    // Payload carries the subscriber identity the agent tears down.
+    EXPECT_NE(std::string::npos, tun.sent[0].payload.find(R"("societyId":"soc1")"));
+    EXPECT_NE(std::string::npos,
+              tun.sent[0].payload.find(R"("sipUsername":"u_abc123")"));
+}
+
+TEST(SipBridge, Revoke_NoTunnel_IsSilentNoOp)
+{
+    SipBridge bridge(nullptr);  // agent disconnected
+    bridge.revoke("soc1", "u_abc123");  // must not crash
+    // Nothing to assert beyond "didn't blow up" — the cloud-side
+    // session/`/sip-ws` guards are the durable defence when the agent is down.
+}
+
+TEST(SipBridge, Revoke_AfterReconnect_GoesToNewTunnel)
+{
+    FakeTunnel tun1;
+    SipBridge  bridge(&tun1);
+    bridge.on_tunnel_disconnect();      // agent drops — tunnel detached
+
+    FakeTunnel tun2;
+    bridge.set_tunnel(&tun2);           // agent reconnects
+    bridge.revoke("soc1", "u_x");
+
+    EXPECT_TRUE(tun1.sent.empty());
+    ASSERT_EQ(1u, tun2.sent.size());
+    EXPECT_EQ(SipFrame::Op::SUBSCRIBER_REVOKED, tun2.sent[0].op);
+}

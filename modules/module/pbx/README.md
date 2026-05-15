@@ -48,6 +48,7 @@ See [`DESIGN.md §7`](../../../DESIGN.md#7-tunnel-framing-heroku--pbx-agent) for
 | 0x06 | `ERR`        | both ways           | `{code, msg}` — protocol violation; sender closes the tunnel            |
 | 0x10 | `PUSH_NOTIFY`| agent → cloud       | `{subscriberId, callerFlat, callId}` — INVITE arrived, cloud should VAPID-push |
 | 0x11 | `CDR_PUSH`   | agent → cloud       | BSON CDR doc — replicates finalized CDR to cloud for portal reads       |
+| 0x12 | `SUBSCRIBER_REVOKED` | cloud → agent | `{societyId, sipUsername}` (JSON) — an admin disabled/removed the subscriber; agent hangs up that subscriber's live Asterisk channels via ARI. stream-id unused (0) |
 
 Op-code 0x00 and any code outside the whitelist above causes `decode()` to return `Invalid` — protects against bit-flips in the version byte being mistaken for an unknown op.
 
@@ -64,6 +65,7 @@ enum class Op : std::uint8_t {
   OPEN = 0x01, DATA = 0x02, CLOSE = 0x03,
   PING = 0x04, PONG = 0x05, ERR = 0x06,
   PUSH_NOTIFY = 0x10, CDR_PUSH = 0x11,
+  SUBSCRIBER_REVOKED = 0x12,
 };
 
 struct Frame {
@@ -96,9 +98,9 @@ DecodeResult decode(const std::string& buf);
 
 `ACE_InputCDR` / `ACE_OutputCDR` default to **native byte order** with explicit `ACE_CDR::swap_4()` calls required for wire format. For an 8-byte integer field on either side of a 1-byte op code, the swap call overhead exceeds the value-add. The hand-rolled big-endian readers are six lines, branch-free, and trivially auditable. See [`DESIGN.md §12`](../../../DESIGN.md#12-reuse-map-dry-against-xpmile) note.
 
-### Behaviour pinned by tests (`test/sip_frame_test.cc` — 10 tests)
+### Behaviour pinned by tests (`test/sip_frame_test.cc` — 11 tests)
 
-Round-trip per op: `SerializeRoundTrip_Open`, `SerializeRoundTrip_Data` (binary-safe — NUL byte mid-payload), `SerializeRoundTrip_PingPong`.
+Round-trip per op: `SerializeRoundTrip_Open`, `SerializeRoundTrip_Data` (binary-safe — NUL byte mid-payload), `SerializeRoundTrip_PingPong`, `SerializeRoundTrip_SubscriberRevoked`.
 
 Error paths: `RejectsBadVersion`, `RejectsBadOp`, `RejectsTruncatedHeader`, `RejectsTruncatedPayload`.
 
@@ -137,7 +139,7 @@ In production: `TunnelSink` wraps an `ACE_SSL_SOCK_Stream` to the agent; `Browse
 ### Public API
 
 ```cpp
-class SipBridge {
+class SipBridge : public IRevocationSink {
 public:
   explicit SipBridge(TunnelSink* tunnel);
 
@@ -157,11 +159,17 @@ public:
   void set_push_notify_handler(PushNotifyHandler);  // production: PushSender::notify
   void set_cdr_push_handler   (CdrPushHandler);     // production: Mongo CDR writer
 
+  // Out-of-band tunnel ops (cloud → agent) — IRevocationSink
+  void revoke(const std::string& society_id,
+              const std::string& sip_username) override;  // emits SUBSCRIBER_REVOKED
+
   // Observability (test surface)
   std::size_t   active_streams () const;
   std::uint32_t last_stream_id () const;
 };
 ```
+
+`SipBridge` is the production [`IRevocationSink`](inc/revocation_sink.hpp) — `revoke()` is the seam the cloud's `MicroServicePbx::handle_subscriber_*` lifecycle handlers call when an admin disables/removes a subscriber. It encodes a `SUBSCRIBER_REVOKED` frame (stream-id 0, JSON `{societyId, sipUsername}`) and writes it down the tunnel. No-op when no tunnel is attached.
 
 ### Behaviour
 
@@ -175,7 +183,7 @@ public:
 - **Invalid frames.** Returns `false`. The caller (cloud tunnel endpoint) drops the tunnel; reconnect logic kicks in.
 - **Tunnel disconnect.** Closes every browser sink with reason `"tunnel_lost"`, clears the map and the buffer. The stream-id counter does **not** reset — old ids stay dead forever. New browsers after reconnect get fresh ids.
 
-### Behaviour pinned by tests (`test/sip_bridge_test.cc` — 12 tests)
+### Behaviour pinned by tests (`test/sip_bridge_test.cc` — 17 tests)
 
 Upgrade: `OnBrowserUpgrade_AssignsStreamId`, `OnBrowserUpgrade_UniqueIdsUnderManyUpgrades` (1000 sequential upgrades, no collisions).
 
@@ -188,6 +196,8 @@ Close semantics: `OnBrowserClose_SendsCloseFrame` (asserts `BrowserSink::close()
 Lifecycle: `OnTunnelDisconnect_ClosesAllBrowserConns`, `OnAgentReconnect_NewStreamIdsOnly` (monotonic counter survives reconnect).
 
 Out-of-band ops: `OnTunnelPushNotify_InvokesPushHandler`, `OnTunnelCdrPush_InvokesCdrHandler` — production wires these to `PushSender::notify` and a Mongo CDR writer respectively. End-to-end coverage in [Layer 3 TunnelE2E](../../../test/integration/tunnel_e2e_test.cc).
+
+Revocation (`IRevocationSink`): `Revoke_EmitsSubscriberRevokedFrame` (a `SUBSCRIBER_REVOKED` frame with stream-id 0 and the `{societyId, sipUsername}` payload), `Revoke_NoTunnel_IsSilentNoOp` (agent disconnected → no crash, no frame), `Revoke_AfterReconnect_GoesToNewTunnel`.
 
 > **Not yet pinned:** `HandoffOrdering` (TDD plan Layer 1) — this asserts the `remove_handler → m_handle = INVALID → publish to bridge` ordering in `WebConnection`. The test belongs to the [`webservice/`](../webservice/README.md) module's suite, lands when that module is copied from xpmile.
 
@@ -208,10 +218,14 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 | `/api/v1/society`                        | `POST` | `handle_society_POST`                     | Create society; generates `sipRealm`, `turnSharedSecret`, defaults `maxConcurrentCalls=5`, `ringTimeoutSec=30`. 409 on duplicate `code`. |
 | `/api/v1/subscriber/import?societyId=…`  | `POST` | `handle_subscriber_import_POST`           | CSV body (`flat_number,name,email,phone,role`). Generates `sipUsername`, `sipPassword`, `portalPassword` per row; stores **only** `sipHa1` (MD5(user:realm:pwd)) and `portalPasswordHash` (bcrypt), plus a denormalized `flatNumber` (the directory filters/displays on it). Returns the plaintexts in a downloadable CSV (one-shot). Idempotent on `(societyId, email)`. 400 with row index if a flat is unknown. |
 | `/api/v1/subscriber?societyId=…&flatPrefix=…` | `GET` | `handle_directory_GET`                 | Society-scoped subscriber directory; optional case-insensitive `flatPrefix` filter on the denormalized `flatNumber`. Strips `portalPasswordHash` and `sipHa1` from every row. 400 if `societyId` is missing; `[]` when no DB is configured. |
+| `/api/v1/subscriber/<sipUsername>?societyId=…` | `PUT` | `handle_subscriber_status_PUT`        | Admin disable/re-enable. Body `{status:"active"\|"disabled"}` flips `subscribers.status` for the (societyId, sipUsername) row. Disabling also **revokes**: deletes every `sessions` row for the subscriber and, when an `IRevocationSink` is wired, signals the agent (`SUBSCRIBER_REVOKED`) to hang up any live call. 400 bad path/query/body, 404 unknown. |
+| `/api/v1/subscriber/<sipUsername>?societyId=…` | `DELETE` | `handle_subscriber_DELETE`          | Admin removal. Deletes the subscriber doc, then revokes exactly as the disable path does (`sessions` purge + `IRevocationSink`). 400/404 as above. |
 | `/api/v1/cdr?societyId=…`                | `GET`  | `handle_cdr_GET`                          | Returns the society's CDR rows as JSON. 400 if `societyId` is missing. |
 | `/api/v1/push/subscribe`                 | `POST` | `handle_push_subscribe_POST`              | Persists a Web Push subscription (`subscriberId`, `endpoint`, `p256dh`, `auth`). 400 on missing fields. |
 | `/api/v1/subscriber/login`               | `POST` | `handle_subscriber_login_POST`            | Body `{email, password}`. Strict mode (`PBX_AUTH_STRICT=1`): Mongo lookup by email + bcrypt `verify_password` + `status=="active"`; dev mode synthesises a profile. On success writes a `sessions` row and replies with a `Set-Cookie: session=…; HttpOnly; Secure; SameSite=Strict` header + `{token, subscriber}` body. 401/403 on bad/disabled. |
-| `/sip-ws` (pre-upgrade)                  | `GET`  | `handle_sipws_upgrade`                    | Resolves the `?token=` query param (or `session=` cookie) against the `sessions` collection. Returns a `SipWsUpgrade{error, open_meta}`: `error` is a 401 response for an absent/unknown/expired session; otherwise `open_meta` is the `{societyId, sipUsername, clientUA}` JSON for the bridge's OPEN frame. |
+| `/sip-ws` (pre-upgrade)                  | `GET`  | `handle_sipws_upgrade`                    | Resolves the `?token=` query param (or `session=` cookie) against the `sessions` collection. Returns a `SipWsUpgrade{error, open_meta}`: `error` is a 401 for an absent/unknown/expired session; in **strict mode** it also re-checks the backing `subscribers` row and returns 403 if the subscriber was disabled or removed after the session was minted (the subscriber-lifecycle gate — a disabled user can't keep `/sip-ws` for the rest of the 24h TTL). Otherwise `open_meta` is the `{societyId, sipUsername, clientUA}` JSON for the bridge's OPEN frame. |
+
+The two lifecycle handlers take an optional `IRevocationSink*` (default `nullptr`). `MicroService::dispatch_pbx_routes` passes the cloud's `SipBridge`; the routing unit tests (no owning `WebServer`) pass `nullptr` — the handlers still do their DB-side revocation, just without the cloud→agent frame.
 
 ### Crypto
 
@@ -219,7 +233,7 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 - **portalPasswordHash**: `MongodbClient::hash_password()` (xpmile-provided bcrypt) for the portal login.
 - **Random secrets**: `OPENSSL_RAND_bytes` over a 62-char alphanumeric alphabet (fallback to `std::random_device` if `RAND_bytes` fails). `sipPassword`/`portalPassword` are 16 chars, `sipUsername` is 10 chars prefixed `u_`, `turnSharedSecret` is 32 chars.
 
-### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 23 tests)
+### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 36 tests)
 
 `MicroServicePbx.SocietyCreate_201`, `SocietyCreate_DuplicateCode_409`.
 
@@ -241,7 +255,11 @@ Wired into `MicroService::process_request()` by URI prefix when the webservice s
 
 `Auth_RejectsAnonymousSipWsUpgrade` (no token → 401), `Auth_AllowsSipWsUpgrade_WithSessionCookie` (seeded `sessions` row via cookie → `open_meta` resolved), `SipWsUpgrade_ResolvesSubscriberMeta_FromQueryToken` (the UI's `?token=` path), `SipWsUpgrade_RejectsUnknownToken`, `SipWsUpgrade_RejectsExpiredSession`.
 
-Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collection, query-fragment)` to a canned response — small extension over xpmile's single-result `MockMongodbClient` because MicroServicePbx handlers issue several different queries per call (society lookup + flat lookup + duplicate-email check).
+Subscriber lifecycle — disable/re-enable/remove: `SubscriberStatus_Disable_FlipsStatus_DropsSessions_Revokes` (the three-part revocation: `$set status`, `sessions` delete, `IRevocationSink::revoke`), `SubscriberStatus_Reenable_FlipsStatusOnly_NoRevoke`, `SubscriberStatus_NullRevokeSink_StillDoesDbWork`, `SubscriberStatus_UnknownSubscriber_404`, `SubscriberStatus_MissingSocietyId_400`, `SubscriberStatus_BadStatusValue_400`, `SubscriberDelete_RemovesDoc_DropsSessions_Revokes`, `SubscriberDelete_UnknownSubscriber_404`, `SubscriberDelete_MissingSocietyId_400`.
+
+Subscriber-lifecycle gate on `/sip-ws` (strict mode): `SipWsUpgrade_Strict_RejectsDisabledSubscriber`, `SipWsUpgrade_Strict_RejectsRemovedSubscriber` (no backing `subscribers` row → 403), `SipWsUpgrade_Strict_AllowsActiveSubscriber`, `SipWsUpgrade_DevMode_SkipsSubscriberStatusCheck` (dev-mode sessions have no `subscribers` row — the gate must be skipped).
+
+Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collection, query-fragment)` to a canned response — small extension over xpmile's single-result `MockMongodbClient` because MicroServicePbx handlers issue several different queries per call (society lookup + flat lookup + duplicate-email check). It records `inserts`, `updates`, and `deletes` for write-side assertions.
 
 ---
 

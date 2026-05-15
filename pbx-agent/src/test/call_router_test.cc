@@ -117,6 +117,9 @@ public:
                                 const std::string &, int) override {
     return {200, {}};
   }
+  Response get_endpoint(const std::string &, const std::string &) override {
+    return {200, "{}"};
+  }
 };
 
 // A subscribers row shaped like handle_subscriber_import_POST writes it.

@@ -2,6 +2,7 @@
 #define MICROSERVICE_PBX_HPP
 
 #include "mongodbc.hpp"
+#include "revocation_sink.hpp"
 #include <string>
 
 /**
@@ -81,6 +82,29 @@ std::string handle_subscriber_login_POST(const std::string &req,
 /// `subscribers` collection filtered client-side; an empty array if
 /// the collection has no documents.
 std::string handle_directory_GET(const std::string &req, IMongodbClient &db);
+
+/// PUT /api/v1/subscriber/<sipUsername>?societyId=<id>
+/// Body: `{"status":"active"|"disabled"}` — the admin disable/re-enable
+/// switch. Flips `subscribers.status` for the (societyId, sipUsername)
+/// row. Disabling also **revokes**: every `sessions` row for that
+/// subscriber is deleted (so the bearer can't be re-resolved at
+/// `/sip-ws`) and, when @p revoke is non-null, the agent is signalled
+/// to hang up any call that is live right now. Re-enabling does neither.
+///   - 200 OK on success (`{status, sipUsername, subscriberStatus}`)
+///   - 400 missing sipUsername / societyId / bad body / bad status value
+///   - 404 unknown subscriber in that society
+std::string handle_subscriber_status_PUT(const std::string &req,
+                                         IMongodbClient &db,
+                                         IRevocationSink *revoke = nullptr);
+
+/// DELETE /api/v1/subscriber/<sipUsername>?societyId=<id>
+/// Permanently removes the (societyId, sipUsername) subscriber doc, then
+/// revokes exactly as the disable path does (drops `sessions` rows,
+/// signals @p revoke). 200 OK on success, 400 on missing path/query
+/// params, 404 if no such subscriber.
+std::string handle_subscriber_DELETE(const std::string &req,
+                                     IMongodbClient &db,
+                                     IRevocationSink *revoke = nullptr);
 
 /// GET /api/v1/push-vapid-key
 /// Returns `{"key": "<base64url public key>"}`. Source: the
