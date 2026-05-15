@@ -57,6 +57,13 @@ public:
   void close(const std::string &) override { closed = true; }
 };
 
+// Pin "now" so heartbeat tests can advance time deterministically.
+class ManualClock : public IClock {
+public:
+  std::int64_t now = 1'000'000;
+  std::int64_t now_unix() const override { return now; }
+};
+
 } // namespace
 
 // ── Connection lifecycle ─────────────────────────────────────────────────────
@@ -281,4 +288,175 @@ TEST(CloudTunnelEndpoint, BrowserDataRoundTripsThroughBridgeAndAgent)
 
     ASSERT_EQ(1u, b.got.size());
     EXPECT_EQ("SIP/2.0 401 Unauthorized\r\n\r\n", b.got[0]);
+}
+
+// ── SipFrame heartbeat (cloud → agent liveness) ──────────────────────────────
+
+namespace {
+
+// One PING frame is encoded as kHeaderSize bytes with op=PING, sid=0, len=0.
+bool is_ping_frame(const std::string &bytes) {
+    const auto r = SipFrame::decode(bytes);
+    return r.status == SipFrame::Status::Ok &&
+           r.frame.op == SipFrame::Op::PING &&
+           r.frame.stream_id == 0 &&
+           r.frame.payload.empty();
+}
+
+} // namespace
+
+TEST(CloudTunnelEndpoint, Heartbeat_PingsAfterIntervalOfSilence)
+{
+    AgentTransportFactory fac;
+    ManualClock           clock;
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 5;
+    cfg.heartbeat_max_missed   = 3;
+    CloudTunnelEndpoint   cte(cfg, &clock);
+    cte.on_agent_connected(fac.make());
+    auto &ts = fac.last();
+
+    // Within the interval → tick is a no-op.
+    clock.now += 4;
+    cte.tick();
+    EXPECT_TRUE(ts.sent.empty()) << "must not PING before the interval elapses";
+
+    // Past the interval → one PING goes out, one outstanding.
+    clock.now += 1;
+    cte.tick();
+    ASSERT_EQ(1u, ts.sent.size());
+    EXPECT_TRUE(is_ping_frame(ts.sent[0]));
+    EXPECT_EQ(1, cte.pings_outstanding());
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_InboundClearsPingsOutstanding)
+{
+    AgentTransportFactory fac;
+    ManualClock           clock;
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 5;
+    CloudTunnelEndpoint cte(cfg, &clock);
+    cte.on_agent_connected(fac.make());
+
+    clock.now += 5;
+    cte.tick();
+    EXPECT_EQ(1, cte.pings_outstanding());
+
+    // Any inbound bytes prove the peer is alive — the counter resets.
+    cte.on_bytes_received(SipFrame::encode(SipFrame::Op::PONG, 0, ""));
+    EXPECT_EQ(0, cte.pings_outstanding());
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_DropsAgentAfterMaxMissed)
+{
+    AgentTransportFactory fac;
+    ManualClock           clock;
+    SipBridge             bridge(/*tunnel=*/nullptr);
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 5;
+    cfg.heartbeat_max_missed   = 3;
+    CloudTunnelEndpoint cte(cfg, &clock);
+    cte.attach_bridge(&bridge);
+    cte.on_agent_connected(fac.make());
+    auto &ts = fac.last();
+
+    // Three missed heartbeats — the next tick drops the transport.
+    for (int i = 0; i < 3; ++i) {
+        clock.now += 5;
+        cte.tick();
+    }
+    EXPECT_EQ(3u, ts.sent.size()) << "three PINGs went out, all unanswered";
+    EXPECT_FALSE(ts.closed);
+    EXPECT_TRUE(cte.has_agent());
+
+    clock.now += 5;
+    cte.tick();  // fourth tick: pings_outstanding == max_missed → drop
+
+    EXPECT_FALSE(cte.has_agent()) << "agent transport gone after max_missed";
+    EXPECT_TRUE(ts.closed);
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_ReconnectResetsState)
+{
+    AgentTransportFactory fac;
+    ManualClock           clock;
+    SipBridge             bridge(/*tunnel=*/nullptr);
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 5;
+    cfg.heartbeat_max_missed   = 3;
+    CloudTunnelEndpoint cte(cfg, &clock);
+    cte.attach_bridge(&bridge);
+
+    cte.on_agent_connected(fac.make());
+    clock.now += 5; cte.tick();          // 1 PING outstanding
+    EXPECT_EQ(1, cte.pings_outstanding());
+
+    // A fresh agent attaches (the old one dropped, agent's CloudConnector
+    // reconnected). Heartbeat counter must start clean.
+    cte.on_agent_disconnected();
+    cte.on_agent_connected(fac.make());
+    EXPECT_EQ(0, cte.pings_outstanding());
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_NoClock_DisablesEntirely)
+{
+    AgentTransportFactory fac;
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 5;        // configured ON
+    CloudTunnelEndpoint cte(cfg);          // ...but no clock attached
+    cte.on_agent_connected(fac.make());
+    auto &ts = fac.last();
+
+    // Even calling tick() repeatedly must do nothing without a clock —
+    // the existing no-clock ctors stay heartbeat-less for back-compat.
+    for (int i = 0; i < 100; ++i) cte.tick();
+    EXPECT_TRUE(ts.sent.empty());
+    EXPECT_EQ(0, cte.pings_outstanding());
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_IntervalZero_DisablesViaConfig)
+{
+    AgentTransportFactory fac;
+    ManualClock           clock;
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 0;        // explicit disable
+    CloudTunnelEndpoint cte(cfg, &clock);
+    cte.on_agent_connected(fac.make());
+    auto &ts = fac.last();
+
+    clock.now += 1'000'000;
+    cte.tick();
+    EXPECT_TRUE(ts.sent.empty());
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_NoAgent_TickIsNoOp)
+{
+    ManualClock         clock;
+    CloudTunnelEndpoint cte(CloudTunnelEndpoint::Config{}, &clock);
+
+    // No agent attached → tick must not crash, must not change state.
+    clock.now += 1'000;
+    cte.tick();
+    EXPECT_FALSE(cte.has_agent());
+    EXPECT_EQ(0, cte.pings_outstanding());
+}
+
+TEST(CloudTunnelEndpoint, Heartbeat_PingFailsMidFlight_DropsAgent)
+{
+    AgentTransportFactory fac;
+    ManualClock           clock;
+    SipBridge             bridge(/*tunnel=*/nullptr);
+    CloudTunnelEndpoint::Config cfg;
+    cfg.heartbeat_interval_sec = 5;
+    CloudTunnelEndpoint cte(cfg, &clock);
+    cte.attach_bridge(&bridge);
+    cte.on_agent_connected(fac.make());
+
+    // The transport silently breaks — the next PING send fails.
+    fac.last().fail_next_send = true;
+    clock.now += 5;
+    cte.tick();
+
+    EXPECT_FALSE(cte.has_agent())
+        << "send_frame's mid-flight failure tears down the agent transport";
 }

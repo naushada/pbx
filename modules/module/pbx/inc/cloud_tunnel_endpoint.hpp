@@ -1,6 +1,7 @@
 #ifndef CLOUD_TUNNEL_ENDPOINT_HPP
 #define CLOUD_TUNNEL_ENDPOINT_HPP
 
+#include "iclock.hpp"
 #include "sip_frame.hpp"
 #include "tunnel_sink.hpp"
 #include <cstdint>
@@ -40,6 +41,9 @@ public:
   virtual void close() = 0;
 };
 
+// IClock is the shared wall-clock interface (also used by `PushSender`).
+// See `iclock.hpp` for the contract.
+
 class CloudTunnelEndpoint : public TunnelSink {
 public:
   struct Config {
@@ -48,10 +52,29 @@ public:
     /// small; PUSH_NOTIFY / CDR_PUSH bursts can't realistically
     /// outpace memory).
     std::size_t outbound_buffer_max = 0;
+
+    /// SipFrame-level liveness check (DESIGN.md §6.6 / §7). After
+    /// `heartbeat_interval_sec` of inbound silence from the agent the
+    /// endpoint sends a connection-level `PING`; if `heartbeat_max_missed`
+    /// consecutive PINGs go unanswered (no bytes received at all in
+    /// between) the agent transport is dropped — `on_agent_disconnected`
+    /// is invoked, the bridge is told the tunnel is lost, the outbound
+    /// buffer is left intact for the next reconnect. Catches an agent
+    /// that has hung without closing the WS — the WS-level keep-alive
+    /// holds the transport open; this proves the peer is still answering.
+    /// Symmetric to `CloudConnector::Config::heartbeat_*` on the agent.
+    /// `heartbeat_interval_sec <= 0` disables the heartbeat (used by
+    /// existing tests that don't drive the clock).
+    int heartbeat_interval_sec = 15;
+    int heartbeat_max_missed   = 3;
   };
 
+  /// @param clock  Optional. When null the heartbeat is fully disabled
+  ///               regardless of `heartbeat_interval_sec` — every existing
+  ///               caller using the no-clock ctors keeps working unchanged.
   CloudTunnelEndpoint();
   explicit CloudTunnelEndpoint(Config cfg);
+  CloudTunnelEndpoint(Config cfg, IClock *clock);
   ~CloudTunnelEndpoint() override = default;
 
   CloudTunnelEndpoint(const CloudTunnelEndpoint &) = delete;
@@ -87,19 +110,40 @@ public:
   void send_frame(SipFrame::Op op, std::uint32_t stream_id,
                   const std::string &payload) override;
 
+  // ── Heartbeat driver ──────────────────────────────────────────────────
+
+  /// Drive the SipFrame-level heartbeat. Production: called by an ACE
+  /// timer once per second on the reactor thread. Tests: invoked
+  /// directly after advancing a `ManualClock`. No-op when no agent is
+  /// attached, when no clock is wired, or when `heartbeat_interval_sec
+  /// <= 0`.
+  void tick();
+
   // ── Observability ─────────────────────────────────────────────────────
 
   bool        has_agent()             const { return m_transport != nullptr; }
   std::size_t buffered_frame_count()  const { return m_outbound.size(); }
+  /// Heartbeat PINGs sent since the last inbound bytes. Resets to 0 on
+  /// every `on_bytes_received()` and on every `on_agent_connected()`.
+  /// Reaches `Config::heartbeat_max_missed` only when the agent has
+  /// gone silent — the next `tick()` then drops the transport.
+  int         pings_outstanding()     const { return m_pings_outstanding; }
 
 private:
   void mark_disconnected();
   void flush_outbound();
+  /// Called from `tick()` while connected: sends a heartbeat PING once
+  /// per `heartbeat_interval_sec` of inbound silence, and drops the
+  /// agent once `heartbeat_max_missed` PINGs have gone unanswered.
+  void maybe_heartbeat();
 
   Config                          m_cfg;
-  SipBridge                      *m_bridge = nullptr;
+  IClock                         *m_clock   = nullptr;
+  SipBridge                      *m_bridge  = nullptr;
   std::unique_ptr<IAgentTransport> m_transport;
   std::deque<std::string>          m_outbound;
+  std::int64_t  m_last_heartbeat_unix = 0; // when the last PING went out
+  int           m_pings_outstanding   = 0; // PINGs sent with no inbound since
 };
 
 #endif // CLOUD_TUNNEL_ENDPOINT_HPP

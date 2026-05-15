@@ -23,12 +23,41 @@ int opt_int(const std::array<std::string, N> &opt, Arg key, int default_val) {
   return s.empty() ? default_val : std::stoi(s);
 }
 
-// System wall-clock for VAPID JWT `exp` claim.
+// System wall-clock — shared by VAPID JWT `exp` (PushSender) and the
+// cloud-side SipFrame heartbeat (CloudTunnelEndpoint).
 class SystemClock : public IClock {
 public:
   std::int64_t now_unix() const override {
     return static_cast<std::int64_t>(std::time(nullptr));
   }
+};
+
+// Reactor-driven 1 s tick that drives the CloudTunnelEndpoint's
+// SipFrame-level heartbeat — symmetric to ReconnectSupervisor on the
+// agent (pbx-agent/src/main/main.cpp). Lives for the lifetime of the
+// reactor loop; we keep the timer event handler on the stack and
+// schedule it before WebServer::start() blocks.
+class CloudTunnelHeartbeatTimer : public ACE_Event_Handler {
+public:
+  CloudTunnelHeartbeatTimer(CloudTunnelEndpoint *endpoint,
+                             ACE_Reactor *reactor)
+      : m_endpoint(endpoint) {
+    this->reactor(reactor);
+  }
+
+  int schedule() {
+    return reactor()->schedule_timer(this, nullptr,
+                                      ACE_Time_Value(1, 0),  // first fire
+                                      ACE_Time_Value(1, 0)); // repeat per 1s
+  }
+
+  int handle_timeout(const ACE_Time_Value &, const void *) override {
+    if (m_endpoint) m_endpoint->tick();
+    return 0;
+  }
+
+private:
+  CloudTunnelEndpoint *m_endpoint;
 };
 
 std::string read_file_to_string(const std::string &path) {
@@ -248,7 +277,11 @@ int main(int argc, char *argv[]) {
     // (see WebConnection::handle_input). SipBridge multiplexes every
     // browser /sip-ws session onto that single tunnel. They share the
     // WebServer's MongoDB client for cdr/push-subscriptions writes.
-    auto endpoint = std::make_unique<CloudTunnelEndpoint>();
+    // The clock is wall-time; both the heartbeat and (later) PushSender
+    // share it. It outlives the WebServer move below.
+    SystemClock cte_clock;
+    auto endpoint = std::make_unique<CloudTunnelEndpoint>(
+        CloudTunnelEndpoint::Config{}, &cte_clock);
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
     endpoint->attach_bridge(bridge.get());
 
@@ -307,6 +340,15 @@ int main(int argc, char *argv[]) {
     inst.setCloudTunnelEndpoint(std::move(endpoint));
     inst.setSipBridge(std::move(bridge));
 
+    // Arm the SipFrame heartbeat tick (DESIGN.md §6.6) — the only
+    // periodic work the cloud side does. Schedule before start() blocks.
+    CloudTunnelHeartbeatTimer cte_timer(inst.cloudTunnelEndpoint(),
+                                          ACE_Reactor::instance());
+    if (cte_timer.schedule() == -1) {
+      ACE_ERROR((LM_ERROR,
+                 ACE_TEXT("%D [pbx-cloud] heartbeat schedule_timer failed\n")));
+    }
+
     inst.start();
   } else {
     WebServer inst(opt[idx(Arg::SERVER_IP)], port, worker,
@@ -318,7 +360,9 @@ int main(int argc, char *argv[]) {
     // Mirror of the block above. The agent dial-in path is the same in
     // both modes — what differs is where the cloud's Mongo data lives
     // (local Mongo vs. remote on-prem Mongo via wsdbagent).
-    auto endpoint = std::make_unique<CloudTunnelEndpoint>();
+    SystemClock cte_clock;
+    auto endpoint = std::make_unique<CloudTunnelEndpoint>(
+        CloudTunnelEndpoint::Config{}, &cte_clock);
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
     endpoint->attach_bridge(bridge.get());
 
@@ -370,6 +414,15 @@ int main(int argc, char *argv[]) {
 
     inst.setCloudTunnelEndpoint(std::move(endpoint));
     inst.setSipBridge(std::move(bridge));
+
+    // Arm the SipFrame heartbeat tick (DESIGN.md §6.6) — the only
+    // periodic work the cloud side does. Schedule before start() blocks.
+    CloudTunnelHeartbeatTimer cte_timer(inst.cloudTunnelEndpoint(),
+                                          ACE_Reactor::instance());
+    if (cte_timer.schedule() == -1) {
+      ACE_ERROR((LM_ERROR,
+                 ACE_TEXT("%D [pbx-cloud] heartbeat schedule_timer failed\n")));
+    }
 
     inst.start();
   }

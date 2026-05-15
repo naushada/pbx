@@ -62,12 +62,11 @@ public:
                    const std::string &server_ca_path) = 0;
 };
 
-/// Clock abstraction — lets tests step time forward without sleeping.
-class IClock {
-public:
-  virtual ~IClock() = default;
-  virtual std::int64_t now_unix() const = 0;
-};
+// IClock is the shared cloud-side wall-clock interface (also used by
+// `PushSender` and `CloudTunnelEndpoint`). The `pbx` module's
+// `iclock.hpp` is reachable via the root `include_directories(modules/
+// module/pbx/inc)` — see CMakeLists.txt.
+#include "iclock.hpp"
 
 class CloudConnector : public TunnelSink {
 public:

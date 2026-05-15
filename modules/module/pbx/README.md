@@ -388,9 +388,14 @@ Production: an ACE_SSL_SOCK_Stream wrapper installed by `WebConnection::handle_i
 ```cpp
 class CloudTunnelEndpoint : public TunnelSink {
 public:
-  struct Config { std::size_t outbound_buffer_max = 0; };  // 0 = unbounded
+  struct Config {
+    std::size_t outbound_buffer_max   = 0;   // 0 = unbounded
+    int         heartbeat_interval_sec = 15; // SipFrame PING cadence
+    int         heartbeat_max_missed   = 3;  // → drop agent
+  };
   CloudTunnelEndpoint();
   explicit CloudTunnelEndpoint(Config);
+  CloudTunnelEndpoint(Config, IClock* clock);  // null clock disables heartbeat
 
   void attach_bridge(SipBridge*);
 
@@ -402,8 +407,12 @@ public:
   // TunnelSink
   void send_frame(SipFrame::Op, std::uint32_t, const std::string&) override;
 
-  bool        has_agent()            const;
-  std::size_t buffered_frame_count() const;
+  // Heartbeat — production: ACE timer ticks per 1s; tests: manual.
+  void tick();
+
+  bool        has_agent()             const;
+  std::size_t buffered_frame_count()  const;
+  int         pings_outstanding()     const;
 };
 ```
 
@@ -411,12 +420,13 @@ public:
 
 Symmetric to `CloudConnector`'s state machine, accept-side:
 
-- **`on_agent_connected`** — install the transport; flush any frames buffered while no agent was attached. If a previous agent is somehow still hanging on, tear it down first so the bridge sees a clean disconnect.
-- **`on_bytes_received`** — forward to `SipBridge::on_tunnel_bytes`. If the bridge reports a protocol violation, drop the agent (close transport + tell bridge `on_tunnel_disconnect`).
+- **`on_agent_connected`** — install the transport; flush any frames buffered while no agent was attached; reset heartbeat state. If a previous agent is somehow still hanging on, tear it down first so the bridge sees a clean disconnect.
+- **`on_bytes_received`** — forward to `SipBridge::on_tunnel_bytes`; clear `pings_outstanding` (any inbound proves the peer is alive). If the bridge reports a protocol violation, drop the agent.
 - **`on_agent_disconnected`** — close transport, tell the bridge `on_tunnel_disconnect` (which propagates to every registered `BrowserSink::close("tunnel_lost")`). The **outbound buffer survives** — frames produced during the outage flush on the next agent attach. The bridge's stream-id counter does NOT reset (DESIGN.md §7).
 - **`send_frame`** (`TunnelSink`) — if connected, `SipFrame::encode` + write. If the write fails mid-flight, treat as disconnect and re-queue the failing frame. If no agent, buffer.
+- **`tick`** — drives the SipFrame heartbeat (DESIGN.md §6.6). Mirrors `CloudConnector::maybe_heartbeat` on the agent: after `heartbeat_interval_sec` of inbound silence, send `Op::PING` (stream-id 0, empty payload); after `heartbeat_max_missed` consecutive PINGs without inbound bytes, drop the agent (`mark_disconnected` — bridge notified, outbound buffer kept). No-op when no agent is attached, no clock is wired (the no-clock ctors), or `heartbeat_interval_sec <= 0`. Production wiring: a 1 s reactor timer in `webservice_main.cpp` that calls `tick()` (`CloudTunnelHeartbeatTimer`, symmetric to the agent's `ReconnectSupervisor`).
 
-### Behaviour pinned by tests (`test/cloud_tunnel_endpoint_test.cc` — 12 tests)
+### Behaviour pinned by tests (`test/cloud_tunnel_endpoint_test.cc` — 20 tests)
 
 Lifecycle: `NoAgent_BeforeAttach`, `AcceptsAgentAndExposesHasAgent`, `OnAgentDisconnected_TellsBridge` (verifies `transport.close()` was called, every registered `BrowserSink` was closed, and the stream-id counter survived the reconnect).
 
@@ -425,6 +435,8 @@ Frame writes: `SendFrameWhenConnected_WritesEncodedBytes` (round-trip-decode con
 Inbound: `OnBytesReceived_ForwardsIntoBridge` (full PING→PONG round-trip through `endpoint → bridge → endpoint → fake transport`), `OnBytesReceived_InvalidFrame_DropsTunnel`, `OnBytesReceived_NoBridge_NoOp`.
 
 Browser end-to-end: `BrowserDataRoundTripsThroughBridgeAndAgent` — a browser registers with `bridge.on_browser_upgrade` (OPEN frame lands on the agent transport), sends a SIP REGISTER (DATA frame lands), and the agent replies with `401 Unauthorized` which `on_bytes_received` demuxes back to the browser's `FakeBrowser::got`. Both halves wired together without any real network.
+
+Heartbeat (`ManualClock`-driven): `Heartbeat_PingsAfterIntervalOfSilence` (no-op before the interval; one PING after), `Heartbeat_InboundClearsPingsOutstanding` (any inbound — DATA, PONG — resets the miss counter), `Heartbeat_DropsAgentAfterMaxMissed` (3 PINGs unanswered → 4th tick tears the agent down: transport closed, bridge notified), `Heartbeat_ReconnectResetsState` (a fresh agent attaches with `pings_outstanding == 0`), `Heartbeat_NoClock_DisablesEntirely` (the back-compat ctors stay heartbeat-less), `Heartbeat_IntervalZero_DisablesViaConfig`, `Heartbeat_NoAgent_TickIsNoOp`, `Heartbeat_PingFailsMidFlight_DropsAgent` (a broken transport caught at PING-send time).
 
 ### Deferred to Layer 3
 

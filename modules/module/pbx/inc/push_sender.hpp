@@ -1,6 +1,7 @@
 #ifndef PUSH_SENDER_HPP
 #define PUSH_SENDER_HPP
 
+#include "iclock.hpp"
 #include "mongodbc.hpp"
 #include <cstdint>
 #include <memory>
@@ -45,12 +46,9 @@ public:
                         const std::string &body) = 0;
 };
 
-/// Pluggable clock so tests can pin "now" for the VAPID `exp` assertion.
-class IClock {
-public:
-  virtual ~IClock() = default;
-  virtual std::int64_t now_unix() const = 0;
-};
+// IClock now lives in the shared `iclock.hpp` (also used by
+// CloudTunnelEndpoint). Same interface, just moved out — see that
+// header for the rationale.
 
 class PushSender {
 public:
