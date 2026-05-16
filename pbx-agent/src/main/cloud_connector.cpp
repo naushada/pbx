@@ -14,18 +14,30 @@ void CloudConnector::set_on_connected(OnConnectedHandler h) {
   m_on_connected = std::move(h);
 }
 
-bool CloudConnector::connected() const { return m_transport != nullptr; }
+bool CloudConnector::connected() const {
+  // A pending disconnect means a callback has already observed a
+  // fatal transport error — the actual reset() runs on the next
+  // tick(). Until then, callers see us as disconnected so they don't
+  // queue more writes through a transport that's about to die.
+  return m_transport != nullptr && !m_disconnect_pending;
+}
 
 void CloudConnector::send_frame(SipFrame::Op op, std::uint32_t stream_id,
                                  const std::string &payload) {
   const std::string bytes = SipFrame::encode(op, stream_id, payload);
 
-  if (m_transport && m_transport->send(bytes)) return;
+  if (m_transport && !m_disconnect_pending && m_transport->send(bytes))
+    return;
 
-  // Transport is gone or refused — buffer + arm reconnect. If the
-  // transport-send failed mid-flight, treat as a disconnect.
-  if (m_transport) {
-    mark_disconnected();
+  // Transport is gone, marked-for-teardown, or refused. If we just
+  // observed a fresh send failure (transport still alive, no prior
+  // pending flag), request a deferred disconnect — NOT
+  // mark_disconnected(): we are inside m_transport->send()'s call
+  // frame, so an immediate reset() would free the very object whose
+  // method is still on the stack (SIGBUS). tick() runs the actual
+  // teardown on the reactor thread, outside any callback.
+  if (m_transport && !m_disconnect_pending) {
+    request_disconnect();
   }
 
   if (m_cfg.outbound_buffer_max == 0 ||
@@ -36,6 +48,15 @@ void CloudConnector::send_frame(SipFrame::Op op, std::uint32_t stream_id,
 }
 
 void CloudConnector::tick() {
+  // Drain a deferred disconnect FIRST — any code path that ran since
+  // the last tick may have set m_disconnect_pending from inside a
+  // transport callback. mark_disconnected() is safe here because tick
+  // runs on the reactor thread outside any inner call frame.
+  if (m_disconnect_pending) {
+    m_disconnect_pending = false;
+    if (m_transport) mark_disconnected();
+  }
+
   if (m_transport) {
     // Connected: the only periodic work is the SipFrame-level heartbeat.
     maybe_heartbeat();
@@ -55,13 +76,25 @@ void CloudConnector::on_bytes_received(const std::string &bytes) {
 
   if (!m_demux) return;
   if (!m_demux->on_tunnel_bytes(bytes)) {
-    // Protocol violation — drop the tunnel so the cloud sees a clean reset.
-    mark_disconnected();
+    // Protocol violation — drop the tunnel so the cloud sees a clean
+    // reset. Deferred: this path may be reached from the dispatch task
+    // thread (or recursively from inside drain_frames), so reset() now
+    // would create the same UAF as the outbound case.
+    request_disconnect();
   }
 }
 
 void CloudConnector::on_transport_lost() {
-  if (m_transport) mark_disconnected();
+  // Called from AceSslTransport::notify_disconnect_once — i.e. from
+  // INSIDE the transport's own method (handle_input, send, etc.).
+  // Reset now would free `this` mid-call. Defer to tick().
+  if (m_transport) request_disconnect();
+}
+
+void CloudConnector::request_disconnect() {
+  // Idempotent — multiple producers (handle_input EOF, send-failure,
+  // demux-violation) can all set this; tick() processes once.
+  m_disconnect_pending = true;
 }
 
 void CloudConnector::attempt_connect() {
@@ -117,6 +150,11 @@ void CloudConnector::mark_disconnected() {
   // Heartbeat state is meaningless without a transport; the next
   // successful connect re-arms it.
   m_pings_outstanding = 0;
+
+  // The disconnect is fully realized — clear the pending flag so a
+  // subsequent request_disconnect() from a future transport's
+  // callback isn't masked.
+  m_disconnect_pending = false;
 }
 
 void CloudConnector::flush_outbound() {

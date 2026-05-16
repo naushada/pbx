@@ -1,4 +1,5 @@
 #include "ace_ssl_transport.hpp"
+#include "inner_tls_task.hpp"
 #include "innertls.hpp"
 #include "wsframe.hpp"
 #include "ws_inner_tls_bridge.hpp"
@@ -400,9 +401,35 @@ AceSslTransportFactory::AceSslTransportFactory(
     std::function<void(const std::string &)>  on_bytes,
     std::function<void()>                     on_disconnect,
     AceSslTransport::InnerTlsConfig           inner_tls)
-    : m_reactor(reactor), m_on_bytes(std::move(on_bytes)),
-      m_on_disconnect(std::move(on_disconnect)),
-      m_inner_tls(std::move(inner_tls)) {}
+    : m_reactor(reactor),
+      m_user_on_bytes(std::move(on_bytes)),
+      m_user_on_disconnect(std::move(on_disconnect)),
+      m_inner_tls(std::move(inner_tls)),
+      m_dispatch(std::make_unique<InnerTlsDispatchTask>(
+          // The task captures the user handlers BY VALUE — these
+          // copies live for the task's lifetime, which is bounded by
+          // the factory's lifetime. The factory in turn outlives every
+          // CloudConnector that references the user handlers (the
+          // connector is constructed BEFORE the factory in main()).
+          m_user_on_bytes, m_user_on_disconnect)) {
+  // Spawn the dispatch worker thread immediately so the first
+  // transport produced is already covered. start() is a no-op if the
+  // task was put into synchronous test mode beforehand.
+  m_dispatch->start();
+}
+
+AceSslTransportFactory::~AceSslTransportFactory() {
+  // Joins the worker thread; idempotent.
+  if (m_dispatch) m_dispatch->stop();
+}
+
+void AceSslTransportFactory::set_synchronous_dispatch_for_test() {
+  // Calling this after start() would leave a thread spinning on an
+  // empty queue, so we require pre-start invocation. In practice the
+  // tests construct the factory, immediately flip this, and *then*
+  // start using it.
+  if (m_dispatch) m_dispatch->set_synchronous_for_test();
+}
 
 std::unique_ptr<ITransport>
 AceSslTransportFactory::create_connected(const std::string &host,
@@ -410,7 +437,18 @@ AceSslTransportFactory::create_connected(const std::string &host,
                                           const std::string &cert_path,
                                           const std::string &key_path,
                                           const std::string &ca_path) {
-  auto t = std::make_unique<AceSslTransport>(m_on_bytes, m_on_disconnect);
+  // Wrap the user-facing on_bytes so the transport's drain_frames
+  // pushes plaintext into the dispatch task's queue instead of
+  // invoking the user handler synchronously. Same UAF concern does
+  // NOT yet apply to on_disconnect — that path is fixed in a follow-
+  // up PR (see header docstring's "Active-Object dispatch" section).
+  InnerTlsDispatchTask *task = m_dispatch.get();
+  auto enqueueing_on_bytes = [task](const std::string &b) {
+    if (task) task->dispatch_bytes(b);
+  };
+
+  auto t = std::make_unique<AceSslTransport>(enqueueing_on_bytes,
+                                              m_user_on_disconnect);
   if (!t->connect_and_handshake(host, port, cert_path, key_path, ca_path,
                                   "/agent", m_inner_tls)) {
     return nullptr;
