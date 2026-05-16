@@ -52,6 +52,9 @@ public:
   Response get_endpoint(const std::string &, const std::string &) override {
     return {200, "{}"};
   }
+  Response list_endpoints(const std::string &) override {
+    return {200, "[]"};
+  }
 };
 
 // Pull the {attribute,value} array out of a fields-body JSON into a

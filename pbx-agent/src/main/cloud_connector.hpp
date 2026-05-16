@@ -5,6 +5,7 @@
 #include "tunnel_sink.hpp"
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -115,6 +116,19 @@ public:
   /// incoming tunnel bytes into it. If unset, incoming bytes are dropped.
   void attach_demux(SipFrameDemux *demux);
 
+  /// Install a callback fired every time the connector establishes (or
+  /// re-establishes) a transport — first boot AND every reconnect.
+  /// Fired after the new transport is installed and any buffered
+  /// outbound frames have been flushed, so the handler can safely
+  /// `send_frame()` synchronously. Production: wired to
+  /// `AriClient::publish_register_snapshot()` so the cloud's presence
+  /// cache resyncs after a tunnel drop (Asterisk's
+  /// `EndpointStateChange` only fires on transitions; without this
+  /// resync, any change that happened while the tunnel was down stays
+  /// invisible).
+  using OnConnectedHandler = std::function<void()>;
+  void set_on_connected(OnConnectedHandler h);
+
   // ── TunnelSink ────────────────────────────────────────────────────────
 
   /// Encode + send a frame. If currently disconnected the encoded frame
@@ -179,6 +193,8 @@ private:
 
   std::int64_t  m_last_heartbeat_unix = 0; // when the last heartbeat PING went out
   int           m_pings_outstanding   = 0; // PINGs sent with no inbound bytes since
+
+  OnConnectedHandler m_on_connected;
 };
 
 #endif // CLOUD_CONNECTOR_HPP

@@ -76,6 +76,38 @@ void AriClient::set_register_state_handler(RegisterStateHandler h) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Presence reconciliation — refresh the cloud's cache on (re)connect.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AriClient::publish_register_snapshot() {
+  if (!m_register_state_handler) return;
+
+  const IAriRest::Response r = m_rest.list_endpoints("PJSIP");
+  if (r.status < 200 || r.status >= 300) {
+    // ARI down or returned an error — silently skip. The next
+    // EndpointStateChange will resync any registered endpoint; until
+    // then, the cloud cache stays at whatever it had pre-disconnect.
+    return;
+  }
+
+  json arr;
+  try { arr = json::parse(r.body); } catch (...) { return; }
+  if (!arr.is_array()) return;
+
+  for (const auto &ep : arr) {
+    if (!ep.is_object()) continue;
+    const std::string tech = ep.value("technology", std::string{});
+    if (tech != "PJSIP") continue;
+    const std::string resource = ep.value("resource", std::string{});
+    if (resource.empty()) continue;
+    // Mirror handle_endpoint_state_change's mapping: anything not
+    // exactly "online" is offline. Defensive against unfamiliar values.
+    const std::string state = ep.value("state", std::string{});
+    m_register_state_handler(resource, state == "online");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // revoke_subscriber — cut a disabled/removed subscriber's live calls.
 // ─────────────────────────────────────────────────────────────────────────────
 

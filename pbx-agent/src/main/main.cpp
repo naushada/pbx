@@ -404,6 +404,17 @@ int main(int argc, char *argv[]) {
         connector.send_frame(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
       });
 
+  // After every (re)connect to the cloud, snapshot the agent's view of
+  // every PJSIP endpoint into the cloud's presence cache.
+  // `EndpointStateChange` only fires on transitions, so a tunnel drop
+  // can leave the cache stale until the next register flip — which on
+  // a quiet society might not happen for hours. The snapshot is the
+  // resync that makes the directory's `online` flags accurate after a
+  // reconnect.
+  connector.set_on_connected([&]() {
+    ari_client.publish_register_snapshot();
+  });
+
   AsteriskWsFactory asterisk_factory(reactor, demux, ast_host,
                                        static_cast<std::uint16_t>(ast_port),
                                        "/ws");

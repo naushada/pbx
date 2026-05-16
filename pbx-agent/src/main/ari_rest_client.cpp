@@ -99,6 +99,14 @@ AriRestClient::get_endpoint(const std::string &tech,
 }
 
 IAriRest::Response
+AriRestClient::list_endpoints(const std::string &tech) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_list_endpoints_request(tech, m_cfg.host, basic);
+  return do_request(req);
+}
+
+IAriRest::Response
 AriRestClient::create_dynamic_config(const std::string &cfg_class,
                                       const std::string &obj_type,
                                       const std::string &id,
@@ -296,6 +304,21 @@ std::string AriRestClient::build_get_endpoint_request(
   std::ostringstream os;
   os << "GET /ari/endpoints/" << url_encode(tech) << "/" << url_encode(resource)
      << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_list_endpoints_request ─────────────────────────────────────────────
+
+std::string AriRestClient::build_list_endpoints_request(
+    const std::string &tech, const std::string &host,
+    const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "GET /ari/endpoints/" << url_encode(tech) << " HTTP/1.1\r\n"
      << "Host: " << host << "\r\n"
      << "Authorization: Basic " << basic_auth << "\r\n"
      << "Content-Length: 0\r\n"
