@@ -62,53 +62,23 @@ COPY --from=cpp-builder /src/build/pbx-agent /opt/pbx-agent/pbx-agent
 
 WORKDIR /opt/pbx-agent
 
-# Env-driven CLI. Override any of these via `environment:` in compose
-# or `-e` on the CLI. CLOUD_HOST + MONGO_URI + AGENT_SOCIETY_ID are
-# required — `pbx-agent --help` will reject startup if they're empty.
+# Only the operator-varying knobs are exposed as env vars now — the
+# binary's compile-time defaults (see pbx-agent/src/main/main.cpp)
+# already point at the compose-network services (pbx-asterisk:8088,
+# pbx-mongo:27017) and the operator-mounted cert paths
+# (/opt/pbx-agent/certs/{agent.crt,agent.key,cloud-ca.pem}). Anything
+# bare-metal / dev that needs to override those passes the flag
+# explicitly via `command:` in compose or `--entrypoint` at run.
 ENV CLOUD_HOST="" \
-    CLOUD_PORT="443" \
-    TLS_CERT="/opt/pbx-agent/certs/agent.crt" \
-    TLS_KEY="/opt/pbx-agent/certs/agent.key" \
-    TLS_CA="/opt/pbx-agent/certs/cloud-ca.pem" \
-    INNER_TLS_CERT="/opt/pbx-agent/certs/agent.crt" \
-    INNER_TLS_KEY="/opt/pbx-agent/certs/agent.key" \
-    INNER_TLS_CA="/opt/pbx-agent/certs/cloud-ca.pem" \
-    INNER_TLS_HOSTNAME="" \
-    MONGO_URI="mongodb://pbx-mongo:27017/pabx" \
     AGENT_SOCIETY_ID="" \
-    ASTERISK_HOST="pbx-asterisk" \
-    ASTERISK_PORT="8088" \
-    ARI_APP="pbx" \
-    ARI_USER="asterisk" \
-    ARI_PASS="asterisk"
-
-# Inner-TLS material defaults to the same operator-mounted cert dir as
-# the outer TLS — the cert pair serves both layers. Heroku terminates
-# the outer TLS at the router, so the inner layer is the real mTLS
-# trust boundary that the cloud's `/agent` `AgentStream` actually
-# validates (mirror of /ws/db, see DESIGN.md §3.2). Override
-# `INNER_TLS_*` to split namespaces if needed.
+    INNER_TLS_HOSTNAME=""
 
 # Shell form so env vars expand. JSON-exec form passes literal
-# `${CLOUD_HOST}` etc. to the binary and `stoi("${CLOUD_PORT}")`
-# crash-loops the process. Same fix as Dockerfile.cloud.
+# `${CLOUD_HOST}` etc. to the binary verbatim. Same fix as Dockerfile.cloud.
 ENTRYPOINT ["tini", "--"]
 CMD ["/bin/sh", "-c", "\
   /opt/pbx-agent/pbx-agent \
-    --cloud-host    \"$CLOUD_HOST\" \
-    --cloud-port    \"$CLOUD_PORT\" \
-    --tls-cert      \"$TLS_CERT\" \
-    --tls-key       \"$TLS_KEY\" \
-    --tls-ca        \"$TLS_CA\" \
-    --inner-tls-cert \"$INNER_TLS_CERT\" \
-    --inner-tls-key  \"$INNER_TLS_KEY\" \
-    --inner-tls-ca   \"$INNER_TLS_CA\" \
+    --cloud-host  \"$CLOUD_HOST\" \
+    --society-id  \"$AGENT_SOCIETY_ID\" \
     ${INNER_TLS_HOSTNAME:+--inner-tls-hostname \"$INNER_TLS_HOSTNAME\"} \
-    --mongo-uri     \"$MONGO_URI\" \
-    --society-id    \"$AGENT_SOCIETY_ID\" \
-    --asterisk-host \"$ASTERISK_HOST\" \
-    --asterisk-port \"$ASTERISK_PORT\" \
-    --ari-app       \"$ARI_APP\" \
-    --ari-user      \"$ARI_USER\" \
-    --ari-pass      \"$ARI_PASS\" \
 "]

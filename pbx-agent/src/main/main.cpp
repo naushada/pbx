@@ -180,18 +180,27 @@ int main(int argc, char *argv[]) {
                               LM_DEBUG | LM_INFO,
                               ACE_Log_Msg::PROCESS);
 
+  // Defaults match the docker-compose.agent.yml shape so the production
+  // CMD only has to pass the operator-required args (--cloud-host,
+  // --society-id, optionally --inner-tls-hostname). All other flags
+  // remain available for dev / bare-metal / Lima-VM use.
   std::string cloud_host;
   int         cloud_port = 443;
-  std::string tls_cert, tls_key, tls_ca;
-  std::string mongo_uri;
+  std::string tls_cert  = "/opt/pbx-agent/certs/agent.crt";
+  std::string tls_key   = "/opt/pbx-agent/certs/agent.key";
+  std::string tls_ca    = "/opt/pbx-agent/certs/cloud-ca.pem";
+  std::string mongo_uri = "mongodb://pbx-mongo:27017/pabx";
   std::string society_id;
-  std::string ast_host = "127.0.0.1";
+  std::string ast_host = "pbx-asterisk"; // compose service DNS
   int         ast_port = 8088;
   std::string ari_app  = "pbx";
   std::string ari_user = "asterisk";
   std::string ari_pass = "asterisk";
   std::string sip_realm;  // defaults to <society-id>.pbx.local after parsing
-  std::string inner_tls_cert, inner_tls_key, inner_tls_ca, inner_tls_hostname;
+  std::string inner_tls_cert = "/opt/pbx-agent/certs/agent.crt";
+  std::string inner_tls_key  = "/opt/pbx-agent/certs/agent.key";
+  std::string inner_tls_ca   = "/opt/pbx-agent/certs/cloud-ca.pem";
+  std::string inner_tls_hostname;
 
   ACE_Get_Opt args(argc, argv, ACE_TEXT("H:P:E:K:A:U:S:a:p:n:u:w:r:i:j:l:m:h"), 1);
   args.long_option(ACE_TEXT("cloud-host"),     'H', ACE_Get_Opt::ARG_REQUIRED);
@@ -238,10 +247,9 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (cloud_host.empty() || mongo_uri.empty() || society_id.empty()) {
+  if (cloud_host.empty() || society_id.empty()) {
     ACE_ERROR((LM_ERROR,
-               ACE_TEXT("--cloud-host, --mongo-uri and --society-id are "
-                        "required\n")));
+               ACE_TEXT("--cloud-host and --society-id are required\n")));
     print_usage(argv[0]);
     return -1;
   }

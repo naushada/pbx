@@ -132,18 +132,14 @@ services:
     networks:
       - pbx-net
     environment:
+      # Only the two operator-required knobs + optional inner-TLS hostname.
+      # All other settings (cert paths, Mongo URI, Asterisk service DNS,
+      # ARI app/user/pass) live as compile-time defaults in
+      # pbx-agent/src/main/main.cpp because they're invariant for the
+      # compose stack. Override via `command:` here if you need to.
       CLOUD_HOST:        ${CLOUD_HOST:?CLOUD_HOST required}
-      CLOUD_PORT:        ${CLOUD_PORT:-443}
-      TLS_CERT:          /opt/pbx-agent/certs/agent.crt
-      TLS_KEY:           /opt/pbx-agent/certs/agent.key
-      TLS_CA:            /opt/pbx-agent/certs/cloud-ca.pem
-      MONGO_URI:         mongodb://pbx-mongo:27017/${MONGO_DB_NAME:-pabx}
       AGENT_SOCIETY_ID:  ${AGENT_SOCIETY_ID:?AGENT_SOCIETY_ID required}
-      ASTERISK_HOST:     pbx-asterisk
-      ASTERISK_PORT:     "8088"
-      ARI_APP:           pbx
-      ARI_USER:          ${ARI_USER:-asterisk}
-      ARI_PASS:          ${ARI_PASS:-asterisk}
+      INNER_TLS_HOSTNAME: ${INNER_TLS_HOSTNAME:-}
     volumes:
       - ${CERTS_DIR:?CERTS_DIR required}:/opt/pbx-agent/certs:ro
 
