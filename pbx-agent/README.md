@@ -1,6 +1,13 @@
 # pbx-agent — on-prem daemon
 
-> **Status:** ✅ Layer 2 complete. ✅ Layer 3 ACE bindings complete (`AceSslTransport`, `AriWsClient`, plus the cloud-side `BrowserStream`/`AgentStream` and `HandoffOrdering` source-invariant test). 🔄 Layer 4: the agent-side components (`AsteriskWsFactory`, `AriRestClient`) are complete, and `pbx-agent/src/main/main.cpp` wires every Layer 0–4 component into one ACE reactor with no placeholders (`--help` works; pure glue, no new logic). Remaining Layer 4 work is the `SipScenarios*` integration tests against a real Asterisk (see [`TDD-PLAN.md → Layer 4`](../TDD-PLAN.md)).
+> **Status:** ✅ Layers 0–4 complete and shipped. `pbx-agent/src/main/main.cpp`
+> wires every component into one ACE reactor; the binary runs under
+> `docker-compose.agent.yml` and has been verified live against the
+> deployed Heroku cloud (cloud-tunnel handshake, ARI subscribe, dynamic
+> pjsip provisioning). One open backlog item: native-arm64 SIGSEGV ~3 s
+> after the InnerTLS handshake — reproducible under Lima, suspected
+> AGENT_HELLO / SOCIETY_BOOTSTRAP / SubscriberWatcher interaction;
+> needs ASan or Valgrind to localise.
 
 C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to the shared-library `wsdbagent` pattern (dial-out + WSS upgrade + persistent reconnect loop).
 
@@ -16,7 +23,8 @@ C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, cotur
 | `AriRestClient`   | `src/main/ari_rest_client.{hpp,cpp}`   | ✅ Complete (Layer 4) | Plain-HTTP/1.1 client for the Asterisk ARI surface `AriClient`/`CallRouter` drive — `subscribe`, `continue`, `originate`, `create_bridge`, `addChannel`, `hangup` (`DELETE`), `get_endpoint` (`GET`). HTTP Basic auth in the `Authorization` header (NOT in `?api_key=` — Asterisk logs full URLs). Synchronous; one fresh `ACE_SOCK_Stream` per call, `Connection: close`. URL-encodes path components + query values per RFC 3986. |
 | `AriClient`       | `src/main/ari_client.{hpp,cpp}`        | ✅ Complete (state machine) | ARI event consumer + REST commander. Classifies each `StasisStart` as a caller leg or an originated leg, tracks active bridges (not channels), enforces admission cap, finalises CDRs on `ChannelDestroyed`, detects conference vs P2P from bridge participant count, delegates dialing to `CallRouter`, tears down a revoked subscriber's live channels (`revoke_subscriber`), and reports `EndpointStateChange` to the cloud as `REGISTER_STATE` SipFrames so the cloud's `IPresenceCache` stays in sync. WebSocket subscription wiring is external (production: an ARI WS client that pushes events into `on_event`; tests drive directly). |
 | `CallRouter`      | `src/main/call_router.{hpp,cpp}`       | ✅ Complete (state machine) | Resolves a dialed extension to its SIP targets (`"0"` → guards, else the flat's active subscribers) and drives the forked-ring call: originate a leg per target, bridge the first to answer, tear the losers down. No targets / all legs fail / caller bails — all hang the right channels up. Pure event-driven state machine over `IAriRest` + `IMongodbClient`. |
-| `MongoSink`       | (uses [`mongodb/`](../modules/module/mongodb/README.md)) | ⏳ Layer 2 | Persists CDR rows and replicates subscriber records pushed from the cloud over `OPEN` frames. |
+| `PjsipProvisioner` | `src/main/pjsip_provisioner.{hpp,cpp}` | ✅ Complete | Materialises a `subscribers` row as three Asterisk sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`, `endpoint/<user>`) via ARI dynamic-config PUT/DELETE. Inlined field set is drift-checked against `docker/asterisk/pjsip.conf`'s `[endpoint-resident-template]` by `PjsipTemplateDrift` (PR #22). Realm comes from `set_sip_realm()` — populated by `SOCIETY_BOOTSTRAP` from the cloud (PR #24); CLI `--sip-realm` overrides. |
+| `SubscriberWatcher` | `src/main/subscriber_watcher.{hpp,cpp}` | ✅ Complete | Society-scoped bootstrap full-scan of `subscribers` at 200 ms tick cadence, plus a `mongocxx::change_stream` tail with `resumeAfter` (PR #21) — so a Mongo flap doesn't drop events provided they're still in the oplog window. Drives `PjsipProvisioner` PUT on `insert`/`update` with `status="active"`, DELETE on `delete` or `status!="active"`. |
 
 ---
 
@@ -513,15 +521,11 @@ Teardown: `ForkRing_AllLegsFailBeforeAnswer_HangsUpCaller` (`"no_answer"` only o
 
 ---
 
-## WebSocket subscription glue (Layer 3)
+## Third-party processes co-located on the same host
 
-The actual `ws://127.0.0.1:8088/ari/events?api_key=…&app=pbx` connection that pushes parsed events into `AriClient::on_event` lives outside this module. Production: an `AriEventStream` running on the same ACE reactor, reading JSON events and dispatching. Tests don't need it — `on_event` is the testable seam.
+Not built or shipped by this directory:
 
----
-
-Third-party processes co-located on the same host (not built or shipped by this directory):
-
-- **Asterisk** with `chan_pjsip`, WS transport on `127.0.0.1:8088`, `directmedia=yes` for 1:1, `ConfBridge` for conferences. DTLS-SRTP per [`DESIGN.md §8`](../../DESIGN.md#8-media-security-dtls-srtp).
+- **Asterisk** with `chan_pjsip`, WS transport on `127.0.0.1:8088`, `directmedia=yes` for 1:1, `ConfBridge` for conferences. DTLS-SRTP per [`DESIGN.md §8`](../DESIGN.md#8-media-security-dtls-srtp).
 - **coturn** with `use-auth-secret`. Society opens one public UDP port and DNATs to it.
 - **MongoDB**.
 
@@ -570,6 +574,18 @@ podman-compose -f docker-compose.agent.yml logs -f pbx-agent
 # expect: TLS handshake, /agent upgrade 101, "tunnel ready"
 ```
 
-## Tests (Layer 2)
+## Tests
 
-`CloudConnector*`, `SipFrameDemux*`, `AriClient*`, `CallRouter*` — see [`TDD-PLAN.md → Layer 2`](../TDD-PLAN.md).
+All component suites live in `src/test/` and run as part of the
+offtarget binary (`podman-compose -f docker-compose.test.yml run --rm
+offtarget`). Per-layer breakdown:
+
+- **Layer 2 (state machines, no I/O):** `CloudConnector*` (15),
+  `SipFrameDemux*` (16), `AriClient*` (21), `CallRouter*` (17),
+  `PjsipProvisioner*` (8), `SubscriberWatcher*` (17).
+- **Layer 3 (ACE bindings):** `AceSslTransport*` (10), `AriWsClient*` (14),
+  `WsInnerTlsBridge*` (11), `PjsipTemplateDrift*` (1).
+- **Layer 4:** `AsteriskWsFactory*` (13), `AriRestClient*` (16),
+  `AceHttpsClient*` (13).
+
+See [`TDD-PLAN.md`](../TDD-PLAN.md) for the per-layer test policy.
