@@ -106,6 +106,13 @@ public:
   /// Receive plaintext from the encrypted tunnel.
   bool recv(std::vector<std::uint8_t> &plaintext);
 
+  /// Subject CN of the verified client cert (empty if the client didn't
+  /// present one — `SSL_VERIFY_PEER` without `FAIL_IF_NO_PEER_CERT`
+  /// permits anonymous, so callers MUST treat empty as "unknown
+  /// agent"). Call after `accept()` returns true. Used for log labels
+  /// and future cross-checks against AGENT_HELLO's `societyId`.
+  std::string peer_subject_cn() const;
+
 private:
   IInnerTlsTransport &m_transport;
   SslCtxPtr   m_ctx;

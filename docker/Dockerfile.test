@@ -17,6 +17,14 @@ COPY test/         /src/test/
 # [endpoint-resident-template] section. Skips gracefully if missing
 # (dev machines running tests outside this image).
 COPY docker/      /src/docker/
+# innertls_test reads server.crt/server.key (and now client.crt/key
+# for the mTLS PeerSubjectCn tests). The cloud-runtime Dockerfile
+# regenerates server.{crt,key} at build time, but the offtarget tests
+# just need a working CA + server + client triple to drive the paired
+# handshake — copy them straight from the repo. Tests skip gracefully
+# (GTEST_SKIP) when missing, so dev machines running `cmake; ctest`
+# outside this image still stay green.
+COPY certs/innertls/ /src/certs/
 
 WORKDIR /src/build
 RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
