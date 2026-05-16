@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <tuple>
@@ -37,6 +38,32 @@ using JsonStrVec = std::vector<std::string>;
 
 /// Vector of (file-name, file-content) pairs extracted from a JSON document array.
 using JsonDocList = std::vector<std::tuple<std::string, std::string>>;
+
+/**
+ * @brief Polling change-stream cursor for one collection.
+ *
+ * Cursor stays open until destroyed. Each `try_next()` returns the next
+ * MongoDB change event (insert / update / replace / delete) as a JSON
+ * document, or empty when no event is ready. Production drives this from
+ * a reactor timer in `pbx-agent`'s `SubscriberWatcher`; tests substitute
+ * a recorder that returns pre-canned events.
+ *
+ * The cursor needs a single-node-or-higher replica-set Mongo (see
+ * `docker-compose.agent.yml` `pbx-mongo` service); a standalone mongod
+ * does not enable the oplog and `MongodbClient::watch_collection()`
+ * returns null on it.
+ */
+class IChangeStreamCursor {
+public:
+  virtual ~IChangeStreamCursor() = default;
+
+  /// Block for up to @p max_await_ms waiting for the next change event.
+  /// Returns the event document as JSON
+  ///   `{"operationType":"insert","fullDocument":{...},"documentKey":{...},...}`
+  /// or an empty string if nothing arrived within the await window.
+  /// Caller is expected to call repeatedly (e.g. from a reactor timer).
+  virtual std::string try_next(int max_await_ms = 0) = 0;
+};
 
 /**
  * @brief Result type for @c MongodbClient::from_json().
@@ -105,6 +132,17 @@ public:
   virtual std::vector<std::uint8_t> fetch_file_by_id(const std::string &oid) = 0;
 
   virtual bool delete_file(const std::string &oid) = 0;
+
+  /// Open a change stream on @p coll. Cursor stays open until destroyed
+  /// or the underlying connection drops. Returns nullptr when the
+  /// implementation doesn't support change streams (every test mock,
+  /// `WsMongodbProxy`, or a real `MongodbClient` against a standalone
+  /// mongod). Default returns nullptr so existing fakes don't have to
+  /// override.
+  virtual std::unique_ptr<IChangeStreamCursor>
+  watch_collection(const std::string & /*coll*/) {
+    return nullptr;
+  }
 };
 
 /**
@@ -321,6 +359,18 @@ public:
    *         error occurs.
    */
   bool delete_file(const std::string &oid) override;
+  ///@}
+
+  /** @name Change streams */
+  ///@{
+  /// Open a change stream on @p coll. The cursor owns its connection
+  /// from the pool; let the returned `unique_ptr` go out of scope to
+  /// release. Returns nullptr if the underlying mongod isn't a replica
+  /// set (change streams require an oplog) — see
+  /// `docker-compose.agent.yml`'s `pbx-mongo` service for the
+  /// `--replSet rs0` setup.
+  std::unique_ptr<IChangeStreamCursor>
+  watch_collection(const std::string &coll) override;
   ///@}
 
   /** @name Password hashing */

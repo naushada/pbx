@@ -70,6 +70,13 @@ public:
                    const std::string &reason) override;
   Response get_endpoint(const std::string &tech,
                          const std::string &resource) override;
+  Response create_dynamic_config(const std::string &cfg_class,
+                                  const std::string &obj_type,
+                                  const std::string &id,
+                                  const std::string &fields_json) override;
+  Response delete_dynamic_config(const std::string &cfg_class,
+                                  const std::string &obj_type,
+                                  const std::string &id) override;
 
   // ── Pure-logic helpers (public for unit tests) ───────────────────────
 
@@ -110,6 +117,20 @@ public:
   /// are percent-encoded (`PJSIP` + a bare sipUsername in practice).
   static std::string build_get_endpoint_request(
       const std::string &tech, const std::string &resource,
+      const std::string &host, const std::string &basic_auth);
+
+  /// A `PUT` with a JSON body — sorcery dynamic-config push. The verb,
+  /// `Content-Length`, and `Content-Type: application/json` distinguish
+  /// it from the no-body POSTs the other build_* helpers emit.
+  static std::string build_create_dynamic_config_request(
+      const std::string &cfg_class, const std::string &obj_type,
+      const std::string &id, const std::string &fields_json,
+      const std::string &host, const std::string &basic_auth);
+
+  /// A `DELETE` on the same path the create_dynamic_config PUT targets.
+  static std::string build_delete_dynamic_config_request(
+      const std::string &cfg_class, const std::string &obj_type,
+      const std::string &id,
       const std::string &host, const std::string &basic_auth);
 
   /// Parse an HTTP/1.1 response. Returns {status, body}. status == 0

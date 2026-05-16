@@ -107,6 +107,26 @@ public:
   /// find (and hang up) a revoked subscriber's live calls.
   virtual Response get_endpoint(const std::string &tech,
                                  const std::string &resource) = 0;
+
+  /// `PUT /ari/asterisk/config/dynamic/{cfg_class}/{obj_type}/{id}` —
+  /// create or replace a sorcery-memory config object. @p fields_json is
+  /// the request body the caller has already serialised:
+  ///   `{"fields":[{"attribute":"...","value":"..."}, ...]}`
+  /// Used by `PjsipProvisioner` to push pjsip endpoint/auth/aor objects
+  /// into Asterisk's memory sorcery without rewriting `pjsip.conf` or
+  /// running a `pjsip reload`.
+  virtual Response create_dynamic_config(const std::string &cfg_class,
+                                          const std::string &obj_type,
+                                          const std::string &id,
+                                          const std::string &fields_json) = 0;
+
+  /// `DELETE /ari/asterisk/config/dynamic/{cfg_class}/{obj_type}/{id}` —
+  /// remove a previously-created sorcery-memory config object. Idempotent
+  /// at the agent level: calling on an unknown id returns 404 which the
+  /// `PjsipProvisioner` treats as already-gone (silent no-op).
+  virtual Response delete_dynamic_config(const std::string &cfg_class,
+                                          const std::string &obj_type,
+                                          const std::string &id) = 0;
 };
 
 /// Resolves dialed extensions and drives the forked-ring originate/bridge

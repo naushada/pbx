@@ -107,6 +107,8 @@ A small daemon, structurally similar to xpmile's `wsdbagent`. New binary: `pbx-a
 | `CloudConnector`             | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel. Reconnect/backoff loop. |
 | `SipFrameDemux` *(new)*      | Reads frames off the cloud tunnel; opens (or reuses) a local TCP socket to Asterisk's `ws://127.0.0.1:8088/ws` for each unique `stream-id`. Pipes bytes in both directions. |
 | `AriClient` *(new)*          | HTTP REST client to Asterisk ARI for admission control (count active channels, enforce 5-call cap), CDR scraping, ConfBridge orchestration. `ACE_SOCK_Connector` + HTTP. |
+| `PjsipProvisioner` *(new)*   | Materialises a subscriber row as three Asterisk sorcery objects (auth/aor/endpoint) via ARI dynamic-config PUTs (`/ari/asterisk/config/dynamic`). Idempotent — re-provisioning the same subscriber is the create-or-replace path. |
+| `SubscriberWatcher` *(new)*  | Keeps Asterisk's pjsip endpoints in sync with the `subscribers` collection. Bootstraps via a society-scoped full-scan, then tails a Mongo change stream to react to inserts/updates/deletes in real time. Drives `PjsipProvisioner`. See §4.1. |
 | `MongoSink`                  | Reuses xpmile's `MongodbClient` to persist CDRs and replicate subscriber records pushed from cloud. |
 
 Third-party processes co-located on the agent host (not rewritten):
@@ -204,6 +206,68 @@ Notes on roles:
 - `resident` — must have `flatId`.
 - `guard` — `flatId` null. Dialling `0` rings every subscriber with `role=guard` in the society.
 - `admin` — `flatId` may be null (e.g. society secretary not living on-site). Cannot place SIP calls unless also assigned a flat.
+
+### 4.1 Subscriber → Asterisk pjsip endpoint provisioning
+
+The `subscribers` collection is the source of truth for who is allowed to
+register over SIP. Asterisk needs a matching `pjsip` endpoint (+ auth +
+aor) sorcery object for each. Two pieces close the loop on the agent side:
+
+```
+Mongo `subscribers` ──change stream──▶ SubscriberWatcher
+                                            │
+                                            ▼
+                                     PjsipProvisioner
+                                            │  PUT/DELETE
+                                            ▼ /ari/asterisk/config/dynamic
+                                        Asterisk sorcery (memory)
+```
+
+**Bootstrap** — on agent startup, `SubscriberWatcher::bootstrap()` does a
+society-scoped full-scan of `subscribers` and provisions every active row.
+Disabled rows get a deprovision (cheap, idempotent). The cache that maps
+`_id → sipUsername` is populated here so a later change-stream `delete`
+event (which only carries `documentKey._id`) can resolve the sipUsername.
+
+**Live tail** — after bootstrap the watcher opens a Mongo change stream on
+`subscribers`. A reactor timer ticks at 200 ms; each tick drains one event
+and dispatches:
+
+| Event                                  | Action |
+|----------------------------------------|--------|
+| `insert`/`update`/`replace`, `status=active`     | `provision(sipUsername, sipHa1)` |
+| `insert`/`update`/`replace`, `status!=active`    | `deprovision(sipUsername)`       |
+| `delete` (cached id)                                | `deprovision(sipUsername)`       |
+| `delete` (unknown id) or other society's row     | dropped — not ours to act on   |
+
+Change streams require Mongo to be a replica set (oplog). The
+`pbx-mongo` service in `docker-compose.agent.yml` runs `mongod --replSet
+rs0 --bind_ip_all` and the healthcheck doubles as the initiator (idempotent
+`rs.initiate()`). On a standalone mongod `watch_collection()` returns null
+and `tick()` becomes a silent no-op — bootstrap still works, but live
+changes don't propagate until the next process restart.
+
+**Per-subscriber sorcery objects** (DESIGN.md §5 covers the credential
+shape):
+
+- `auth/<sipUsername>-auth` — `auth_type=md5`, `username`, `md5_cred=sipHa1`,
+  `realm=<sipRealm>`. The realm comes from the `--sip-realm` agent flag
+  (default: `<societyId>.pbx.local`, matching the cloud-side convention in
+  `microservice_pbx.cpp`'s `handle_society_POST`).
+- `aor/<sipUsername>-aor` — `max_contacts=5`, `remove_existing=yes`.
+- `endpoint/<sipUsername>` — codecs / ICE / DTLS / WebRTC settings inlined,
+  plus `auth=<sipUsername>-auth` and `aors=<sipUsername>-aor`. Sorcery
+  dynamic-config does NOT inherit `(!)`-marked templates from
+  `pjsip.conf`, so the settings live as constants in `PjsipProvisioner`
+  and must be kept in sync with `docker/asterisk/pjsip.conf` when the
+  template there changes.
+
+PUTs are issued auth → aor → endpoint so the endpoint never briefly
+references a not-yet-created auth/aor. DELETEs go in the reverse order
+(endpoint first), so an in-flight INVITE racing the delete finds no peer
+rather than a half-deleted record. ARI errors are logged-and-dropped at
+this layer; the next change-stream event re-applies, and a stale local
+state heals naturally on the next admin edit.
 
 ---
 

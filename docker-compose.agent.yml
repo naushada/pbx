@@ -35,15 +35,39 @@ services:
     image: mongo:7
     container_name: pbx-mongo
     restart: unless-stopped
+    # Single-node replica set so the agent's SubscriberWatcher can use
+    # Mongo change streams to react to subscriber inserts/updates/deletes
+    # in real time (DESIGN.md §4 — pjsip provisioning). A 1-node RS is
+    # supported and behaves like a standalone for reads/writes — only the
+    # oplog is enabled, which is what change streams need.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - pbx_mongo_data:/data/db
     networks:
       - pbx-net
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
-      interval: 10s
+      # Idempotent init: first run finds rs.status() throws NotYetInitialized
+      # and runs rs.initiate(); every subsequent tick finds it OK and is a
+      # no-op. The healthcheck doubles as the init mechanism so dependent
+      # services (`condition: service_healthy`) only start once the RS is up.
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "--eval"
+        - >-
+          try {
+            rs.status().ok ? quit(0) : quit(1);
+          } catch (e) {
+            if (e.codeName === 'NotYetInitialized') {
+              rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'pbx-mongo:27017'}]}).ok
+                ? quit(0) : quit(1);
+            } else { quit(1); }
+          }
+      interval: 5s
       timeout: 5s
-      retries: 12
+      retries: 24
+      start_period: 10s
 
   # ──────────────────────────────────────────────────────────────────
   # Asterisk — chan_pjsip SIP-over-WS transport + ARI events/REST.

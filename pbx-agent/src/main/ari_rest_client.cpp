@@ -98,6 +98,29 @@ AriRestClient::get_endpoint(const std::string &tech,
   return do_request(req);
 }
 
+IAriRest::Response
+AriRestClient::create_dynamic_config(const std::string &cfg_class,
+                                      const std::string &obj_type,
+                                      const std::string &id,
+                                      const std::string &fields_json) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_create_dynamic_config_request(
+      cfg_class, obj_type, id, fields_json, m_cfg.host, basic);
+  return do_request(req);
+}
+
+IAriRest::Response
+AriRestClient::delete_dynamic_config(const std::string &cfg_class,
+                                      const std::string &obj_type,
+                                      const std::string &id) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_delete_dynamic_config_request(
+      cfg_class, obj_type, id, m_cfg.host, basic);
+  return do_request(req);
+}
+
 // ── do_request ────────────────────────────────────────────────────────────────
 
 IAriRest::Response AriRestClient::do_request(const std::string &raw_request) {
@@ -272,6 +295,46 @@ std::string AriRestClient::build_get_endpoint_request(
     const std::string &host, const std::string &basic_auth) {
   std::ostringstream os;
   os << "GET /ari/endpoints/" << url_encode(tech) << "/" << url_encode(resource)
+     << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_create_dynamic_config_request ──────────────────────────────────────
+
+std::string AriRestClient::build_create_dynamic_config_request(
+    const std::string &cfg_class, const std::string &obj_type,
+    const std::string &id, const std::string &fields_json,
+    const std::string &host, const std::string &basic_auth) {
+  // The verb is PUT (sorcery treats it as create-or-replace), the body
+  // is JSON, and the path mirrors the /asterisk/config/dynamic surface.
+  std::ostringstream os;
+  os << "PUT /ari/asterisk/config/dynamic/" << url_encode(cfg_class)
+     << "/" << url_encode(obj_type) << "/" << url_encode(id)
+     << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Type: application/json\r\n"
+     << "Content-Length: " << fields_json.size() << "\r\n"
+     << "Connection: close\r\n"
+     << "\r\n"
+     << fields_json;
+  return os.str();
+}
+
+// ── build_delete_dynamic_config_request ──────────────────────────────────────
+
+std::string AriRestClient::build_delete_dynamic_config_request(
+    const std::string &cfg_class, const std::string &obj_type,
+    const std::string &id,
+    const std::string &host, const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "DELETE /ari/asterisk/config/dynamic/" << url_encode(cfg_class)
+     << "/" << url_encode(obj_type) << "/" << url_encode(id)
      << " HTTP/1.1\r\n"
      << "Host: " << host << "\r\n"
      << "Authorization: Basic " << basic_auth << "\r\n"
