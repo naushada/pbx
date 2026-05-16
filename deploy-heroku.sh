@@ -80,28 +80,37 @@ cmd_release() {
   heroku container:release "$PROCESS" --app "$HEROKU_APP"
 }
 
-# Extract the wsdbagent client cert family from the just-built image
-# into ./certs/cloud-issued/innertls/. Dockerfile.cloud regenerates a
-# fresh CA + server + client every build; this step pulls the matching
-# client.{crt,key} + ca.crt out so pbx-wsdbagent can present them on
-# the next handshake.
+# Extract the two on-prem client cert families from the just-built
+# image — one for pbx-wsdbagent (`/ws/db`) and one for pbx-agent
+# (`/agent` SIP tunnel). Dockerfile.cloud mints both signed by the
+# same fresh per-build CA; this step pulls each into its compose
+# mount target so the next container start picks up the matching
+# pair.
 #
 # Without this, the cloud would have a fresh CA in the image but the
-# on-prem agent would still present the previous build's (now untrusted)
-# client cert — exactly the "tls_process_client_certificate verify
-# failed" we hit on 2026-05-16 when v22 was deployed.
+# on-prem peers would still present the previous build's (now
+# untrusted) client certs — exactly the
+# `tls_process_client_certificate verify failed` we hit on 2026-05-16
+# (wsdbagent against v22, pbx-agent against v23).
 cmd_extract_agent_certs() {
-  local dest="$(pwd)/certs/cloud-issued/innertls"
-  log "extracting wsdbagent certs from $CLOUD_TAG → $dest"
-  mkdir -p "$dest"
   local cid
   cid=$(podman create "$CLOUD_TAG") || die "podman create failed — was the image built?"
-  podman cp "$cid:/opt/pbx-cloud/agent-certs/." "$dest/" \
-    && podman rm -f "$cid" >/dev/null \
-    || { podman rm -f "$cid" >/dev/null 2>&1; die "podman cp failed"; }
-  chmod 600 "$dest"/client.key "$dest"/ca.key 2>/dev/null || true
-  log "  wrote $(ls "$dest" | tr '\n' ' ')"
-  log "  pbx-wsdbagent picks these up on next compose-up (or container restart)"
+
+  local wsdest="$(pwd)/certs/cloud-issued/innertls"
+  local sipdest="$(pwd)/certs/cloud-issued/sip-agent"
+  mkdir -p "$wsdest" "$sipdest"
+
+  log "extracting cert families from $CLOUD_TAG"
+  podman cp "$cid:/opt/pbx-cloud/agent-certs/."     "$wsdest/"  || { podman rm -f "$cid" >/dev/null 2>&1; die "podman cp /opt/pbx-cloud/agent-certs/ failed"; }
+  podman cp "$cid:/opt/pbx-cloud/sip-agent-certs/." "$sipdest/" || { podman rm -f "$cid" >/dev/null 2>&1; die "podman cp /opt/pbx-cloud/sip-agent-certs/ failed"; }
+  podman rm -f "$cid" >/dev/null
+
+  chmod 600 "$wsdest"/client.key 2>/dev/null || true
+  chmod 600 "$sipdest"/agent.key 2>/dev/null || true
+
+  log "  wsdbagent → $wsdest   ($(ls "$wsdest"  | grep -v gitkeep | tr '\n' ' '))"
+  log "  pbx-agent → $sipdest  ($(ls "$sipdest" | grep -v gitkeep | tr '\n' ' '))"
+  log "  both pickups happen on next container restart / compose-up"
 }
 
 cmd_deploy() {

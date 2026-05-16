@@ -56,6 +56,9 @@ certs/cloud-issued/*
 !certs/cloud-issued/innertls/
 certs/cloud-issued/innertls/*
 !certs/cloud-issued/innertls/.gitkeep
+!certs/cloud-issued/sip-agent/
+certs/cloud-issued/sip-agent/*
+!certs/cloud-issued/sip-agent/.gitkeep
 # Vaadin Maven build artifacts
 onprem/target/
 onprem/frontend/

@@ -12,13 +12,18 @@
 # Required env (set in .env or shell):
 #   CLOUD_HOST          Heroku hostname (e.g. pabx-5fbf3550f938.herokuapp.com)
 #   AGENT_SOCIETY_ID    Society id this agent serves
-#   CERTS_DIR           Path on host containing agent.crt/agent.key/cloud-ca.pem
 #
 # Optional env (sensible defaults):
 #   CLOUD_PORT          Heroku port                  (default: 443)
 #   MONGO_DB_NAME       Mongo database name          (default: pabx)
 #   ARI_USER / ARI_PASS Asterisk REST creds          (default: asterisk/asterisk)
 #   TURN_PUBLIC_PORT    Society's public TURN UDP    (default: 3478)
+#   CERTS_DIR           pbx-agent mTLS cert dir      (default: ./certs/cloud-issued/sip-agent
+#                                                     — auto-populated by
+#                                                     `./deploy-heroku.sh deploy`)
+#   INNERTLS_DIR        pbx-wsdbagent /ws/db inner-TLS dir
+#                                                    (default: ./certs/cloud-issued/innertls
+#                                                     — auto-populated by deploy)
 #
 # Networks:
 #   pbx-net  — internal bridge for service-to-service traffic.
@@ -141,7 +146,13 @@ services:
       AGENT_SOCIETY_ID:  ${AGENT_SOCIETY_ID:?AGENT_SOCIETY_ID required}
       INNER_TLS_HOSTNAME: ${INNER_TLS_HOSTNAME:-}
     volumes:
-      - ${CERTS_DIR:?CERTS_DIR required}:/opt/pbx-agent/certs:ro
+      # mTLS + InnerTLS material — comes from `./deploy-heroku.sh
+      # cmd_extract_agent_certs` (runs as part of `deploy`). Every cloud
+      # build mints a fresh CA + agent.{crt,key} family inside
+      # Dockerfile.cloud and the deploy step pulls them out into this
+      # dir. Override with CERTS_DIR=... to mount a different path
+      # (e.g. a hand-managed cert set for an air-gapped install).
+      - ${CERTS_DIR:-./certs/cloud-issued/sip-agent}:/opt/pbx-agent/certs:ro
 
   # ──────────────────────────────────────────────────────────────────
   # pbx-wsdbagent — DB-tunnel side of the on-prem stack.
@@ -187,9 +198,6 @@ services:
       # and the deploy step pulls them out of the image into this dir.
       # Override with INNERTLS_DIR=... to mount a different path.
       - ${INNERTLS_DIR:-./certs/cloud-issued/innertls}:/opt/wsdbagent/innertls:ro
-      # Cert dir from the agent-side install (legacy SIP-tunnel material,
-      # still mounted in case a future patch needs it).
-      - ${CERTS_DIR:?CERTS_DIR required}:/opt/wsdbagent/certs:ro
 
 volumes:
   pbx_mongo_data:
