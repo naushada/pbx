@@ -78,26 +78,49 @@ void SubscriberWatcher::bootstrap() {
   // Open the change stream after the bootstrap so we don't double-apply
   // an in-flight insert (the bootstrap covers everything up to "now";
   // events from "now" forward feed in via the cursor).
-  m_stream = m_db.watch_collection("subscribers");
+  open_stream();
+}
+
+void SubscriberWatcher::open_stream() {
+  m_stream = m_db.watch_collection("subscribers", m_resume_token);
   if (!m_stream) {
     ACE_DEBUG((LM_INFO,
                ACE_TEXT("%D [pbx-agent] SubscriberWatcher: change stream "
-                        "unavailable (mongod likely not a replica set); "
-                        "bootstrap-only mode\n")));
+                        "unavailable (mongod likely not a replica set, "
+                        "or resume token aged out); bootstrap-only mode "
+                        "until next reopen attempt\n")));
   }
 }
 
 void SubscriberWatcher::tick() {
-  if (!m_stream) return;
+  if (!m_stream) {
+    // Reopen path. Bootstrap may never have got a cursor (standalone
+    // mongod), or a prior try_next exception tore it down. The skip
+    // counter keeps us off Mongo while a transient failure is healing.
+    if (m_reopen_skip_ticks > 0) { --m_reopen_skip_ticks; return; }
+    open_stream();
+    if (!m_stream) {
+      // Still broken — back off. At 200 ms cadence ~5 ticks is ~1 s.
+      m_reopen_skip_ticks = 5;
+    }
+    return;
+  }
   // Pull one event per tick — keeps the reactor responsive; if events
   // back up the next tick (~200 ms later) drains another. For a high-
   // churn society we could loop here with a budget, but v1 says one.
   std::string evt;
   try { evt = m_stream->try_next(0); }
   catch (const std::exception &e) {
+    // Cursor's broken (Mongo disconnect, mid-stream error). Drop it and
+    // arm reopen — `m_resume_token` from the last successfully-applied
+    // event drives the server-side replay so nothing in the oplog
+    // window gets lost.
     ACE_ERROR((LM_ERROR,
                ACE_TEXT("%D [pbx-agent] SubscriberWatcher::tick: "
-                        "change-stream try_next failed: %s\n"), e.what()));
+                        "change-stream try_next failed: %s; will "
+                        "reopen with resume token\n"), e.what()));
+    m_stream.reset();
+    m_reopen_skip_ticks = 0; // try on next tick immediately
     return;
   }
   if (evt.empty()) return;
@@ -113,6 +136,13 @@ void SubscriberWatcher::handle_event(const std::string &event_json) {
                         "JSON: %s\n"), ex.what()));
     return;
   }
+
+  // Capture this event's resume token BEFORE dispatching. Even if the
+  // dispatch is a silent no-op (other society, unknown id), the server
+  // has already moved past this event — we must NOT re-receive it on
+  // the next reopen, or we'd re-process every dispatched mutation
+  // every time Mongo flaps.
+  if (e.contains("_id")) m_resume_token = e["_id"].dump();
 
   const std::string op = e.value("operationType", std::string{});
 

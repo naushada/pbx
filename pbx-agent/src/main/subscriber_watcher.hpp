@@ -35,9 +35,20 @@
  * are create-or-replace.
  *
  * Reactor-thread single-threaded; no internal locking. Best-effort —
- * Mongo errors / change-stream drops are logged-and-swallowed; the
- * cache may go stale across a Mongo reconnect, refreshes naturally on
- * the next observed change.
+ * Mongo errors / change-stream drops are logged-and-swallowed.
+ *
+ * **Resume-after recovery.** The watcher captures the `_id` resume
+ * token of every successfully-applied event. When `try_next()` throws
+ * (Mongo disconnect, mid-stream error), the cursor is torn down and
+ * `tick()` reopens it via `watch_collection(coll, last_token)` — the
+ * server then replays every event strictly after that token, so no
+ * mutations are dropped as long as the oplog still holds them
+ * (typical oplog window is hours to days, well beyond any reconnect).
+ * Reopen attempts are rate-limited via a tick counter so a sustained
+ * Mongo outage doesn't hammer the pool. If the token has aged out of
+ * the oplog (extended outage), the server rejects the resume and the
+ * watcher falls back to a fresh-from-now cursor; missed events get
+ * re-applied on the next bootstrap call.
  *
  * **Delete-event tracking.** A change-stream `delete` event carries
  * only `documentKey._id` — no fullDocument. We can't extract the
@@ -76,6 +87,9 @@ public:
 
   /// Test/observability: how many subscribers we currently have cached.
   std::size_t cached_count() const { return m_id_to_sipuser.size(); }
+  /// Test/observability: last applied event's `_id` (resume token) as
+  /// raw JSON. Empty until the first event lands.
+  const std::string &resume_token() const { return m_resume_token; }
 
 private:
   /// Apply one change-stream event JSON: dispatch to provision or
@@ -86,11 +100,26 @@ private:
   /// Test seam: drive an event JSON directly without a real cursor.
   friend struct SubscriberWatcherTestAccess;
 
+  /// Try to (re)open the change stream. With `m_resume_token` non-empty
+  /// the server replays everything after the last applied event; empty
+  /// opens a fresh-from-now cursor. Logs and returns on failure;
+  /// the next eligible tick retries.
+  void open_stream();
+
   IMongodbClient                      &m_db;
   std::string                          m_society_id;
   PjsipProvisioner                    &m_provisioner;
   std::unique_ptr<IChangeStreamCursor> m_stream;
   std::unordered_map<std::string, std::string> m_id_to_sipuser;
+  /// `_id` of the last successfully-applied event, as bare JSON.
+  /// Round-tripped back through `watch_collection(coll, token)` on
+  /// reopen so the server resumes from immediately after.
+  std::string                          m_resume_token;
+  /// Reopen-attempt cooldown. After a failed reopen we wait this many
+  /// `tick()` calls before retrying — at the 200 ms production cadence
+  /// that's ~1 second of breathing room, enough for typical Mongo
+  /// flaps without spamming the pool.
+  int                                  m_reopen_skip_ticks = 0;
 };
 
 /// Test-only accessor — feeds a JSON change event straight into
