@@ -36,19 +36,26 @@ See:
 | 4   | Production wiring — `pbx-agent` + `pbx-cloud` binaries, `AsteriskWsFactory` (real chan_pjsip WS), `AriRestClient` (admission `continue`), real `PushSender` (AceHttpsClient + VAPID), `docker-compose.{agent,heroku}.yml`, `Dockerfile.{agent,cloud,ui}`, `deploy-heroku.sh` | ✅ Complete (see [§ Layer 4 detail](#layer-4--production-wiring-complete)) |
 | 4   | Cloud REST handlers — `subscriber/login` (dev-mode), `subscriber` directory, `push-vapid-key`, `turn-credentials`, `push-subscribe`. `db_available()` env-var guard short-circuits DB-touching handlers when Mongo isn't configured (defends against Heroku H12 timeouts) | ✅ Complete |
 | 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of xpmile's standalone DB-tunnel binary + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Source committed; verifying live |
+| 4   | D3: InnerTLS over the `/agent` SIP tunnel — shared `WsInnerTlsBridge` (dual-mode `IInnerTlsTransport`); agent `--inner-tls-{cert,key,ca,hostname}`; cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. `AgentStream` split into `(ctor, auto_attach=false)` + `setup_inner_tls()` + `attach()` so the handshake completes before the endpoint sees a live transport. | ✅ PR #19 (merged) |
+| 4   | Dynamic pjsip provisioning — `PjsipProvisioner` materialises subscriber rows as Asterisk auth/aor/endpoint sorcery objects via ARI dynamic-config PUT/DELETE; `SubscriberWatcher` does a society-scoped bootstrap full-scan + Mongo change-stream tail at 200ms cadence. `pbx-mongo` runs as a 1-node replica set with idempotent `rs.initiate()` healthcheck. Agent `--sip-realm` flag (default `<society-id>.pbx.local`). | ✅ PR #18 (merged) |
+| 4   | Presence reconciliation — `AriClient::publish_register_snapshot()` calls `GET /ari/endpoints/PJSIP` and emits one `REGISTER_STATE` SipFrame per endpoint; `CloudConnector::set_on_connected()` fires it on every (re)connect. Closes the cache-staleness gap from PR #16. | ✅ PR #20 (merged) |
+| 4   | Change-stream resume — `IMongodbClient::watch_collection(coll, resume_token_json)` overload + `mongocxx::options::change_stream::resume_after()`; `SubscriberWatcher` captures every event's `_id` token and reopens on `try_next` exception with a 5-tick backoff (~1s at 200ms cadence). | ✅ PR #21 (merged) |
+| 4   | Pjsip drift-check test — parses `[endpoint-resident-template]` from `docker/asterisk/pjsip.conf`, runs `PjsipProvisioner` against a FakeAriRest, asserts every template field is present in the emitted endpoint PUT. Prevents silent divergence between dev-fixture endpoints and runtime-provisioned subscribers. | ✅ PR #22 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
-### Test totals: **448 / 448** (C++ 375 + UI karma 61 + UI Playwright 12)
+### Test totals: **502 / 505** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
 
 | Layer | Suites | Tests |
 |-------|--------|------:|
 | 0     | HttpParser 20 + MessageParserBase 8 + SipParser 17 + SipFrame 10 | **55** |
 | 1     | SipBridge 14 + MicroServicePbx 23 + MicroServiceRouting 9 + PushSender 8 | **54** |
-| 2     | SipFrameDemux 14 + CloudConnector 15 + AriClient 11 + CloudTunnelEndpoint 12 | **52** |
-| 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 | **59** |
-| 4     | AsteriskWsFactory 13 + AriRestClient 14 + AceHttpsClient 13 | **40** |
+| 2     | SipFrameDemux 16 + CloudConnector 19 + AriClient 16 + CloudTunnelEndpoint 12 + CallRouter 17 + PjsipProvisioner 7 + SubscriberWatcher 15 | **102** |
+| 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 + WsInnerTlsBridge 11 + PjsipTemplateDrift 1 | **71** |
+| 4     | AsteriskWsFactory 13 + AriRestClient 16 + AceHttpsClient 13 | **42** |
 | regression | inherited xpmile suites (verbatim copy) | **115** |
-| **Total** | **36 suites** | **375** |
+| **Total** | **42 suites** | **502** |
+
+Counts will drift over time — `podman-compose -f docker-compose.test.yml run --rm offtarget` prints the authoritative number on every run.
 
 | UI suite | Tests |
 |----------|------:|
@@ -96,12 +103,15 @@ See:
 
 
    AgentStream ◄═══════════════════════════════════════►  AceSslTransport
-                WS over mTLS — Heroku /agent                     ▲    │
-                · WS-level keep-alive ping (idle H15 guard)       │    ▼
-                · SipFrame PING/PONG heartbeat (peer liveness)     │
+                outer WSS (Heroku-terminated, theatre)            ▲    │
+                + InnerTLS-over-WS (real mTLS, PR #19)            │    ▼
+                · WS-level keep-alive ping (idle H15 guard)       │    │
+                · SipFrame PING/PONG heartbeat (peer liveness)    │    │
                                                               CloudConnector
                                                                   ▲    │
-                                       upstream send_frame(…)     │    ▼
+                                                                  │    └─► on_connected →
+                                                                  │       AriClient.publish_register_snapshot()
+                                       upstream send_frame(…)     │       (PR #20: REGISTER_STATE × N)
                                                               SipFrameDemux
                                                                   │    ▲
                                                                   ▼    │
@@ -114,7 +124,20 @@ See:
                                                               AriClient ◄── AriWsClient
                                                                ├─ admission bridge-counter
                                                                ├─ CDR ─► on-prem Mongo
-                                                               └─ PUSH_NOTIFY ─► CloudConnector
+                                                               ├─ PUSH_NOTIFY ─► CloudConnector
+                                                               ├─ REGISTER_STATE on EndpointStateChange
+                                                               │  (PR #16, dispatched via CloudConnector)
+                                                               └─ revoke_subscriber on SUBSCRIBER_REVOKED
+
+                                                              SubscriberWatcher ◄── Mongo `subscribers`
+                                                               │                  (change-stream tail,
+                                                               │                   resume-token-aware, PR #21)
+                                                               ▼
+                                                              PjsipProvisioner
+                                                               │
+                                                               ▼ ARI dynamic-config PUT/DELETE
+                                                              Asterisk pjsip sorcery
+                                                               (auth + aor + endpoint per subscriber)
 ```
 
 ### How traffic flows
@@ -181,12 +204,26 @@ toolchain in ~30 min.
 
 ## Run the on-prem agent stack
 
-The on-prem deployment runs four containers — `pbx-mongo`, `pbx-asterisk`,
-`pbx-coturn`, and `pbx-agent` — composed by `docker-compose.agent.yml`.
+> **For a guided end-to-end overview** (one-call trace, failure modes,
+> operator runbook, developer onboarding) see
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md). This section is the abbreviated
+> "get it up" checklist.
+
+The on-prem deployment runs five containers — `pbx-mongo`, `pbx-asterisk`,
+`pbx-coturn`, `pbx-agent`, and `pbx-wsdbagent` — composed by
+`docker-compose.agent.yml`. `pbx-mongo` runs as a single-node replica set
+(`mongod --replSet rs0`) so the agent's `SubscriberWatcher` can tail the
+`subscribers` collection's change stream; the healthcheck doubles as an
+idempotent `rs.initiate()` so dependent services only start once the RS is
+up. On a standalone mongod the bootstrap full-scan still runs but live
+change-stream updates fall back to no-op (logged).
 
 ```sh
 # One-time: copy the env template and fill in real values
 # (CLOUD_HOST, AGENT_SOCIETY_ID, CERTS_DIR pointing at agent.crt/key + cloud-ca.pem).
+# The CERTS_DIR cert pair is reused for the outer TLS dial AND the inner
+# TLS handshake (PR #19) — same trust boundary as /ws/db. Override
+# INNER_TLS_* env vars only if you want a separate cert namespace.
 cp .env.agent.example .env
 $EDITOR .env
 
@@ -207,19 +244,45 @@ Topology:
 
 | Container | Network | Why |
 |---|---|---|
-| `pbx-mongo` | `pbx-net` (internal bridge) | Subscribers + CDR + push subscriptions. Not exposed to host. |
+| `pbx-mongo` | `pbx-net` (internal bridge) | Subscribers + CDR + push subscriptions. **Replica-set required** (`--replSet rs0`) so `SubscriberWatcher` can tail the change stream. Not exposed to host. |
 | `pbx-asterisk` | `pbx-net` (internal bridge) | chan_pjsip WS on `:8088` (agent reaches via service DNS). NOT host-exposed — auth lives in SIP digest, not at the WS layer. |
 | `pbx-coturn` | host networking | TURN needs the real public IP in STUN replies. The society opens one UDP port (`TURN_PUBLIC_PORT`, default 3478) and DNATs it to coturn. |
-| `pbx-agent`  | `pbx-net` (internal bridge) | Dials the Heroku `/agent` endpoint over mTLS using the `CERTS_DIR` material. |
+| `pbx-agent`  | `pbx-net` (internal bridge) | Dials the Heroku `/agent` endpoint over outer TLS + InnerTLS (PR #19). Runs `SubscriberWatcher`/`PjsipProvisioner` (PR #18) and `AriClient` (admission, CDR, presence). Reads `CERTS_DIR` for both layers. |
+| `pbx-wsdbagent` | `pbx-net` (internal bridge) | Standalone xpmile-style DB tunnel; dials `wss://${CLOUD_HOST}/ws/db` with InnerTLS so the cloud's `MicroServicePbx` handlers can read/write the on-prem Mongo when `--remote-db` is on (D4 pending live verification). |
 
 Asterisk config files (`docker/asterisk/*.conf`) are minimal but functional:
 
-- `pjsip.conf` — WS transport, WebRTC-enabled endpoint template (`webrtc=yes`, `auth_type=md5`, `realm=pbx.local`), sample `alice` / `bob` endpoints. Replace with society-specific endpoints in production.
+- `pjsip.conf` — WS transport, WebRTC-enabled endpoint template (`webrtc=yes`, `auth_type=md5`, `realm=pbx.local`), sample `alice` / `bob` / `conf` endpoints. **Production endpoints are provisioned dynamically by `PjsipProvisioner`** — see [§ Dynamic pjsip provisioning](#dynamic-pjsip-provisioning-pr-18) below. The drift-check test (PR #22) guarantees the dev-fixture template and the dynamic-config endpoint fields stay aligned.
 - `extensions.conf` — Stasis app `pbx` (admission gate) + `pbx-busy` busy-signal context for over-cap calls.
 - `ari.conf` — single ARI user `asterisk:asterisk`; **override via `ARI_USER` / `ARI_PASS`** in `.env` before any non-local deployment.
 - `http.conf` — listens on `0.0.0.0:8088`, scoped to the internal bridge network.
 
 coturn (`docker/coturn/turnserver.conf`) uses `use-auth-secret` so the cloud's `GET /api/v1/turn-credentials` endpoint can mint time-limited credentials with a shared HMAC-SHA1 secret (RFC 5766 §5). The bundled `static-auth-secret` is dev-only — overwrite before production.
+
+### Dynamic pjsip provisioning (PR #18)
+
+The agent doesn't pre-list endpoints in `pjsip.conf`. On boot
+`SubscriberWatcher::bootstrap()` does a society-scoped full-scan of the
+`subscribers` collection and pushes each active row into Asterisk as three
+sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`,
+`endpoint/<user>`) via ARI dynamic-config PUTs. After the bootstrap the
+watcher tails the Mongo change stream at 200 ms cadence; `insert` /
+`update` with `status="active"` re-PUTs, `status!="active"` or `delete`
+DELETEs. The cursor uses `resumeAfter` (PR #21) so a Mongo flap doesn't
+drop events — the watcher captures every event's `_id` token and reopens
+from there.
+
+The SIP realm carried on the auth object's `realm` field comes from the
+agent's `--sip-realm` flag (default `<society-id>.pbx.local`); it must
+match the realm the cloud used when computing each subscriber's
+`sipHa1` digest. The cloud writes `sipRealm = "<code>.pbx.local"` onto
+the `societies` doc; if your society's `_id` ≠ `code` you must pass
+`--sip-realm` explicitly.
+
+The codec / DTLS / WebRTC field set the provisioner emits is asserted to
+match `pjsip.conf`'s `[endpoint-resident-template]` by
+`PjsipTemplateDrift` (PR #22). Edit either side without updating the
+other and the test fails noisily.
 
 ## Run the softphone UI
 
@@ -367,7 +430,7 @@ The corresponding cloud log line — visible via `heroku logs --tail --app pabx`
 
 | Limitation | Why | Workaround |
 |---|---|---|
-| ~~mTLS for `/agent` is not actually verified.~~ ✅ Resolved by slice D3. | InnerTLS over the WS is now wired on both ends — the agent layers `InnerTlsClient` after the WS upgrade (`AceSslTransport::connect_and_handshake`), and the cloud's `/agent` upgrade handler runs `AgentStream::setup_inner_tls()` before attaching to the tunnel. Same cert triple as `/ws/db`; configured via `--inner-tls-cert/--inner-tls-key/--inner-tls-ca/--inner-tls-hostname` on the agent and the existing `--tls-cert/--tls-key/--tls-ca` on the cloud. | — |
+| ~~mTLS for `/agent` is not actually verified.~~ | Resolved by **PR #19 (D3)**. Both the agent and the cloud now run InnerTLS over the `/agent` WS frames — same trust boundary as `/ws/db`. The outer TLS that Heroku's router terminates is no longer load-bearing for authentication. Agent flags: `--inner-tls-{cert,key,ca,hostname}`. Cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. See [`docs/design/security/innertls.md`](./docs/design/security/innertls.md). | ✅ Done. |
 | **Cloud doesn't run with `--remote-db` yet.** | The on-prem `pbx-wsdbagent` container exists (D1+D2 committed) but `REMOTE_DB=1` hasn't been flipped on Heroku because it'd block REST handlers until the wsdbagent is live. | D4: `heroku config:set REMOTE_DB=1 --app pabx` **after** `pbx-wsdbagent` is verified connected. |
 | **Login is dev-mode permissive.** | The subscribers collection isn't seeded. `handle_subscriber_login_POST` returns a synthetic session for any non-empty credentials. | Run the CSV-import flow (`POST /api/v1/society/<id>/subscribers/import`) once Mongo is wired, then set `PBX_AUTH_STRICT=1`. |
 
