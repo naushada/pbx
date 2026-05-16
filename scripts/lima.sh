@@ -45,7 +45,7 @@ usage() {
   cat <<EOF
 usage: $(basename "$0") {start|stop|vm [cmd...]}
   start         provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
-                bring the 5-container on-prem stack up via podman-compose
+                bring the 6-container on-prem stack up via podman-compose
                 against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
   stop          compose down + stop + delete the VM (and any legacy ones).
   vm [cmd...]   shell into the VM. With no args, interactive shell.
@@ -280,7 +280,7 @@ TURN_PUBLIC_PORT=3478
 ENVEOF
 "
 
-# ─── 6. Bring the 5-container stack up ────────────────────────────────────
+# ─── 6. Bring the 6-container stack up ────────────────────────────────────
 step "podman-compose up --build -d"
 SH "cd $REPO_HOST && sudo podman-compose -f $COMPOSE up --build -d"
 

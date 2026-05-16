@@ -213,7 +213,7 @@ toolchain in ~30 min.
 > [`ARCHITECTURE.md`](./ARCHITECTURE.md). This section is the abbreviated
 > "get it up" checklist.
 
-The on-prem deployment runs five containers — `pbx-mongo`, `pbx-asterisk`,
+The on-prem deployment runs six containers — `pbx-mongo`, `pbx-asterisk`,
 `pbx-coturn`, `pbx-agent`, and `pbx-wsdbagent` — composed by
 `docker-compose.agent.yml`. `pbx-mongo` runs as a single-node replica set
 (`mongod --replSet rs0`) so the agent's `SubscriberWatcher` can tail the
@@ -297,7 +297,7 @@ other and the test fails noisily.
 ### One-shot dry test (`scripts/lima.sh`)
 
 `scripts/lima.sh` provisions a Lima VM (Apple Virtualization framework,
-native arm64 — no QEMU), then brings up the **full five-container
+native arm64 — no QEMU), then brings up the **full six-container
 on-prem stack** via `podman-compose -f docker-compose.agent.yml` inside
 the VM. `pbx-agent` + `pbx-wsdbagent` dial the deployed Heroku cloud,
 so a green run exercises the real cloud-tunnel handshake end-to-end.
@@ -385,7 +385,7 @@ canonical recipe is:
    `503 "On-prem agent not connected to cloud"` (deliberate; surfaces
    the real failure mode instead of a misleading 401).
    ```sh
-   lima start    # full 5-container stack inside the Lima VM
+   lima start    # full 6-container stack inside the Lima VM
    lima vm sudo podman logs pbx-wsdbagent | grep "session started"
    ```
 

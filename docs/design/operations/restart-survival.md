@@ -70,11 +70,11 @@ After install:
 
 ```bash
 sudo systemctl status onprem-pbx.service       # active (exited)
-podman ps                                       # all five containers Up
+podman ps                                       # all six containers Up
 
 # Force a real reboot, then after the box is back:
 sudo systemctl status onprem-pbx.service       # active (exited)
-podman ps                                       # all five containers Up again
+podman ps                                       # all six containers Up again
 ```
 
 If `podman ps` is empty after boot, the journal is the place to look:
