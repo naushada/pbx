@@ -199,6 +199,75 @@ services:
       # Override with INNERTLS_DIR=... to mount a different path.
       - ${INNERTLS_DIR:-./certs/cloud-issued/innertls}:/opt/wsdbagent/innertls:ro
 
+  # ──────────────────────────────────────────────────────────────────
+  # pbx-cert-watcher — restarts pbx-wsdbagent + pbx-agent whenever the
+  # cloud-issued cert family changes on disk.
+  #
+  # The cloud's Dockerfile.cloud mints a fresh CA every build (PR #55
+  # + #61). `./deploy-heroku.sh deploy` extracts the matching client
+  # cert families into ./certs/cloud-issued/{innertls,sip-agent}/.
+  # The on-prem daemons bind-mount those dirs and read certs ONCE at
+  # startup — they don't watch for file changes. Without this sidecar
+  # the operator has to `podman restart` both containers manually
+  # after every deploy.
+  #
+  # This watcher md5sums the cert files every 5s and on any change
+  # POSTs `/libpod/containers/<name>/restart` to the host podman
+  # socket. Restart is best-effort — failures are logged and the next
+  # poll cycle retries.
+  #
+  # Polling (not inotify) because virtiofs in Lima doesn't reliably
+  # deliver inotify events across the host→VM mount.
+  # ──────────────────────────────────────────────────────────────────
+  pbx-cert-watcher:
+    image: docker.io/library/alpine:3.19
+    container_name: pbx-cert-watcher
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache curl >/dev/null
+        log() { printf '[cert-watcher %s] %s\n' "$$(date -u +%H:%M:%S)" "$$1"; }
+        log "watching /watch every $${POLL_SECONDS:-5}s for cert changes"
+        LAST=""
+        while true; do
+          NEW=$$(find /watch -type f \( -name '*.crt' -o -name '*.key' -o -name '*.pem' \) -exec md5sum {} + 2>/dev/null \
+                 | sort | md5sum | cut -d' ' -f1)
+          if [ -n "$$NEW" ] && [ "$$NEW" != "$$LAST" ]; then
+            if [ -n "$$LAST" ]; then
+              log "cert change detected ($$LAST -> $$NEW); restarting peers"
+              for c in pbx-wsdbagent pbx-agent; do
+                if curl -fsS -X POST --unix-socket /run/podman/podman.sock \
+                        "http://d/v4.0.0/libpod/containers/$$c/restart?timeout=5" >/dev/null; then
+                  log "  $$c restarted"
+                else
+                  log "  $$c restart FAILED (will retry next change)"
+                fi
+              done
+            else
+              log "first observation: $$NEW (no restart, baseline)"
+            fi
+            LAST=$$NEW
+          fi
+          sleep $${POLL_SECONDS:-5}
+        done
+    environment:
+      POLL_SECONDS: ${CERT_WATCH_POLL_SECONDS:-5}
+    volumes:
+      - ${CLOUD_ISSUED_DIR:-./certs/cloud-issued}:/watch:ro
+      # Host podman socket — used to issue restarts on sibling
+      # containers. Rootful podman default path; override with
+      # PODMAN_SOCKET=... if your install uses rootless or a
+      # different location.
+      - ${PODMAN_SOCKET:-/run/podman/podman.sock}:/run/podman/podman.sock
+    depends_on:
+      pbx-wsdbagent:
+        condition: service_started
+      pbx-agent:
+        condition: service_started
+
 volumes:
   pbx_mongo_data:
 
