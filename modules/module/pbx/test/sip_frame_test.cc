@@ -62,6 +62,20 @@ TEST(SipFrame, SerializeRoundTrip_RegisterState)
                       R"({"societyId":"soc1","sipUsername":"u_abc123","online":true})");
 }
 
+TEST(SipFrame, SerializeRoundTrip_AgentHello)
+{
+    // agent → cloud identity: stream-id unused (0), JSON payload.
+    expect_round_trip(Op::AGENT_HELLO, 0,
+                      R"({"societyId":"soc1"})");
+}
+
+TEST(SipFrame, SerializeRoundTrip_SocietyBootstrap)
+{
+    // cloud → agent realm push: stream-id unused (0), JSON payload.
+    expect_round_trip(Op::SOCIETY_BOOTSTRAP, 0,
+                      R"({"societyId":"soc1","sipRealm":"acme.pbx.local"})");
+}
+
 // ── Error paths ───────────────────────────────────────────────────────────────
 
 TEST(SipFrame, RejectsBadVersion)

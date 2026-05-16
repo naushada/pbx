@@ -112,6 +112,14 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
   case Op::REGISTER_STATE:
     if (m_register_state_handler) m_register_state_handler(f.payload);
     return;
+  case Op::AGENT_HELLO:
+    if (m_agent_hello_handler) m_agent_hello_handler(f.payload);
+    return;
+  case Op::SOCIETY_BOOTSTRAP:
+    // SOCIETY_BOOTSTRAP is cloud→agent only — the bridge emits it (see
+    // bootstrap_society()), it never receives one. Drop if the agent
+    // echoes it back.
+    return;
   }
 }
 
@@ -125,6 +133,22 @@ void SipBridge::set_cdr_push_handler(CdrPushHandler h) {
 
 void SipBridge::set_register_state_handler(RegisterStateHandler h) {
   m_register_state_handler = std::move(h);
+}
+
+void SipBridge::set_agent_hello_handler(AgentHelloHandler h) {
+  m_agent_hello_handler = std::move(h);
+}
+
+void SipBridge::bootstrap_society(const std::string &society_id,
+                                   const std::string &sip_realm) {
+  if (!m_tunnel) return;
+  const json payload = {{"societyId", society_id},
+                        {"sipRealm",  sip_realm}};
+  // stream-id 0 — SOCIETY_BOOTSTRAP is tunnel-wide, not tied to any
+  // browser stream. Emitted in response to AGENT_HELLO; carries the
+  // canonical sipRealm so the agent's PjsipProvisioner stops
+  // depending on a `--sip-realm` CLI flag for correctness.
+  m_tunnel->send_frame(SipFrame::Op::SOCIETY_BOOTSTRAP, 0, payload.dump());
 }
 
 void SipBridge::revoke(const std::string &society_id,

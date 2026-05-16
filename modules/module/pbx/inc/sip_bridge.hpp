@@ -123,7 +123,26 @@ public:
   using RegisterStateHandler = std::function<void(const std::string &payload)>;
   void set_register_state_handler(RegisterStateHandler h);
 
+  /// Install a handler called when the bridge sees an `AGENT_HELLO`
+  /// frame from the agent. Payload is the JSON `{societyId}` the agent
+  /// sends as the first frame after the InnerTLS handshake. Production
+  /// wires this to a `societies/{_id}` lookup that drives
+  /// `bootstrap_society()` with the canonical `sipRealm`; tests
+  /// substitute a recorder.
+  using AgentHelloHandler = std::function<void(const std::string &payload)>;
+  void set_agent_hello_handler(AgentHelloHandler h);
+
   // ── Out-of-band tunnel ops (cloud → agent) ─────────────────────────────
+
+  /// Emit a `SOCIETY_BOOTSTRAP` frame (stream-id 0, JSON payload
+  /// `{societyId, sipRealm}`) down the tunnel so the agent's
+  /// `PjsipProvisioner` learns its sipRealm without depending on a
+  /// `--sip-realm` CLI flag for correctness. Called from the
+  /// `AGENT_HELLO` handler after the cloud has looked up the society
+  /// in its DB. No-op when no tunnel is attached.
+  void bootstrap_society(const std::string &society_id,
+                          const std::string &sip_realm);
+
 
   /// `IRevocationSink`: a subscriber was disabled/removed on the cloud.
   /// Emits a `SUBSCRIBER_REVOKED` frame (stream-id 0, JSON payload
@@ -153,6 +172,7 @@ private:
   PushNotifyHandler    m_push_handler;
   CdrPushHandler       m_cdr_handler;
   RegisterStateHandler m_register_state_handler;
+  AgentHelloHandler    m_agent_hello_handler;
 };
 
 #endif // SIP_BRIDGE_HPP

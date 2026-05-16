@@ -94,6 +94,14 @@ public:
   using SubscriberRevokedHandler = std::function<void(const std::string &payload)>;
   void set_subscriber_revoked_handler(SubscriberRevokedHandler h);
 
+  /// Install a handler called when the demux sees a `SOCIETY_BOOTSTRAP`
+  /// frame from the cloud (response to the agent's `AGENT_HELLO`).
+  /// Payload is JSON `{societyId, sipRealm}`. Production wires this to
+  /// `PjsipProvisioner::set_sip_realm` + `SubscriberWatcher::resync`;
+  /// tests substitute a recorder. Tunnel-wide control op (stream-id 0).
+  using SocietyBootstrapHandler = std::function<void(const std::string &payload)>;
+  void set_society_bootstrap_handler(SocietyBootstrapHandler h);
+
   // ── Asterisk-side entry points ─────────────────────────────────────────
 
   /// Bytes arrived on the local Asterisk socket for @p stream_id.
@@ -118,6 +126,7 @@ private:
   std::unordered_map<std::uint32_t, std::unique_ptr<IAsteriskStream>> m_streams;
   std::string                                                 m_recv_buffer;
   SubscriberRevokedHandler                                    m_revoked_handler;
+  SocietyBootstrapHandler                                     m_society_bootstrap_handler;
 };
 
 #endif // SIP_FRAME_DEMUX_HPP

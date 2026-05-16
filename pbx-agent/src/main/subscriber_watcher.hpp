@@ -79,6 +79,14 @@ public:
   /// sorcery absorbs as no-ops.
   void bootstrap();
 
+  /// Re-run the full-scan + provision step WITHOUT touching the change
+  /// stream cursor. Production driver: the agent's `SOCIETY_BOOTSTRAP`
+  /// handler invokes this after `PjsipProvisioner::set_sip_realm()` so
+  /// every already-provisioned subscriber's auth object gets re-PUT
+  /// with the canonical realm — SIP REGISTER digests start matching
+  /// what the cloud computed. Idempotent on the sorcery side.
+  void resync();
+
   /// Drive one polling tick. Pulls one change event off the cursor (if
   /// any) and dispatches it. Production: ACE timer @ ~200 ms; tests
   /// invoke directly with a recorder cursor. No-op when the cursor
@@ -99,6 +107,10 @@ private:
   void handle_event(const std::string &event_json);
   /// Test seam: drive an event JSON directly without a real cursor.
   friend struct SubscriberWatcherTestAccess;
+
+  /// The full-scan-and-provision body shared between `bootstrap()` and
+  /// `resync()`. Does NOT touch the change-stream cursor.
+  void run_full_scan();
 
   /// Try to (re)open the change stream. With `m_resume_token` non-empty
   /// the server replays everything after the last applied event; empty

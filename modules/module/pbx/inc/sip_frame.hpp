@@ -47,6 +47,21 @@ enum class Op : std::uint8_t {
                              // Asterisk's `EndpointStateChange` ARI event; the
                              // cloud caches it for the directory's `online`
                              // column. stream-id is unused (0).
+  AGENT_HELLO        = 0x14, // agent -> cloud: agent identifies itself by
+                             // societyId on every (re)connect. Payload JSON
+                             // {societyId}. Cloud responds with a
+                             // SOCIETY_BOOTSTRAP carrying the canonical
+                             // sipRealm so the agent's PjsipProvisioner
+                             // doesn't have to guess the realm from a CLI
+                             // flag. stream-id is unused (0).
+  SOCIETY_BOOTSTRAP  = 0x15, // cloud -> agent: per-society config the agent
+                             // needs but doesn't have locally. Payload JSON
+                             // {societyId, sipRealm}. Emitted in response to
+                             // AGENT_HELLO; on receipt the agent updates its
+                             // PjsipProvisioner realm and (if it differs from
+                             // the realm a prior bootstrap used) re-PUTs every
+                             // subscriber's auth object via
+                             // SubscriberWatcher::resync(). stream-id unused.
 };
 
 struct Frame {

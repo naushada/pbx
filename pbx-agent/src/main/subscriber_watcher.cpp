@@ -30,6 +30,25 @@ SubscriberWatcher::SubscriberWatcher(IMongodbClient &db,
       m_provisioner(provisioner) {}
 
 void SubscriberWatcher::bootstrap() {
+  run_full_scan();
+
+  // Open the change stream after the bootstrap so we don't double-apply
+  // an in-flight insert (the bootstrap covers everything up to "now";
+  // events from "now" forward feed in via the cursor).
+  open_stream();
+}
+
+void SubscriberWatcher::resync() {
+  // Re-run the full-scan + provision step but DON'T touch the change
+  // stream — keep the existing cursor + resume token alive so we don't
+  // lose live events queued while resync is in flight. The driver is
+  // typically a SOCIETY_BOOTSTRAP frame from the cloud carrying a new
+  // sipRealm — `PjsipProvisioner::set_sip_realm` was called immediately
+  // before this, so each re-PUT now carries the correct realm.
+  run_full_scan();
+}
+
+void SubscriberWatcher::run_full_scan() {
   // Society-scoped scan. Provision every active row; the cache is also
   // populated so a later delete event yields its sipUsername.
   std::string raw;
@@ -40,45 +59,41 @@ void SubscriberWatcher::bootstrap() {
         "{}");
   } catch (const std::exception &e) {
     ACE_ERROR((LM_ERROR,
-               ACE_TEXT("%D [pbx-agent] SubscriberWatcher::bootstrap: "
+               ACE_TEXT("%D [pbx-agent] SubscriberWatcher::run_full_scan: "
                         "get_documents failed: %s\n"), e.what()));
     return;
   }
 
-  if (!raw.empty()) {
-    json arr;
-    try { arr = json::parse(raw); }
-    catch (const std::exception &e) {
-      ACE_ERROR((LM_ERROR,
-                 ACE_TEXT("%D [pbx-agent] SubscriberWatcher::bootstrap: "
-                          "JSON parse failed: %s\n"), e.what()));
-    }
-    if (arr.is_array()) {
-      for (const auto &row : arr) {
-        if (!row.is_object()) continue;
-        const std::string sip_user = row.value("sipUsername", std::string{});
-        const std::string sip_ha1  = row.value("sipHa1",      std::string{});
-        const std::string status   = row.value("status",      std::string{"active"});
-        if (sip_user.empty()) continue;
+  if (raw.empty()) return;
 
-        if (row.contains("_id"))
-          m_id_to_sipuser[oid_str(row["_id"])] = sip_user;
+  json arr;
+  try { arr = json::parse(raw); }
+  catch (const std::exception &e) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] SubscriberWatcher::run_full_scan: "
+                        "JSON parse failed: %s\n"), e.what()));
+    return;
+  }
+  if (!arr.is_array()) return;
 
-        if (status == "active") {
-          m_provisioner.provision(sip_user, sip_ha1);
-        } else {
-          // Pre-disabled subscribers shouldn't be in Asterisk. A delete
-          // is cheap and idempotent.
-          m_provisioner.deprovision(sip_user);
-        }
-      }
+  for (const auto &row : arr) {
+    if (!row.is_object()) continue;
+    const std::string sip_user = row.value("sipUsername", std::string{});
+    const std::string sip_ha1  = row.value("sipHa1",      std::string{});
+    const std::string status   = row.value("status",      std::string{"active"});
+    if (sip_user.empty()) continue;
+
+    if (row.contains("_id"))
+      m_id_to_sipuser[oid_str(row["_id"])] = sip_user;
+
+    if (status == "active") {
+      m_provisioner.provision(sip_user, sip_ha1);
+    } else {
+      // Pre-disabled subscribers shouldn't be in Asterisk. A delete is
+      // cheap and idempotent.
+      m_provisioner.deprovision(sip_user);
     }
   }
-
-  // Open the change stream after the bootstrap so we don't double-apply
-  // an in-flight insert (the bootstrap covers everything up to "now";
-  // events from "now" forward feed in via the cursor).
-  open_stream();
 }
 
 void SubscriberWatcher::open_stream() {

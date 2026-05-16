@@ -364,3 +364,59 @@ TEST(SipBridge, Revoke_AfterReconnect_GoesToNewTunnel)
     ASSERT_EQ(1u, tun2.sent.size());
     EXPECT_EQ(SipFrame::Op::SUBSCRIBER_REVOKED, tun2.sent[0].op);
 }
+
+// ── AGENT_HELLO / SOCIETY_BOOTSTRAP — realm bootstrap path ────────────────
+
+TEST(SipBridge, OnTunnel_AgentHello_FiresHandlerWithPayload)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    std::string captured;
+    bridge.set_agent_hello_handler(
+        [&captured](const std::string &p) { captured = p; });
+
+    // Inject an AGENT_HELLO frame as if it arrived from the agent.
+    const std::string frame = SipFrame::encode(
+        SipFrame::Op::AGENT_HELLO, 0, R"({"societyId":"soc1"})");
+    EXPECT_TRUE(bridge.on_tunnel_bytes(frame));
+    EXPECT_EQ(R"({"societyId":"soc1"})", captured);
+}
+
+TEST(SipBridge, BootstrapSociety_EmitsSocietyBootstrapFrame)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    bridge.bootstrap_society("soc1", "acme.pbx.local");
+
+    ASSERT_EQ(1u, tun.sent.size());
+    EXPECT_EQ(SipFrame::Op::SOCIETY_BOOTSTRAP, tun.sent[0].op);
+    EXPECT_EQ(0u, tun.sent[0].stream_id);
+    EXPECT_NE(std::string::npos, tun.sent[0].payload.find("acme.pbx.local"));
+    EXPECT_NE(std::string::npos, tun.sent[0].payload.find("soc1"));
+}
+
+TEST(SipBridge, BootstrapSociety_NoTunnel_NoOp)
+{
+    SipBridge bridge(nullptr);
+    bridge.bootstrap_society("soc1", "acme.pbx.local");
+    // Must not crash; no tunnel to write to.
+}
+
+TEST(SipBridge, OnTunnel_SocietyBootstrap_IsDropped_EvenIfHandlerInstalled)
+{
+    // SOCIETY_BOOTSTRAP is cloud→agent only — if the agent ever echoes
+    // one back the bridge must NOT route it through any handler (there
+    // is no such handler on the cloud side, but we still want a tidy
+    // drop, not a crash).
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+    bridge.set_agent_hello_handler(
+        [](const std::string &) { FAIL() << "wrong handler fired"; });
+    const std::string frame = SipFrame::encode(
+        SipFrame::Op::SOCIETY_BOOTSTRAP, 0,
+        R"({"societyId":"soc1","sipRealm":"acme.pbx.local"})");
+    EXPECT_TRUE(bridge.on_tunnel_bytes(frame));
+    EXPECT_TRUE(tun.sent.empty());
+}

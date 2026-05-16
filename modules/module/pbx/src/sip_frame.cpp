@@ -60,6 +60,8 @@ DecodeResult decode(const std::string &buf) {
     case Op::PUSH_NOTIFY: case Op::CDR_PUSH:
     case Op::SUBSCRIBER_REVOKED:
     case Op::REGISTER_STATE:
+    case Op::AGENT_HELLO:
+    case Op::SOCIETY_BOOTSTRAP:
       break;
     default:
       r.status = Status::Invalid;
