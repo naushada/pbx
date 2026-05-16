@@ -416,9 +416,16 @@ canonical recipe is:
    ```
 
 4. **Log in** at `http://localhost:8081/login` with the credentials
-   from step 2 (`societyCode=SUNSET`, `flatNumber=ADMIN`,
-   `password=changeme123`). You'll land on the Dashboard with
-   Societies / Subscribers links in the sidenav.
+   from step 2. The Vaadin login form expects three fields:
+
+   | Field         | What to type                                            |
+   |---------------|---------------------------------------------------------|
+   | `societyCode` | the `--society-code` you passed to bootstrap (e.g. `SUNSET`) |
+   | `flatNumber`  | `ADMIN` (bootstrap always seeds the first admin with this flatNumber) |
+   | `password`    | the `--admin-password` you passed to bootstrap          |
+
+   On success you land on the Dashboard with Societies / Subscribers
+   links in the sidenav.
 
 See [`onprem/README.md`](./onprem/README.md) for the Vaadin app layout
 + package map, and `scripts/bootstrap-society.sh --help` for every
