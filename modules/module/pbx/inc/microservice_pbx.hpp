@@ -33,6 +33,24 @@ namespace MicroServicePbx {
 /// On duplicate `code`: 409 Conflict.
 std::string handle_society_POST(const std::string &req, IMongodbClient &db);
 
+/// GET /api/v1/societies
+/// Lists every society as a JSON array. Each row is the persisted doc
+/// with `turnSharedSecret` stripped — the shared secret is exposed
+/// only via the per-society detail endpoint so a stray list call can't
+/// leak it. Falls through to `[]` when `db_available()` is false
+/// (no Mongo configured — same H12 guard the other GETs use).
+std::string handle_societies_GET(const std::string &req, IMongodbClient &db);
+
+/// GET /api/v1/society/<id>
+/// Returns the full society doc for that `_id`, including the
+/// `sipRealm` and `turnSharedSecret` the operator copies into the
+/// on-prem `.env` / `setup-society.sh` flow. 400 if the id segment
+/// is missing, 404 if no such society. (Admin-role gating is added
+/// in a later PR — until then this is no-auth, matching every other
+/// REST handler today.)
+std::string handle_society_detail_GET(const std::string &req,
+                                      IMongodbClient &db);
+
 /// POST /api/v1/subscriber/import
 /// Body: a CSV (Content-Type: text/csv) with header row
 ///   `flat_number,name,email,phone,role`
