@@ -150,7 +150,7 @@ describe('SipService', () => {
     it('connect() builds the SIP URI + WS URL from subscriber + token', async () => {
         authenticate();
         await svc.connect();
-        expect(fake.lastOpts!.uri).toBe('sip:A-204@pbx.soc-123');
+        expect(fake.lastOpts!.uri).toBe('sip:A-204@pbx.local');
         expect(fake.lastOpts!.wsUrl).toMatch(/\/sip-ws\?token=tok-xyz$/);
         expect(fake.lastOpts!.wsUrl.startsWith('ws')).toBeTrue();
         expect(fake.handle.started).toBeTrue();
@@ -231,7 +231,7 @@ describe('SipService', () => {
         it('builds the correct target URI from society + flat', async () => {
             await makeRegistered();
             svc.placeCall('B-12');
-            expect(fake.handle.callTargets).toEqual(['sip:B-12@pbx.soc-123']);
+            expect(fake.handle.callTargets).toEqual(['sip:B-12@pbx.local']);
         });
 
         it('emits outgoing → in-call as the SIP call progresses', async () => {
@@ -280,7 +280,7 @@ describe('SipService', () => {
             await makeRegistered();
             svc.placeCall('B-12');
             svc.placeCall('C-44');
-            expect(fake.handle.callTargets).toEqual(['sip:B-12@pbx.soc-123']);
+            expect(fake.handle.callTargets).toEqual(['sip:B-12@pbx.local']);
         });
 
         it('placeCall throw surfaces as failed CallState', async () => {
@@ -320,7 +320,7 @@ describe('SipService', () => {
         function fire(): FakeIncomingHandle {
             const h = new FakeIncomingHandle();
             fake.handle.fireIncoming({
-                fromUri: 'sip:C-99@pbx.soc-123', fromFlat: 'C-99', callId: 'call-id-9',
+                fromUri: 'sip:C-99@pbx.local', fromFlat: 'C-99', callId: 'call-id-9',
             }, h);
             return h;
         }
@@ -372,7 +372,7 @@ describe('SipService', () => {
 
             const h2 = new FakeIncomingHandle();
             fake.handle.fireIncoming({
-                fromUri: 'sip:D-1@pbx.soc-123', fromFlat: 'D-1', callId: 'second',
+                fromUri: 'sip:D-1@pbx.local', fromFlat: 'D-1', callId: 'second',
             }, h2);
             expect(h2.rejectedCause).toBe('busy');
             // First call's in-call state is still the latest emit.
@@ -471,7 +471,7 @@ describe('SipService', () => {
             await makeRegistered();
             svc.joinConference();
 
-            expect(fake.handle.callTargets).toEqual(['sip:conf@pbx.soc-123']);
+            expect(fake.handle.callTargets).toEqual(['sip:conf@pbx.local']);
             const last = states.at(-1)!;
             if (last.kind !== 'outgoing') fail('expected outgoing');
             else expect(last.toFlat).toBe('Conference');

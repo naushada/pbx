@@ -861,8 +861,8 @@ std::string handle_subscriber_login_POST(const std::string &req,
   }
 
   // Dev mode: synthesise from the typed triple. societyCode flows into
-  // societyId so SipService.connect's `sip:<sipUser>@pbx.<societyId>`
-  // produces a stable URI; flatNumber doubles as the SIP user and display
+  // societyId for downstream routing; SipService.connect builds a fixed
+  // `sip:<sipUser>@pbx.local` URI from it. flatNumber doubles as the SIP user and display
   // name (no real subscriber doc to draw from). Session is persisted so
   // /sip-ws upgrade stays mode-agnostic — it always resolves the token
   // via `sessions`.
@@ -919,7 +919,8 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db,
   // DirectoryEntry fields renames AND strips in one pass.
   //
   // The SIP URI form matches what `SipService.placeCall` uses on the UI
-  // (`sip:<flatNumber>@pbx.<societyId>`); `online` (last-known REGISTER
+  // (`sip:<flatNumber>@pbx.local` — fixed host, see microservice_pbx.cpp:955
+  // for why); `online` (last-known REGISTER
   // state) isn't tracked cloud-side yet — emitted as `false`, a future
   // item populates it from agent-reported REGISTER/UNREGISTER frames.
   const auto matches_prefix = [&](const std::string &flat) -> bool {
@@ -952,7 +953,11 @@ std::string handle_directory_GET(const std::string &req, IMongodbClient &db,
     out.push_back({
         {"flatNumber",  flat},
         {"displayName", row.value("name", std::string{})},
-        {"sipUri",      "sip:" + flat + "@pbx." + society_id},
+        // Fixed host (pbx.local) — nothing routes on the URI host
+        // (PJSIP matches on username, cloud routes by WS-session
+        // tunnel). Keeping a literal avoids RFC-3986 host-label
+        // failures for societyIds containing underscores.
+        {"sipUri",      "sip:" + flat + "@pbx.local"},
         {"online",      online},
     });
   }
