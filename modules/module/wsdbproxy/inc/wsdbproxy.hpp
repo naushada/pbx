@@ -34,6 +34,12 @@ public:
   /// Returns an error-response BSON on failure.
   virtual std::vector<std::uint8_t>
   dispatch(const std::vector<std::uint8_t>& bson) = 0;
+
+  /// True while an on-prem ws-db-agent is attached. Default true so test
+  /// doubles that always succeed don't have to override. Production
+  /// `WsDbServer` reports the real atomic-flag state, which lets the
+  /// cloud handlers short-circuit with 503 instead of a misleading 401.
+  virtual bool is_connected() const { return true; }
 };
 
 /**
@@ -96,7 +102,7 @@ public:
   bool on_agent_connected(ACE_HANDLE handle);
 
   /// @return true while a ws-db-agent is connected.
-  bool is_connected() const { return m_connected.load(); }
+  bool is_connected() const override { return m_connected.load(); }
 
   std::vector<std::uint8_t>
   dispatch(const std::vector<std::uint8_t>& bson) override;
@@ -162,6 +168,14 @@ public:
   const std::string& get_database() const override {
     static const std::string empty;
     return empty;
+  }
+
+  /// Surface the dispatcher's on-prem connectivity to handlers so they
+  /// can distinguish "agent gone" from "no such row." Default
+  /// `IWsDispatcher::is_connected()` returns true, which is correct
+  /// for in-process test doubles.
+  bool is_remote_disconnected() const override {
+    return !m_dispatcher.is_connected();
   }
 
   std::string create_document(const std::string& dbName,
