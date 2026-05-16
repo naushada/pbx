@@ -463,9 +463,13 @@ The first-time Heroku app preparation:
 heroku stack:set container --app pabx           # flip from buildpack → container stack
 heroku config:set \
     VAPID_PUBLIC_KEY=<base64url> \
+    VAPID_PRIVATE_KEY_B64=<base64-of-pem> \
+    VAPID_SUBJECT='mailto:ops@example.com' \
     TURN_SHARED_SECRET="$(openssl rand -base64 32)" \
     TURN_URL='turn:turn.pbx.local:3478?transport=udp' \
     --app pabx
+# Full VAPID lifecycle (generate, rotate, recover, troubleshoot):
+#   docs/design/operations/vapid-keys.md
 # Add `PBX_AUTH_STRICT=1 DB_URI=mongodb://…` once the subscribers
 # collection is seeded; until then the cloud runs in dev-mode.
 ```
