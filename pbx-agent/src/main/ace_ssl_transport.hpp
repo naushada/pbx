@@ -14,6 +14,7 @@
 
 class ACE_Reactor;
 class InnerTlsClient;
+class InnerTlsDispatchTask;
 class WsInnerTlsBridge;
 
 /**
@@ -144,15 +145,32 @@ private:
 /// `ITransportFactory` that returns real `AceSslTransport` instances.
 /// Construct this in `main()` after building `CloudConnector` and pass
 /// it to the connector's constructor.
+///
+/// @par Active-Object dispatch
+/// In production the factory owns an `InnerTlsDispatchTask` (spawned in
+/// the constructor, joined in the destructor). Every transport it
+/// creates receives an @c on_bytes callback that *enqueues* the
+/// plaintext onto the task's queue instead of invoking the user's
+/// handler synchronously. The task's `svc()` thread drains the queue
+/// and runs the real handler. This breaks the
+/// reactor→drain_frames→on_bytes→CloudConnector::mark_disconnected→
+/// `m_transport.reset()` UAF cycle that produced the post-handshake
+/// SIGBUS — by the time the real handler can decide to reset the
+/// transport, we are no longer on the reactor's `drain_frames` stack.
 class AceSslTransportFactory : public ITransportFactory {
 public:
   /// Inner-TLS cert paths are baked into the factory at construction
   /// (every transport the factory creates uses the same set); they're
   /// independent of the outer mTLS paths handed to `create_connected`.
+  ///
+  /// @p on_bytes / @p on_disconnect are the user-facing handlers. In
+  /// production they're invoked on the dispatch task's worker thread.
   AceSslTransportFactory(ACE_Reactor                              *reactor,
                           std::function<void(const std::string &)> on_bytes,
                           std::function<void()>                     on_disconnect,
                           AceSslTransport::InnerTlsConfig           inner_tls = {});
+
+  ~AceSslTransportFactory() override;
 
   std::unique_ptr<ITransport>
   create_connected(const std::string &host, std::uint16_t port,
@@ -160,11 +178,20 @@ public:
                    const std::string &key_path,
                    const std::string &ca_path) override;
 
+  /// Test seam — flip the underlying dispatch task into synchronous
+  /// mode (handlers run inline on the caller's thread). Must be called
+  /// before `create_connected`.
+  void set_synchronous_dispatch_for_test();
+
 private:
   ACE_Reactor                              *m_reactor;
-  std::function<void(const std::string &)>  m_on_bytes;
-  std::function<void()>                     m_on_disconnect;
+  std::function<void(const std::string &)>  m_user_on_bytes;
+  std::function<void()>                     m_user_on_disconnect;
   AceSslTransport::InnerTlsConfig           m_inner_tls;
+
+  /// Owns the worker thread that dispatches inbound plaintext to the
+  /// user handler. Constructed + started in the factory ctor.
+  std::unique_ptr<InnerTlsDispatchTask>     m_dispatch;
 };
 
 #endif // ACE_SSL_TRANSPORT_HPP

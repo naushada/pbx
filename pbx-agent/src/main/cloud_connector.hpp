@@ -174,6 +174,14 @@ private:
   void attempt_connect();
   void mark_disconnected();
   void flush_outbound();
+  /// Set the pending-disconnect flag instead of synchronously calling
+  /// `mark_disconnected()`. Used by code paths that observe a fatal
+  /// transport error from inside the transport's own call stack —
+  /// `m_transport.reset()` there would free the very object whose
+  /// method we are unwinding through (SIGBUS). The pending flag is
+  /// drained at the top of `tick()`, which runs on the reactor thread
+  /// outside any transport callback, so destruction is safe.
+  void request_disconnect();
   /// Called from `tick()` while connected: sends a heartbeat PING once per
   /// `heartbeat_interval_sec` of inbound silence, and drops the tunnel once
   /// `heartbeat_max_missed` PINGs have gone unanswered.
@@ -193,6 +201,11 @@ private:
 
   std::int64_t  m_last_heartbeat_unix = 0; // when the last heartbeat PING went out
   int           m_pings_outstanding   = 0; // PINGs sent with no inbound bytes since
+
+  /// True when a code path inside the transport's call frame has
+  /// requested a disconnect but the actual `m_transport.reset()` has
+  /// been deferred until the next `tick()`. See `request_disconnect()`.
+  bool m_disconnect_pending = false;
 
   OnConnectedHandler m_on_connected;
 };
