@@ -1243,6 +1243,117 @@ TEST(MicroServicePbx, Ping_GuardSession_RefreshesByGuardTtl)
         << "guard refresh must use the guard TTL (≥ 7d), not the resident 1d";
 }
 
+// ── Admin role gate ──────────────────────────────────────────────────────────
+// MicroService::dispatch_pbx_routes() must reject a request for an admin-only
+// REST endpoint when the bearer is missing / non-admin / expired, before the
+// handler runs. Covers POST /api/v1/society and one of the four gated routes
+// (PUT /api/v1/subscriber/<id>) to prove the gate is wired in more than one
+// place — the other two gated routes (POST /subscriber/import,
+// DELETE /subscriber/<id>) share the same gate code path.
+
+TEST(MicroServiceAdminGate, AdminGate_NoSession_401_OnSocietyPOST)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_post("/api/v1/society",
+                                       R"({"name":"X","code":"X1"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(db.inserts.empty()) << "gate must short-circuit before handler";
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NonAdminRole_403_OnSocietyPOST)
+{
+    TestDb db;
+    seed_session(db, "res-tok", "resident");  // valid bearer, wrong role
+    MicroService e;
+    const std::string req = make_post("/api/v1/society?token=res-tok",
+                                       R"({"name":"X","code":"X1"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+    EXPECT_TRUE(db.inserts.empty()) << "gate must short-circuit before handler";
+}
+
+TEST(MicroServiceAdminGate, AdminGate_AdminRole_200_OnSocietyPOST)
+{
+    TestDb db;
+    seed_session(db, "adm-tok", "admin");
+    MicroService e;
+    const std::string req = make_post("/api/v1/society?token=adm-tok",
+                                       R"({"name":"X","code":"X1"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 201 Created"));
+    ASSERT_EQ(1u, db.inserts.size());
+    EXPECT_EQ("societies", db.inserts[0].coll);
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NoSession_401_OnSubscriberStatusPUT)
+{
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "active")});
+    MicroService e;
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"disabled"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(db.updates.empty()) << "gate must short-circuit before handler";
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NonAdminRole_403_OnSubscriberStatusPUT)
+{
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "active")});
+    seed_session(db, "res-tok", "resident");
+    MicroService e;
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1&token=res-tok",
+        R"({"status":"disabled"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+    EXPECT_TRUE(db.updates.empty()) << "gate must short-circuit before handler";
+}
+
+TEST(MicroServiceAdminGate, AdminGate_AdminRole_200_OnSubscriberStatusPUT)
+{
+    TestDb db;
+    db.getDoc["subscribers"].push_back(
+        {R"("sipUsername":"u_abc123")",
+         subscriber_doc("asha@example.com", "x", "active")});
+    seed_session(db, "adm-tok", "admin");
+    MicroService e;
+    const std::string req = make_put(
+        "/api/v1/subscriber/u_abc123?societyId=soc1&token=adm-tok",
+        R"({"status":"disabled"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_EQ(1u, db.updates.size());
+}
+
+TEST(MicroServiceAdminGate, AdminGate_ExpiredSession_401_OnSocietyPOST)
+{
+    TestDb db;
+    seed_session(db, "stale-tok", "admin", /*expires_at=*/1);  // long past
+    MicroService e;
+    const std::string req = make_post("/api/v1/society?token=stale-tok",
+                                       R"({"name":"X","code":"X1"})");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+    EXPECT_TRUE(db.inserts.empty()) << "gate must short-circuit before handler";
+
+    // Best-effort: the expired row is dropped so it can't be re-resolved.
+    bool deleted_session = false;
+    for (const auto &d : db.deletes)
+        if (d.coll == "sessions" &&
+            d.filter.find(R"("token":"stale-tok")") != std::string::npos)
+            deleted_session = true;
+    EXPECT_TRUE(deleted_session)
+        << "an expired session row should be dropped on rejection";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Route-wiring: MicroService::dispatch_pbx_routes() picks the right handler.
 // Asserts the dispatch table only — handler correctness is owned by the
@@ -1254,8 +1365,9 @@ TEST(MicroServicePbx, Ping_GuardSession_RefreshesByGuardTtl)
 TEST(MicroServiceRouting, RoutesSocietyPost)
 {
     TestDb db;
+    seed_session(db, "admin-tok", "admin");
     MicroService e;
-    const std::string req = make_post("/api/v1/society",
+    const std::string req = make_post("/api/v1/society?token=admin-tok",
                                        R"({"name":"X","code":"X1"})");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 201 Created"));
@@ -1267,12 +1379,13 @@ TEST(MicroServiceRouting, RoutesSubscriberImportPost)
 {
     TestDb db;
     seed_society_and_flats(db);
+    seed_session(db, "admin-tok", "admin");
     MicroService e;
     const std::string csv =
         "flat_number,name,email,phone,role\r\n"
         "A-101,Asha,asha@x,9999,resident\r\n";
     const std::string req = make_post(
-        "/api/v1/subscriber/import?societyId=s1", csv, "text/csv");
+        "/api/v1/subscriber/import?societyId=s1&token=admin-tok", csv, "text/csv");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_NE(std::string::npos, rsp.find("Content-Type: text/csv"));
@@ -1334,9 +1447,11 @@ TEST(MicroServiceRouting, RoutesSubscriberStatusPut)
     db.getDoc["subscribers"].push_back(
         {R"("sipUsername":"u_abc123")",
          subscriber_doc("asha@example.com", "x", "active")});
+    seed_session(db, "admin-tok", "admin");
     MicroService e;  // no owning WebServer → null revoke sink, DB work only
     const std::string req = make_put(
-        "/api/v1/subscriber/u_abc123?societyId=soc1", R"({"status":"disabled"})");
+        "/api/v1/subscriber/u_abc123?societyId=soc1&token=admin-tok",
+        R"({"status":"disabled"})");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_EQ(1u, db.updates.size());
@@ -1348,9 +1463,10 @@ TEST(MicroServiceRouting, RoutesSubscriberDelete)
     db.getDoc["subscribers"].push_back(
         {R"("sipUsername":"u_abc123")",
          subscriber_doc("asha@example.com", "x", "active")});
+    seed_session(db, "admin-tok", "admin");
     MicroService e;
     const std::string req =
-        make_delete("/api/v1/subscriber/u_abc123?societyId=soc1");
+        make_delete("/api/v1/subscriber/u_abc123?societyId=soc1&token=admin-tok");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 }

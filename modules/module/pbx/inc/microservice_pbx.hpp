@@ -154,6 +154,31 @@ struct SipWsUpgrade {
 /// and on success builds the `OPEN`-frame metadata from the session record.
 SipWsUpgrade handle_sipws_upgrade(const std::string &req, IMongodbClient &db);
 
+/// Result of the admin-only REST gate (see resolve_admin_session()).
+struct AdminSession {
+  /// Non-empty → a complete HTTP error response (401 or 403) the caller
+  /// must return to the client INSTEAD of invoking the handler.
+  /// Empty → the bearer is valid AND carries role=admin; the handler may run.
+  std::string error;
+  /// Valid only when `error` is empty: the resolved session identity,
+  /// copied out of the `sessions` row.
+  std::string society_id;
+  std::string sip_username;
+  std::string role;
+};
+
+/// Admin-role gate for the cloud's admin-only REST endpoints. Resolves the
+/// portal session the same way handle_sipws_upgrade does (`?token=` query
+/// param OR `session=` cookie), looks it up in `sessions`, and refuses any
+/// request that isn't carrying a still-valid bearer whose row has
+/// `role == "admin"`.
+/// Returns:
+///   error.empty()        → session valid + admin, identity fields populated
+///   error: 401 response  → missing/unknown bearer, or expired session
+///                          (expired rows are best-effort deleted)
+///   error: 403 response  → bearer valid but role is not "admin"
+AdminSession resolve_admin_session(const std::string &req, IMongodbClient &db);
+
 } // namespace MicroServicePbx
 
 #endif // MICROSERVICE_PBX_HPP
