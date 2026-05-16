@@ -367,7 +367,7 @@ The corresponding cloud log line — visible via `heroku logs --tail --app pabx`
 
 | Limitation | Why | Workaround |
 |---|---|---|
-| **mTLS for `/agent` is not actually verified.** | Heroku Common Runtime terminates TLS at the router; the dyno only sees plain HTTP/WS. The agent's `--tls-cert` / `--tls-key` are present but never round-tripped against a verifiable peer. **`/ws/db` already gets around this** via ACE InnerTLS layered over the outer WSS — the same pattern is pending for the `/agent` SIP tunnel (slice D3). | Add InnerTLS to `AceSslTransport` (D3), or move to Heroku Private Spaces (TLS pass-through). |
+| ~~mTLS for `/agent` is not actually verified.~~ ✅ Resolved by slice D3. | InnerTLS over the WS is now wired on both ends — the agent layers `InnerTlsClient` after the WS upgrade (`AceSslTransport::connect_and_handshake`), and the cloud's `/agent` upgrade handler runs `AgentStream::setup_inner_tls()` before attaching to the tunnel. Same cert triple as `/ws/db`; configured via `--inner-tls-cert/--inner-tls-key/--inner-tls-ca/--inner-tls-hostname` on the agent and the existing `--tls-cert/--tls-key/--tls-ca` on the cloud. | — |
 | **Cloud doesn't run with `--remote-db` yet.** | The on-prem `pbx-wsdbagent` container exists (D1+D2 committed) but `REMOTE_DB=1` hasn't been flipped on Heroku because it'd block REST handlers until the wsdbagent is live. | D4: `heroku config:set REMOTE_DB=1 --app pabx` **after** `pbx-wsdbagent` is verified connected. |
 | **Login is dev-mode permissive.** | The subscribers collection isn't seeded. `handle_subscriber_login_POST` returns a synthetic session for any non-empty credentials. | Run the CSV-import flow (`POST /api/v1/society/<id>/subscribers/import`) once Mongo is wired, then set `PBX_AUTH_STRICT=1`. |
 

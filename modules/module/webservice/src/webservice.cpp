@@ -2104,8 +2104,36 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
             ACE_Event_Handler::READ_MASK | ACE_Event_Handler::DONT_CALL);
         m_handle = ACE_INVALID_HANDLE;
 
-        auto *as = new AgentStream(*parent().cloudTunnelEndpoint(), raw);
+        // Inner-TLS (if configured) gates `attach()`. We construct the
+        // stream with `auto_attach=false`, drive the InnerTLS accept
+        // handshake synchronously, then attach + register. On
+        // handshake failure: delete and close — the agent will retry.
+        // The inner-TLS handshake blocks the reactor thread for the
+        // few RTTs the SSL exchange takes; v1 architecture is
+        // one-agent-per-cloud-dyno so the stall is acceptable.
+        const auto &inner_cfg =
+            parent().cloudTunnelEndpoint()->inner_tls_config();
+        const bool want_inner_tls = !inner_cfg.cert_path.empty();
+
+        auto *as = new AgentStream(*parent().cloudTunnelEndpoint(), raw,
+                                    /*auto_attach=*/!want_inner_tls);
         as->reactor(reactor());
+
+        if (want_inner_tls) {
+          if (!as->setup_inner_tls(inner_cfg.cert_path,
+                                    inner_cfg.key_path,
+                                    inner_cfg.ca_path)) {
+            ACE_ERROR((LM_ERROR,
+                       ACE_TEXT("%D [WebConnection:%t] %M %N:%l "
+                                "AgentStream inner-TLS handshake failed; "
+                                "tearing down\n")));
+            delete as;
+            parent().connectionPool().erase(raw);
+            return 0;
+          }
+          as->attach();
+        }
+
         // register_with_reactor() registers for READ_MASK *and* arms the
         // keep-alive WS-PING timer; on partial failure it rolls the
         // registration back, so `delete as` here is always safe.
@@ -2118,8 +2146,8 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
         } else {
           ACE_DEBUG((LM_INFO,
                      ACE_TEXT("%D [WebConnection:%t] %M %N:%l /agent "
-                              "handed off raw fd %d -> AgentStream\n"),
-                     raw));
+                              "handed off raw fd %d -> AgentStream%s\n"),
+                     raw, want_inner_tls ? " (inner-TLS)" : ""));
         }
 
         parent().connectionPool().erase(raw);

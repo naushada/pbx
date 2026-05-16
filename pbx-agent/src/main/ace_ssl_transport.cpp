@@ -1,5 +1,7 @@
 #include "ace_ssl_transport.hpp"
+#include "innertls.hpp"
 #include "wsframe.hpp"
+#include "ws_inner_tls_bridge.hpp"
 
 #include "ace/Log_Msg.h"
 #include "ace/INET_Addr.h"
@@ -73,6 +75,11 @@ AceSslTransport::~AceSslTransport() {
     m_stream.close();
     m_handle = ACE_INVALID_HANDLE;
   }
+  // Explicit reset in declaration-reverse order: m_inner_tls holds a
+  // reference into m_bridge, so the inner TLS object must die first.
+  // unique_ptr destruction order already gives this, but make it visible.
+  m_inner_tls.reset();
+  m_bridge.reset();
 }
 
 // ── connect_and_handshake ────────────────────────────────────────────────────
@@ -82,7 +89,8 @@ bool AceSslTransport::connect_and_handshake(const std::string &host,
                                              const std::string &cert_path,
                                              const std::string &key_path,
                                              const std::string &ca_path,
-                                             const std::string &path) {
+                                             const std::string &path,
+                                             const InnerTlsConfig &inner_tls) {
   // ── mTLS context ───────────────────────────────────────────────────────
   ACE_SSL_Context *ctx = ACE_SSL_Context::instance();
   ctx->set_mode(ACE_SSL_Context::SSLv23_client);
@@ -148,6 +156,72 @@ bool AceSslTransport::connect_and_handshake(const std::string &host,
                       "%s:%u%s (handle=%d)\n"),
              host.c_str(), static_cast<unsigned>(port), path.c_str(),
              static_cast<int>(m_handle)));
+
+  // ── Inner TLS (over the WS) ──────────────────────────────────────────
+  //
+  // Heroku terminates the outer TLS at the router so what reaches the
+  // dyno is plain HTTP/WS — the agent's `--tls-cert` is never verified
+  // against a peer. The real mTLS trust boundary is this inner TLS layer
+  // riding the WS binary frames. Skip when no cert configured so unit
+  // tests that drive `handle_input` with raw frames keep working; in
+  // production the cloud's `AgentStream` requires the inner handshake
+  // and the agent would fail downstream without it.
+  if (!inner_tls.cert_path.empty()) {
+    auto recv_raw = [this](void *buf, std::size_t cap) -> long {
+      return static_cast<long>(m_stream.recv(buf, cap));
+    };
+    auto send_raw = [this](const void *buf, std::size_t len) -> long {
+      return static_cast<long>(m_stream.send_n(buf, len));
+    };
+    m_bridge = std::make_unique<WsInnerTlsBridge>(std::move(recv_raw),
+                                                   std::move(send_raw),
+                                                   /*client_mask=*/true);
+    m_inner_tls = std::make_unique<InnerTlsClient>(*m_bridge);
+    if (!inner_tls.ca_path.empty())
+      m_inner_tls->set_ca(inner_tls.ca_path);
+    if (!m_inner_tls->set_cert(inner_tls.cert_path, inner_tls.key_path)) {
+      ACE_ERROR((LM_ERROR,
+                 ACE_TEXT("%D [AceSslTransport] inner-TLS set_cert failed "
+                          "(cert=%s key=%s)\n"),
+                 inner_tls.cert_path.c_str(), inner_tls.key_path.c_str()));
+      m_inner_tls.reset();
+      m_bridge.reset();
+      m_stream.close();
+      m_handle = ACE_INVALID_HANDLE;
+      return false;
+    }
+    if (!m_inner_tls->handshake()) {
+      ACE_ERROR((LM_ERROR,
+                 ACE_TEXT("%D [AceSslTransport] inner-TLS handshake "
+                          "failed\n")));
+      m_inner_tls.reset();
+      m_bridge.reset();
+      m_stream.close();
+      m_handle = ACE_INVALID_HANDLE;
+      return false;
+    }
+    if (!inner_tls.hostname.empty() &&
+        !m_inner_tls->verify_hostname(inner_tls.hostname)) {
+      ACE_ERROR((LM_ERROR,
+                 ACE_TEXT("%D [AceSslTransport] inner-TLS hostname "
+                          "verification failed: expected %s\n"),
+                 inner_tls.hostname.c_str()));
+      m_inner_tls.reset();
+      m_bridge.reset();
+      m_stream.close();
+      m_handle = ACE_INVALID_HANDLE;
+      return false;
+    }
+    m_bridge->switch_to_buffered();
+    // Carry any bytes the handshake pulled from the socket past its
+    // final record into the steady-state frame-decoder buffer; without
+    // this, a server message that landed in the same TCP segment as
+    // the handshake's `Finished` would be silently dropped.
+    m_recv_buf = m_bridge->leftover_socket_bytes();
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [AceSslTransport] inner-TLS handshake "
+                        "established\n")));
+  }
   return true;
 }
 
@@ -161,8 +235,20 @@ int AceSslTransport::register_with_reactor(ACE_Reactor *reactor) {
 
 bool AceSslTransport::send(const std::string &bytes) {
   if (m_handle == ACE_INVALID_HANDLE) return false;
-  // Mask client-to-server frames per RFC 6455 §5.2. Server side (the
-  // cloud's AgentStream) reads masked frames just fine via wsframe::decode.
+
+  // Inner-TLS path: the bridge encrypts via OpenSSL, wraps each TLS
+  // record in one masked WS binary frame, and writes through m_stream.
+  if (m_inner_tls) {
+    if (!m_inner_tls->send(string_to_bytes(bytes))) {
+      notify_disconnect_once();
+      return false;
+    }
+    return true;
+  }
+
+  // Test-only path: raw text WS frame, no encryption. Production always
+  // configures inner TLS so this branch never runs against a live cloud.
+  // Mask client-to-server frames per RFC 6455 §5.2.
   const auto framed = wsframe::encode(string_to_bytes(bytes),
                                        kOpcodeText, /*mask=*/true);
   const ssize_t n = m_stream.send_n(framed.data(), framed.size());
@@ -210,8 +296,27 @@ bool AceSslTransport::drain_frames() {
     case kOpcodeBinary:
     case kOpcodeText:
     case kOpcodeContinuation:
-      if (m_on_bytes) m_on_bytes(bytes_to_string(frame.payload));
-      if (m_handle == ACE_INVALID_HANDLE) return false;
+      if (m_inner_tls) {
+        // Encrypted record arrived. Push the binary payload into the
+        // bridge's queue, then drain plaintext via the inner TLS recv
+        // loop. SSL_read inside InnerTls::recv drains every record it
+        // can parse from the BIO, so one call here yields the full
+        // plaintext for this WS frame.
+        m_bridge->push_inbound(frame.payload);
+        for (;;) {
+          std::vector<std::uint8_t> plaintext;
+          if (!m_inner_tls->recv(plaintext)) {
+            notify_disconnect_once();
+            return false;
+          }
+          if (plaintext.empty()) break;  // WANT_READ — fully drained
+          if (m_on_bytes) m_on_bytes(bytes_to_string(plaintext));
+          if (m_handle == ACE_INVALID_HANDLE) return false;
+        }
+      } else {
+        if (m_on_bytes) m_on_bytes(bytes_to_string(frame.payload));
+        if (m_handle == ACE_INVALID_HANDLE) return false;
+      }
       break;
     case kOpcodePing: {
       // Client→server frames MUST be masked (RFC 6455 §5.2).
@@ -293,9 +398,11 @@ bool AceSslTransport::validate_upgrade_response(
 AceSslTransportFactory::AceSslTransportFactory(
     ACE_Reactor                              *reactor,
     std::function<void(const std::string &)>  on_bytes,
-    std::function<void()>                     on_disconnect)
+    std::function<void()>                     on_disconnect,
+    AceSslTransport::InnerTlsConfig           inner_tls)
     : m_reactor(reactor), m_on_bytes(std::move(on_bytes)),
-      m_on_disconnect(std::move(on_disconnect)) {}
+      m_on_disconnect(std::move(on_disconnect)),
+      m_inner_tls(std::move(inner_tls)) {}
 
 std::unique_ptr<ITransport>
 AceSslTransportFactory::create_connected(const std::string &host,
@@ -305,7 +412,7 @@ AceSslTransportFactory::create_connected(const std::string &host,
                                           const std::string &ca_path) {
   auto t = std::make_unique<AceSslTransport>(m_on_bytes, m_on_disconnect);
   if (!t->connect_and_handshake(host, port, cert_path, key_path, ca_path,
-                                  "/agent")) {
+                                  "/agent", m_inner_tls)) {
     return nullptr;
   }
   if (m_reactor && t->register_with_reactor(m_reactor) == -1) {

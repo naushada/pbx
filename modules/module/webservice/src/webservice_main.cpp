@@ -281,8 +281,15 @@ int main(int argc, char *argv[]) {
     // The clock is wall-time; both the heartbeat and (later) PushSender
     // share it. It outlives the WebServer move below.
     SystemClock cte_clock;
-    auto endpoint = std::make_unique<CloudTunnelEndpoint>(
-        CloudTunnelEndpoint::Config{}, &cte_clock);
+    CloudTunnelEndpoint::Config cte_cfg;
+    // Reuse the same --tls-cert / --tls-key / --tls-ca triple that
+    // already drives /ws/db's InnerTlsServer — same CA, same trust
+    // boundary. Heroku terminates the outer TLS at the router, so
+    // without this layer the agent's mTLS would be theatre.
+    cte_cfg.inner_tls.cert_path = tlsCert;
+    cte_cfg.inner_tls.key_path  = tlsKey;
+    cte_cfg.inner_tls.ca_path   = tlsCa;
+    auto endpoint = std::make_unique<CloudTunnelEndpoint>(cte_cfg, &cte_clock);
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
     auto presence = std::make_unique<InMemoryPresenceCache>();
     endpoint->attach_bridge(bridge.get());
@@ -387,8 +394,15 @@ int main(int argc, char *argv[]) {
     // both modes — what differs is where the cloud's Mongo data lives
     // (local Mongo vs. remote on-prem Mongo via wsdbagent).
     SystemClock cte_clock;
-    auto endpoint = std::make_unique<CloudTunnelEndpoint>(
-        CloudTunnelEndpoint::Config{}, &cte_clock);
+    CloudTunnelEndpoint::Config cte_cfg;
+    // Same --tls-cert / --tls-key / --tls-ca triple reused for /agent
+    // InnerTLS — Heroku terminates the outer TLS at the router so this
+    // is the real mTLS trust boundary. Same convention as the
+    // remote-db block above.
+    cte_cfg.inner_tls.cert_path = opt[idx(Arg::TLS_CERT)];
+    cte_cfg.inner_tls.key_path  = opt[idx(Arg::TLS_KEY)];
+    cte_cfg.inner_tls.ca_path   = opt[idx(Arg::TLS_CA)];
+    auto endpoint = std::make_unique<CloudTunnelEndpoint>(cte_cfg, &cte_clock);
     auto bridge   = std::make_unique<SipBridge>(endpoint.get());
     auto presence = std::make_unique<InMemoryPresenceCache>();
     endpoint->attach_bridge(bridge.get());

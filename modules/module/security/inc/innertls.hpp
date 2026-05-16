@@ -24,9 +24,9 @@ using SslPtr    = std::unique_ptr<SSL,    detail::SslDeleter>;
  * Decouples the TLS layer from the underlying WebSocket frame send/recv so
  * InnerTlsClient/Server can be tested with a MockTransport.
  */
-class ITransport {
+class IInnerTlsTransport {
 public:
-  virtual ~ITransport() = default;
+  virtual ~IInnerTlsTransport() = default;
   virtual bool send(const std::vector<std::uint8_t> &data) = 0;
   virtual bool recv(std::vector<std::uint8_t> &data) = 0;
 };
@@ -40,7 +40,7 @@ public:
  */
 class InnerTlsClient {
 public:
-  InnerTlsClient(ITransport &transport);
+  InnerTlsClient(IInnerTlsTransport &transport);
   ~InnerTlsClient();
 
   InnerTlsClient(const InnerTlsClient &) = delete;
@@ -66,7 +66,7 @@ public:
   bool verify_hostname(const std::string &hostname);
 
 private:
-  ITransport &m_transport;
+  IInnerTlsTransport &m_transport;
   SslCtxPtr   m_ctx;
   SslPtr      m_ssl;
   BIO        *m_rbio = nullptr;  // owned by m_ssl after SSL_set_bio
@@ -89,7 +89,7 @@ public:
    * @param key_path    PEM-encoded server private key file path.
    * @param ca_path     Optional CA cert for verifying client certificates.
    */
-  InnerTlsServer(ITransport &transport, const std::string &cert_path,
+  InnerTlsServer(IInnerTlsTransport &transport, const std::string &cert_path,
                  const std::string &key_path,
                  const std::string &ca_path = "");
   ~InnerTlsServer();
@@ -107,7 +107,7 @@ public:
   bool recv(std::vector<std::uint8_t> &plaintext);
 
 private:
-  ITransport &m_transport;
+  IInnerTlsTransport &m_transport;
   SslCtxPtr   m_ctx;
   SslPtr      m_ssl;
   BIO        *m_rbio = nullptr;  // owned by m_ssl after SSL_set_bio

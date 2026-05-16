@@ -105,6 +105,7 @@ A small daemon, structurally similar to xpmile's `wsdbagent`. New binary: `pbx-a
 | Class (ACE-based)            | Role |
 |------------------------------|------|
 | `CloudConnector`             | `ACE_SSL_SOCK_Connector` dial-out to Heroku `/agent`. Maintains the persistent mTLS tunnel. Reconnect/backoff loop. |
+| `AceSslTransport`            | Outbound `ITransport` for `CloudConnector`. Outer TLS + WS upgrade + layered `InnerTlsClient` over the WS — the real mTLS trust boundary, since Heroku's router terminates the outer TLS. Mirror of `wsdbagent`'s `/ws/db` path; see §3.2 below and `ws_inner_tls_bridge.hpp`. |
 | `SipFrameDemux` *(new)*      | Reads frames off the cloud tunnel; opens (or reuses) a local TCP socket to Asterisk's `ws://127.0.0.1:8088/ws` for each unique `stream-id`. Pipes bytes in both directions. |
 | `AriClient` *(new)*          | HTTP REST client to Asterisk ARI for admission control (count active channels, enforce 5-call cap), CDR scraping, ConfBridge orchestration. `ACE_SOCK_Connector` + HTTP. |
 | `PjsipProvisioner` *(new)*   | Materialises a subscriber row as three Asterisk sorcery objects (auth/aor/endpoint) via ARI dynamic-config PUTs (`/ari/asterisk/config/dynamic`). Idempotent — re-provisioning the same subscriber is the create-or-replace path. |

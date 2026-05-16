@@ -7,12 +7,12 @@
 #include <gtest/gtest.h>
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MockTransport — test double for ITransport
+// MockTransport — test double for IInnerTlsTransport
 // ═══════════════════════════════════════════════════════════════════════════════
 
 namespace {
 
-class MockTransport : public ITransport {
+class MockTransport : public IInnerTlsTransport {
 public:
   // Data queued for the next recv() call
   std::vector<std::uint8_t> recvBuffer;
