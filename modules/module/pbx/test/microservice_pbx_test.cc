@@ -99,6 +99,13 @@ public:
   }
   bool delete_file(const std::string &) override { return false; }
 
+  // Lets a test flip the proxy-disconnect signal that the login handler
+  // (and any other code) keys off to surface "agent not connected" with
+  // 503 instead of misleading 401/500. Default false matches the local
+  // MongodbClient (in-process pool — never "disconnected").
+  bool remote_down = false;
+  bool is_remote_disconnected() const override { return remote_down; }
+
 private:
   std::string m_db = "pbx";
 };
@@ -560,7 +567,10 @@ struct StrictAuthEnv {
 };
 
 // A `subscribers` doc whose bcrypt portalPasswordHash matches `password`,
-// shaped like the rows handle_subscriber_import_POST writes.
+// shaped like the rows handle_subscriber_import_POST writes. The default
+// (societyId=soc1, flatNumber=A-101) matches the seeded society below so
+// the strict-mode lookup chain — code→_id then (societyId,flatNumber) —
+// resolves cleanly.
 std::string subscriber_doc(const std::string &email, const std::string &password,
                            const std::string &status = "active",
                            const std::string &role = "resident") {
@@ -568,6 +578,7 @@ std::string subscriber_doc(const std::string &email, const std::string &password
       {"_id",                "sub_" + email},
       {"societyId",          "soc1"},
       {"flatId",             "flatA101"},
+      {"flatNumber",         "A-101"},
       {"name",               "Asha Resident"},
       {"email",              email},
       {"role",               role},
@@ -578,6 +589,15 @@ std::string subscriber_doc(const std::string &email, const std::string &password
   };
   return doc.dump();
 }
+
+// Seed societies/{code=ALPHA, _id=soc1}; pairs with subscriber_doc() so
+// the strict-mode resolve `code → _id → subscriber` works.
+void seed_alpha_society(TestDb &db) {
+  json society = {{"_id", "soc1"}, {"code", "ALPHA"},
+                  {"name", "Alpha Apartments"}, {"sipRealm", "alpha.pbx.local"}};
+  db.getDoc["societies"].push_back(
+      {R"("code":"ALPHA")", society.dump()});
+}
 } // namespace
 
 TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
@@ -585,7 +605,7 @@ TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
     TestDb db;  // PBX_AUTH_STRICT unset → dev mode
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"anyone@example.com","password":"whatever"})");
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"whatever"})");
 
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
@@ -599,12 +619,13 @@ TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
     json j = json::parse(body);
     EXPECT_FALSE(j["token"].get<std::string>().empty());
     // Dev-mode profile mirrors the strict-mode shape so the UI is mode-
-    // agnostic. The email isn't a UI `Subscriber` field — displayName +
-    // sipUser carry it instead.
-    EXPECT_EQ("anyone@example.com", j["subscriber"]["displayName"]);
-    EXPECT_EQ("anyone@example.com", j["subscriber"]["sipUser"]);
-    EXPECT_EQ("dev",                j["subscriber"]["societyId"]);
-    EXPECT_EQ("resident",           j["subscriber"]["role"]);
+    // agnostic. societyCode flows into societyId; flatNumber doubles as
+    // sipUser + displayName (no subscriber doc to draw a real name from).
+    EXPECT_EQ("ALPHA",    j["subscriber"]["societyId"]);
+    EXPECT_EQ("A-101",    j["subscriber"]["flatNumber"]);
+    EXPECT_EQ("A-101",    j["subscriber"]["displayName"]);
+    EXPECT_EQ("A-101",    j["subscriber"]["sipUser"]);
+    EXPECT_EQ("resident", j["subscriber"]["role"]);
     EXPECT_FALSE(j["subscriber"]["autoAnswer"].get<bool>());
     EXPECT_FALSE(j["subscriber"].contains("email"))
         << "email isn't in the UI Subscriber type — drop it from the wire";
@@ -617,23 +638,41 @@ TEST(MicroServicePbx, SubscriberLogin_DevMode_AcceptsAnyCredentials)
 TEST(MicroServicePbx, SubscriberLogin_MissingField_400)
 {
     TestDb db;
-    const std::string req = make_post("/api/v1/subscriber/login",
-                                      R"({"email":"a@example.com"})");
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"societyCode":"ALPHA","flatNumber":"A-101"})");  // no password
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_RemoteDbDisconnected_503)
+{
+    // REMOTE_DB=1 cloud with no on-prem agent attached must NOT serve a
+    // misleading 401 ("Invalid credentials") — the lookup never reached
+    // the DB. Surface 503 so the operator sees the actual problem.
+    TestDb db;
+    db.remote_down = true;
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"x"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 503 Service Unavailable"));
+    EXPECT_NE(std::string::npos, rsp.find("agent not connected"));
+    EXPECT_TRUE(db.inserts.empty()) << "no session row written when DB is unreachable";
 }
 
 TEST(MicroServicePbx, SubscriberLogin_Strict_ValidCredentials_200)
 {
     StrictAuthEnv strict;
     TestDb db;
+    seed_alpha_society(db);
     db.getDoc["subscribers"].push_back(
-        {R"("email":"asha@example.com")",
+        {R"("flatNumber":"A-101")",
          subscriber_doc("asha@example.com", "s3cret-pass")});
 
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"asha@example.com","password":"s3cret-pass"})");
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"s3cret-pass"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_NE(std::string::npos, rsp.find("Set-Cookie: session="));
@@ -649,7 +688,8 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_ValidCredentials_200)
     // (ui/src/common/app-globals.ts), not the persisted-doc names.
     EXPECT_EQ("Asha Resident", j["subscriber"]["displayName"]);  // <- name
     EXPECT_EQ("u_abc123",      j["subscriber"]["sipUser"]);      // <- sipUsername
-    EXPECT_EQ("soc1",          j["subscriber"]["societyId"]);
+    EXPECT_EQ("soc1",          j["subscriber"]["societyId"]);    // <- resolved _id
+    EXPECT_EQ("A-101",         j["subscriber"]["flatNumber"]);
     EXPECT_EQ("resident",      j["subscriber"]["role"]);
 
     // Persisted-doc field names the UI doesn't speak (and the secrets)
@@ -667,24 +707,39 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_WrongPassword_401)
 {
     StrictAuthEnv strict;
     TestDb db;
+    seed_alpha_society(db);
     db.getDoc["subscribers"].push_back(
-        {R"("email":"asha@example.com")",
+        {R"("flatNumber":"A-101")",
          subscriber_doc("asha@example.com", "s3cret-pass")});
 
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"asha@example.com","password":"wrong-pass"})");
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"wrong-pass"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
 }
 
-TEST(MicroServicePbx, SubscriberLogin_Strict_UnknownEmail_401)
+TEST(MicroServicePbx, SubscriberLogin_Strict_UnknownSubscriber_401)
 {
     StrictAuthEnv strict;
-    TestDb db;  // no subscribers seeded
+    TestDb db;
+    seed_alpha_society(db);  // society exists, but no subscriber under it
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"ghost@example.com","password":"whatever"})");
+        R"({"societyCode":"ALPHA","flatNumber":"Z-999","password":"whatever"})");
+    std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+}
+
+TEST(MicroServicePbx, SubscriberLogin_Strict_UnknownSociety_401)
+{
+    // Don't leak society existence: an unknown societyCode looks the same
+    // to the client as a wrong password.
+    StrictAuthEnv strict;
+    TestDb db;  // nothing seeded
+    const std::string req = make_post(
+        "/api/v1/subscriber/login",
+        R"({"societyCode":"GHOST","flatNumber":"A-101","password":"whatever"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
 }
@@ -693,13 +748,14 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_DisabledAccount_403)
 {
     StrictAuthEnv strict;
     TestDb db;
+    seed_alpha_society(db);
     db.getDoc["subscribers"].push_back(
-        {R"("email":"asha@example.com")",
+        {R"("flatNumber":"A-101")",
          subscriber_doc("asha@example.com", "s3cret-pass", "disabled")});
 
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"asha@example.com","password":"s3cret-pass"})");
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"s3cret-pass"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
 }
@@ -713,15 +769,16 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_PassesAutoAnswerThrough)
     // break it.
     StrictAuthEnv strict;
     TestDb db;
+    seed_alpha_society(db);
     json sub = json::parse(
         subscriber_doc("kiosk@example.com", "pw", "active", "guard"));
     sub["autoAnswer"] = true;
     db.getDoc["subscribers"].push_back(
-        {R"("email":"kiosk@example.com")", sub.dump()});
+        {R"("flatNumber":"A-101")", sub.dump()});
 
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"kiosk@example.com","password":"pw"})");
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"pw"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 
@@ -736,13 +793,14 @@ TEST(MicroServicePbx, SubscriberLogin_Strict_GuardRole_LongerTtl)
 {
     StrictAuthEnv strict;
     TestDb db;
+    seed_alpha_society(db);
     db.getDoc["subscribers"].push_back(
-        {R"("email":"guard@example.com")",
+        {R"("flatNumber":"A-101")",
          subscriber_doc("guard@example.com", "pw", "active", "guard")});
 
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"guard@example.com","password":"pw"})");
+        R"({"societyCode":"ALPHA","flatNumber":"A-101","password":"pw"})");
     std::string rsp = MicroServicePbx::handle_subscriber_login_POST(req, db);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 
@@ -1254,7 +1312,7 @@ TEST(MicroServiceRouting, RoutesSubscriberLoginPost)
     MicroService e;
     const std::string req = make_post(
         "/api/v1/subscriber/login",
-        R"({"email":"a@example.com","password":"p"})");
+        R"({"societyCode":"A","flatNumber":"1","password":"p"})");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_NE(std::string::npos, rsp.find(R"("token")"));

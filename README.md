@@ -244,15 +244,17 @@ podman-compose -f docker-compose.agent.yml down
 podman-compose -f docker-compose.agent.yml down -v
 ```
 
-Topology:
+Topology — five containers, each with a single responsibility:
 
-| Container | Network | Why |
-|---|---|---|
-| `pbx-mongo` | `pbx-net` (internal bridge) | Subscribers + CDR + push subscriptions. **Replica-set required** (`--replSet rs0`) so `SubscriberWatcher` can tail the change stream. Not exposed to host. |
-| `pbx-asterisk` | `pbx-net` (internal bridge) | chan_pjsip WS on `:8088` (agent reaches via service DNS). NOT host-exposed — auth lives in SIP digest, not at the WS layer. |
-| `pbx-coturn` | host networking | TURN needs the real public IP in STUN replies. The society opens one UDP port (`TURN_PUBLIC_PORT`, default 3478) and DNATs it to coturn. |
-| `pbx-agent`  | `pbx-net` (internal bridge) | Dials the Heroku `/agent` endpoint over outer TLS + InnerTLS (PR #19). Runs `SubscriberWatcher`/`PjsipProvisioner` (PR #18) and `AriClient` (admission, CDR, presence). Reads `CERTS_DIR` for both layers. |
-| `pbx-wsdbagent` | `pbx-net` (internal bridge) | Standalone xpmile-style DB tunnel; dials `wss://${CLOUD_HOST}/ws/db` with InnerTLS so the cloud's `MicroServicePbx` handlers can read/write the on-prem Mongo when `--remote-db` is on (D4 pending live verification). |
+| Container | Image / Build | Network | Role | Why on-prem |
+|---|---|---|---|---|
+| `pbx-mongo` | `mongo:7` (RS mode) | `pbx-net` | Persistent store: `subscribers`, `sessions`, `cdr`, `push_subscriptions`. RS mode (`--replSet rs0`) is required so `SubscriberWatcher` can tail change streams; healthcheck doubles as an idempotent `rs.initiate()`. | Subscriber PII stays on the society LAN. |
+| `pbx-asterisk` | `andrius/asterisk:20` | `pbx-net` | The SIP+RTP server. chan_pjsip WS on `:8088` (browsers); ARI on `/ari/*` (control plane); ConfBridge (conferences). Not host-exposed — auth is SIP digest, not WS-layer. | All voice media stays on-prem. |
+| `pbx-coturn` | `coturn/coturn:4.6` | **host** (not bridge) | TURN relay for off-LAN browsers (1:1 calls where one leg is outside the society LAN). Host networking so STUN replies carry the real public IP, not the bridge's. The society DNATs one public UDP port (`TURN_PUBLIC_PORT`, default 3478) to it. | TURN needs a public UDP path. |
+| `pbx-agent`  | built from `docker/Dockerfile.agent` | `pbx-net` | The control-plane glue. Dials Heroku's `/agent` over outer TLS + InnerTLS (PR #19, mTLS — `CERTS_DIR` provides cert/key/CA for both layers). Runs `SubscriberWatcher` + `PjsipProvisioner` (PR #18, pushes endpoints into Asterisk via ARI dynamic-config), `AriClient` (admission, CDR, presence), `CallRouter` (forked-ring). | Bridges cloud signaling ↔ local Asterisk. |
+| `pbx-wsdbagent` | built from `docker/Dockerfile.wsdbagent` | `pbx-net` | DB tunnel. Dials `wss://${CLOUD_HOST}/ws/db` with InnerTLS so the cloud's `MicroServicePbx` handlers (login, directory, turn-credentials) can read/write the on-prem Mongo when Heroku has `REMOTE_DB=1`. Without it the cloud's login returns **503 "On-prem agent not connected"** instead of stalling. | Mongo stays on-prem; cloud reads via this tunnel. |
+
+The five share `pbx-net` (except coturn, which is host-net). Compose dependency order: `pbx-mongo` healthy → `pbx-agent` + `pbx-wsdbagent` start; `pbx-asterisk` is independent (agent waits on it via ARI retry, not compose); `pbx-coturn` is fully independent.
 
 Asterisk config files (`docker/asterisk/*.conf`) are minimal but functional:
 
@@ -301,6 +303,15 @@ cloud and captures the log + any coredump. Useful before deploying to
 a real on-prem host. See
 [`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm)
 for details.
+
+> **What `lima start` does NOT do.** It is a **binary-only smoke test**
+> of `pbx-agent` dialing the deployed cloud — Mongo, Asterisk, coturn,
+> and wsdbagent are **not** started. `SubscriberWatcher`'s Mongo URI
+> deliberately uses `serverSelectionTimeoutMS=2000` so the bootstrap
+> fails fast and the reactor reaches the cloud-tunnel handshake inside
+> the 90 s budget. For the real on-prem topology — the five containers
+> in the table above — use `podman-compose -f docker-compose.agent.yml
+> up --build -d`.
 
 ## Run the softphone UI
 

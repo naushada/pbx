@@ -625,7 +625,11 @@ std::string handle_subscriber_login_POST(const std::string &req,
     return response_error(400, "Bad Request", "Invalid JSON body");
   }
 
-  for (const char *required : {"email", "password"}) {
+  // The UI posts {societyCode, flatNumber, password} — that's the operator-
+  // facing identity (society short alias + flat number) the user actually
+  // types into the form. Email is server-side only (subscribers.email is
+  // the audit handle, not the login key).
+  for (const char *required : {"societyCode", "flatNumber", "password"}) {
     if (!body.contains(required) || !body[required].is_string() ||
         body[required].get<std::string>().empty()) {
       return response_error(400, "Bad Request",
@@ -633,18 +637,50 @@ std::string handle_subscriber_login_POST(const std::string &req,
     }
   }
 
-  const std::string email    = body["email"].get<std::string>();
-  const std::string password = body["password"].get<std::string>();
+  const std::string society_code = body["societyCode"].get<std::string>();
+  const std::string flat_number  = body["flatNumber"].get<std::string>();
+  const std::string password     = body["password"].get<std::string>();
 
-  // Strict mode: look the subscriber up by email (globally unique —
-  // DESIGN.md §5) and verify the password against the stored bcrypt hash.
-  // Dev mode (default) keeps the seed-free deploy working by synthesising
-  // a profile from the email — set PBX_AUTH_STRICT=1 once the CSV-import
-  // flow has populated the `subscribers` collection.
+  // Any auth path needs the DB (lookup AND session write). If we're in
+  // remote-DB mode and the on-prem agent isn't attached, fail fast with a
+  // 503 the operator can act on — otherwise the subscriber lookup returns
+  // empty and the user sees a misleading "Invalid credentials."
+  if (db.is_remote_disconnected()) {
+    return response_error(503, "Service Unavailable",
+                          "On-prem agent not connected to cloud");
+  }
+
+  // Strict mode: societyCode → societies/{code}._id → subscribers/{societyId,
+  // flatNumber} → bcrypt-verify against portalPasswordHash.
+  // Dev mode (default) skips DB lookup and synthesises a profile so the UI
+  // works on a fresh deploy. Set PBX_AUTH_STRICT=1 once societies +
+  // subscribers are populated.
   if (env_or("PBX_AUTH_STRICT") == "1") {
-    const json query = {{"email", email}};
+    // 1. Resolve the society short alias to its _id.
+    const json soc_query = {{"code", society_code}};
+    const std::string society_doc =
+        db.get_document("societies", soc_query.dump(), "{}");
+    if (society_doc.empty())
+      return response_error(401, "Unauthorized", "Invalid credentials");
+
+    std::string society_id;
+    try {
+      society_id = json::parse(society_doc).value("_id", std::string{});
+    } catch (...) {
+      return response_error(500, "Internal Server Error",
+                            "society record is not valid JSON");
+    }
+    if (society_id.empty())
+      return response_error(500, "Internal Server Error",
+                            "society record missing _id");
+
+    // 2. Look the subscriber up by (societyId, flatNumber) — the
+    //    operator-facing identity. Two societies can have a "101" flat;
+    //    societyId scopes the lookup.
+    const json sub_query = {{"societyId", society_id},
+                            {"flatNumber", flat_number}};
     const std::string record =
-        db.get_document("subscribers", query.dump(), "{}");
+        db.get_document("subscribers", sub_query.dump(), "{}");
     if (record.empty())
       return response_error(401, "Unauthorized", "Invalid credentials");
 
@@ -655,8 +691,8 @@ std::string handle_subscriber_login_POST(const std::string &req,
                             "subscriber record is not valid JSON");
     }
 
-    // Verify against the bcrypt portalPasswordHash. A missing/!string hash
-    // fails closed — we never authenticate without a hash to check.
+    // 3. Verify against the bcrypt portalPasswordHash. A missing/!string
+    //    hash fails closed — we never authenticate without one.
     if (!subscriber.contains("portalPasswordHash") ||
         !subscriber["portalPasswordHash"].is_string() ||
         !MongodbClient::verify_password(
@@ -664,29 +700,23 @@ std::string handle_subscriber_login_POST(const std::string &req,
       return response_error(401, "Unauthorized", "Invalid credentials");
     }
 
-    // An explicitly disabled subscriber can authenticate but not log in.
+    // 4. An explicitly disabled subscriber can authenticate but not log in.
     if (subscriber.contains("status") && subscriber["status"].is_string() &&
         subscriber["status"].get<std::string>() != "active") {
       return response_error(403, "Forbidden", "Account disabled");
     }
 
-    // Capture identity fields for the session and the response profile.
-    const std::string society_id =
-        subscriber.value("societyId", std::string{});
     const std::string sip_username =
         subscriber.value("sipUsername", std::string{});
     const std::string role =
         subscriber.value("role", std::string{"resident"});
+    const std::string email = subscriber.value("email", std::string{});
 
     // Project to the UI's `Subscriber` shape (ui/src/common/app-globals.ts):
     //   { societyId, flatNumber, displayName, sipUser, role, autoAnswer? }
-    // Same projection-as-strip pattern as `handle_directory_GET` (#2b):
-    // build a fresh object with exactly the UI-typed fields and the persisted
-    // doc's secrets (sipHa1, portalPasswordHash) plus its UI-uninteresting
-    // fields (email, flatId, status, _id, phone, …) all stay server-side.
-    // SipService.connect builds `sip:<sipUser>@pbx.<societyId>` from this —
-    // the rename name→displayName / sipUsername→sipUser unblocks
-    // strict-mode SIP registration (which was producing "sip:undefined@…").
+    // Same projection-as-strip pattern as `handle_directory_GET`: secrets
+    // (sipHa1, portalPasswordHash) and UI-uninteresting fields (email,
+    // flatId, status, _id, phone, …) stay server-side.
     const json profile = {
         {"societyId",   society_id},
         {"flatNumber",  subscriber.value("flatNumber", std::string{})},
@@ -699,22 +729,22 @@ std::string handle_subscriber_login_POST(const std::string &req,
     return finish_login(db, profile, email, society_id, sip_username, role);
   }
 
-  // Dev mode: accept any non-empty {email, password}, synthesise a profile
-  // in the same shape strict mode emits. The session is persisted just like
-  // strict mode so the /sip-ws upgrade path stays mode-agnostic — it always
-  // resolves the token via `sessions`. flatNumber is empty in dev (no real
-  // flat assignment); UI dashboards already fall back via
-  // `displayName || flatNumber`.
+  // Dev mode: synthesise from the typed triple. societyCode flows into
+  // societyId so SipService.connect's `sip:<sipUser>@pbx.<societyId>`
+  // produces a stable URI; flatNumber doubles as the SIP user and display
+  // name (no real subscriber doc to draw from). Session is persisted so
+  // /sip-ws upgrade stays mode-agnostic — it always resolves the token
+  // via `sessions`.
   const json profile = {
-      {"societyId",   "dev"},
-      {"flatNumber",  std::string{}},
-      {"displayName", email},
-      {"sipUser",     email},
+      {"societyId",   society_code},
+      {"flatNumber",  flat_number},
+      {"displayName", flat_number},
+      {"sipUser",     flat_number},
       {"role",        "resident"},
       {"autoAnswer",  false},
   };
-  return finish_login(db, profile, email, /*society_id=*/"dev",
-                      /*sip_username=*/email, /*role=*/"resident");
+  return finish_login(db, profile, /*email=*/std::string{}, society_code,
+                      /*sip_username=*/flat_number, /*role=*/"resident");
 }
 
 std::string handle_directory_GET(const std::string &req, IMongodbClient &db,

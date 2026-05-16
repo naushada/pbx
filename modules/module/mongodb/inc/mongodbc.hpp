@@ -167,6 +167,15 @@ public:
                     const std::string & /*resume_token_json*/) {
     return watch_collection(coll);
   }
+
+  /// True when this client proxies to a remote DB whose transport is
+  /// currently down (cloud-side `WsMongodbProxy` with no on-prem agent
+  /// attached to /ws/db). Lets request handlers surface a clear
+  /// "agent not connected" error instead of generic 401/500 — the
+  /// underlying proxy otherwise returns the same empty payload it would
+  /// for "no such row." Local `MongodbClient` always returns false: the
+  /// pool is in-process and either works or throws.
+  virtual bool is_remote_disconnected() const { return false; }
 };
 
 /**
