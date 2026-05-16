@@ -248,27 +248,30 @@ rs0 --bind_ip_all` and the healthcheck doubles as the initiator (idempotent
 and `tick()` becomes a silent no-op — bootstrap still works, but live
 changes don't propagate until the next process restart.
 
-**Per-subscriber sorcery objects** (DESIGN.md §5 covers the credential
-shape):
+**Per-subscriber sorcery objects** (PR #77 dropped SIP digest auth —
+the cloud `/sip-ws` bearer-token upgrade is the sole auth layer; see
+§5 below):
 
-- `auth/<sipUsername>-auth` — `auth_type=md5`, `username`, `md5_cred=sipHa1`,
-  `realm=<sipRealm>`. The realm comes from the `--sip-realm` agent flag
-  (default: `<societyId>.pbx.local`, matching the cloud-side convention in
-  `microservice_pbx.cpp`'s `handle_society_POST`).
 - `aor/<sipUsername>-aor` — `max_contacts=5`, `remove_existing=yes`.
 - `endpoint/<sipUsername>` — codecs / ICE / DTLS / WebRTC settings inlined,
-  plus `auth=<sipUsername>-auth` and `aors=<sipUsername>-aor`. Sorcery
+  plus `aors=<sipUsername>-aor`. **No `auth` field.** Sorcery
   dynamic-config does NOT inherit `(!)`-marked templates from
   `pjsip.conf`, so the settings live as constants in `PjsipProvisioner`
   and must be kept in sync with `docker/asterisk/pjsip.conf` when the
   template there changes.
 
-PUTs are issued auth → aor → endpoint so the endpoint never briefly
-references a not-yet-created auth/aor. DELETEs go in the reverse order
-(endpoint first), so an in-flight INVITE racing the delete finds no peer
-rather than a half-deleted record. ARI errors are logged-and-dropped at
-this layer; the next change-stream event re-applies, and a stale local
-state heals naturally on the next admin edit.
+PUTs are issued aor → endpoint so the endpoint never briefly references
+a not-yet-created aor. DELETEs go in the reverse order (endpoint first
+for in-flight INVITE safety; then a best-effort DELETE of the legacy
+`<sipUsername>-auth` doc to prune pre-PR-#77 state; then aor). ARI
+errors are logged-and-dropped at this layer; the next change-stream
+event re-applies, and a stale local state heals naturally on the next
+admin edit.
+
+`provision()` also issues the legacy-auth DELETE at the start of every
+pass — so existing Asterisk sorcery state from pre-fix deployments is
+pruned the first time the subscriber is touched after upgrade. 404
+(already gone) is silently absorbed by the ARI client.
 
 ---
 
@@ -283,20 +286,33 @@ Two distinct credentials per subscriber, both generated at CSV-import time, both
 - On success a row is written to the `sessions` collection (§4) and its `token` is returned three ways: an `HttpOnly; Secure; SameSite=Strict` session cookie, and in the JSON body so the UI can pass it as the `/sip-ws` `?token=` query param (browsers can't set headers on `new WebSocket`).
 - The `/sip-ws` upgrade resolves that token against `sessions` — an absent / unknown / expired session is a 401. The resolved `societyId` / `sipUsername` become the bridge's `OPEN`-frame metadata (§7).
 
-**SIP REGISTER (digest)**
-- `sipUsername` + a separate `sipPassword`.
-- We **do not store** `sipPassword`. We store `sipHa1 = MD5(sipUsername : sipRealm : sipPassword)`.
-- Asterisk's `pjsip.conf` is configured with `auth_type=md5` so it authenticates from HA1 directly. (bcrypt cannot be used here — SIP digest needs a deterministic transform that bcrypt's slow KDF design specifically prevents.)
-- `sipRealm` is `<societyCode>.pbx.local`, stored on the society document so it stays consistent across credential resets.
-- Authentication happens entirely inside Asterisk. The Heroku cloud never sees the SIP password.
+**SIP REGISTER (transport-only, PR #77 + #78)**
+
+The browser's SIP UA carries **no** SIP password (`ui/src/common/sip-ua-sipjs.ts:18`). REGISTER reaches Asterisk over the cloud-mediated tunnel and is accepted at the transport layer; there is no 401 challenge / HA1 digest exchange. Auth happens once, at the cloud's `/sip-ws` WebSocket upgrade: the bearer token (`?token=…`) is resolved against the `sessions` collection and a 401 is returned for an absent / unknown / expired / disabled-subscriber token. After upgrade, the WS transport itself is the proof of identity for every SIP frame that flows over it.
+
+Both provisioning paths are aligned with this:
+
+- Dynamic (cloud-driven) endpoints — `PjsipProvisioner` no longer creates an `auth` sorcery object and the endpoint no longer carries an `auth=` field (PR #77).
+- Static sample endpoints in `docker/asterisk/pjsip.conf` — the hardcoded `auth = …-auth` lines and `[…-auth]` sections for `[alice]` / `[bob]` were dropped (PR #78). The conference `[conf]` endpoint never had auth.
+
+Why this is safe: only the cloud-mediated tunnel reaches this Asterisk (no direct SIP port exposed); the cloud's `/sip-ws` gate validates the bearer before opening the transport. A second digest layer on Asterisk was redundant and unanswerable.
+
+**Vestigial fields** kept for now, removable in a follow-up:
+- `subscribers.sipPassword` — still generated at CSV-import (returned in the one-shot download) but never used by Asterisk.
+- `subscribers.sipHa1` — still stored but never consulted.
+- `societies.sipRealm` — still propagated via `SOCIETY_BOOTSTRAP` tunnel frame and applied via `PjsipProvisioner::set_sip_realm`, but the realm field is no longer present on any provisioned auth object.
+- Agent `--sip-realm` CLI flag — accepted but unused by provisioning.
 
 **Authorization**
 - Search by flat number is scoped to the caller's `societyId`.
 - Admin endpoints gated by `role == "admin"` on the portal session.
 - CSRF: state-changing REST endpoints require a custom header `X-CSRF-Token` echoed from a token returned at login (defence-in-depth beyond `SameSite=Strict`).
 
-**Why two credentials, not one**
-SIP digest auth recomputes `MD5(username:realm:password)` on every challenge, which requires either the plaintext or a deterministic hash of it. Bcrypt is a deliberately slow, one-way KDF — Asterisk cannot derive HA1 from it. The two-credential model keeps SIP working without storing any reversible portal password.
+**Why two credentials are still in the data model**
+Portal login uses bcrypt (slow KDF, correct for password storage), and the old SIP credential (`sipPassword`/`sipHa1`) was a deterministic MD5-friendly value SIP digest required. The latter is now unused at the auth layer, but the fields persist because:
+
+1. The admin CSV export still surfaces `sipPassword` to operators — useful if anyone ever needs to swap in a native SIP client that *can* answer digest.
+2. Removing the fields ripples into `handle_subscriber_import_POST`, the import-template CSV, every existing subscriber document, and the admin UI. Out of scope for the PRs that introduced bearer-only SIP auth.
 
 ---
 

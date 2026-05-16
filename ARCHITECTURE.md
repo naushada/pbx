@@ -166,7 +166,7 @@ society. Components:
 | `CallRouter` | Forked-ring driver. Dialed extension → list of `sipUsername` targets (`"0"` → guards via the `subscribers(societyId, role)` index, else flat's active subscribers via the denormalised `flatNumber`). Fans out an `originate` per target; first-answer-wins bridges + tears down losers. |
 | `MongodbClient` | Reuse of the shared-library `MongodbClient`. Now also exposes `watch_collection(coll, resume_token_json)` (PR #21) backed by `mongocxx::options::change_stream::resume_after()`. |
 | `SubscriberWatcher` | Bootstrap full-scan of `subscribers` for the society + change-stream tail at 200 ms cadence. Captures every event's `_id` as the resume token; reopens with `resume_after` on `try_next` exceptions (5-tick backoff after a failed reopen). |
-| `PjsipProvisioner` | Materialises a subscriber row as three Asterisk sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`, `endpoint/<user>`) via ARI dynamic-config PUTs. Idempotent. Drift-checked against `docker/asterisk/pjsip.conf`'s `[endpoint-resident-template]` by PR #22's `PjsipTemplateDrift` test. `set_sip_realm()` (PR #24) swaps the realm on the fly when SOCIETY_BOOTSTRAP arrives. |
+| `PjsipProvisioner` | Materialises a subscriber row as **two** Asterisk sorcery objects (`aor/<user>-aor`, `endpoint/<user>`) via ARI dynamic-config PUTs. Idempotent. Drift-checked against `docker/asterisk/pjsip.conf`'s `[endpoint-resident-template]` by PR #22's `PjsipTemplateDrift` test. SIP digest auth is no longer provisioned (PR #77) — the cloud's `/sip-ws` bearer-token upgrade is the sole auth layer; provision() best-effort-DELETEs any legacy `<user>-auth` doc to prune pre-fix state. `set_sip_realm()` (PR #24) still swaps the realm string on `SOCIETY_BOOTSTRAP` but the realm is now vestigial — nothing in the provisioned objects references it. |
 | `CloudConnector::OnConnectedHandler` (PR #20) | Glue: wired in `main.cpp` to (1) send `AGENT_HELLO` (PR #24) for realm bootstrap, then (2) call `ari_client.publish_register_snapshot()` so every reconnect re-syncs the cloud's presence cache. |
 | `SipFrameDemux::SocietyBootstrapHandler` (PR #24) | Glue: wired to a closure in `main.cpp` that, when CLI `--sip-realm` was not passed, calls `pjsip.set_sip_realm(received)` then `watcher.resync()` so the realm correction is applied to every already-provisioned subscriber's auth object. |
 | `ReconnectSupervisor`, `SubscriberWatcherTimer` | Reactor timers (1 s + 200 ms). |
@@ -300,10 +300,17 @@ CloudConnector.attempt_connect
                                realm. Cursor + resume token preserved.
 ```
 
-After this dance the tunnel is fully operational and the agent's
-pjsip-realm matches what the cloud used to compute `sipHa1`. SIP
-REGISTER digests now line up; the per-browser register flow in §3.2
-(Subscriber register) becomes possible.
+After this dance the tunnel is fully operational. The agent's
+pjsip-realm now matches what the cloud's society doc carries.
+
+**Post-PR #77 note:** SOCIETY_BOOTSTRAP and `set_sip_realm()` are
+preserved for now, but the realm no longer affects subscriber
+provisioning — `PjsipProvisioner` stopped emitting digest-auth
+objects entirely (digest auth was unanswerable: the browser has no
+SIP password). The realm machinery + `--sip-realm` CLI flag are
+candidates for a follow-up cleanup PR. The per-browser register
+flow in §3.2 happens transport-only — no realm comparison, no
+HA1 digest exchange.
 
 ### 3.2 Subscriber register
 
@@ -339,14 +346,14 @@ SipService: new WebSocket
                                                           │       ▼ TCP+WS upgrade to chan_pjsip
                                                           │   IAsteriskStream
                                                                        ◄────── REGISTER (SIP)
-                                                                       ──────► 401 Unauthorized + realm challenge
-                                                          ◄────── 401 ──┘
-   ◄────── 401 (over SipBridge ◄ tunnel ◄ demux) ────────┘
-
-Browser: re-REGISTER with HA1 digest                                          (chan_pjsip checks
-   │                                                                            md5_cred =
-   ▼ ─────────────────────────────────────────────────────────► REGISTER       MD5(user:realm:pass)
-                                                                       ──────► 200 OK
+                                                                       ──────► 200 OK         (no auth challenge —
+                                                                                              PR #77/#78 dropped
+                                                                                              digest from both the
+                                                                                              dynamic provisioner
+                                                                                              and the static
+                                                                                              pjsip.conf endpoints;
+                                                                                              cloud /sip-ws bearer
+                                                                                              gate is sole auth)
                                                                                     │
                                                                        AriWsClient catches
                                                                        EndpointStateChange
@@ -471,6 +478,12 @@ Caller dials our subscriber's flat
 | Heroku H15 idle drop | Should NOT happen — `AgentStream` and `BrowserStream` both arm a 25 s WS-ping (RFC 6455 `0x9`) keep-alive (DESIGN.md §6.6) | — | If it does happen: check that the timer fired (cloud logs) |
 | Heroku terminates outer TLS — agent cert is meaningless at the router | InnerTLS-over-WS (PR #19) provides the real mTLS at the application layer | — | Both ends MUST be configured with `inner-tls-*` flags; missing config means the cloud refuses the agent at `setup_inner_tls()` |
 | Resume token aged out of oplog | `SubscriberWatcher` opens a fresh-from-now cursor (next reopen attempt's `watch_collection(coll, token)` returns null; the no-token fallback opens cleanly) | Next agent restart's `bootstrap()` re-applies every active subscriber | If long Mongo outage suspected, agent restart is cheap |
+
+For *currently-open* operational issues (things the architecture
+doesn't yet handle and that you may run into on a fresh setup), see
+[`docs/design/operations/known-issues.md`](docs/design/operations/known-issues.md).
+Move resolved entries from there back into this table (or the relevant
+design section) as they're fixed.
 
 ---
 
