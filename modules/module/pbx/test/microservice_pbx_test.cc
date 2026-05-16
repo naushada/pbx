@@ -1537,6 +1537,92 @@ TEST(MicroServiceAdminGate, AdminGate_ExpiredSession_401_OnSocietyPOST)
         << "an expired session row should be dropped on rejection";
 }
 
+// ── Admin gate on new admin-list endpoints (followup to gate PR) ─────────────
+// Three endpoints added in #41 + #45 were initially landed no-auth (their
+// branches predate the admin-gate). This block locks them down via the
+// same `resolve_admin_session` path as the four pre-existing routes above.
+
+TEST(MicroServiceAdminGate, AdminGate_NoSession_401_OnSocietiesGET)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_get("/api/v1/societies");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NonAdminRole_403_OnSocietiesGET)
+{
+    TestDb db;
+    seed_session(db, "res-tok", "resident");
+    MicroService e;
+    const std::string req = make_get("/api/v1/societies?token=res-tok");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_AdminRole_200_OnSocietiesGET)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    seed_session(db, "adm-tok", "admin");
+    MicroService e;
+    const std::string req = make_get("/api/v1/societies?token=adm-tok");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NoSession_401_OnSocietyDetailGET)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_get("/api/v1/society/s1");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NonAdminRole_403_OnSocietyDetailGET)
+{
+    TestDb db;
+    seed_session(db, "res-tok", "resident");
+    MicroService e;
+    const std::string req = make_get("/api/v1/society/s1?token=res-tok");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NoSession_401_OnAdminSubscribersGET)
+{
+    TestDb db;
+    MicroService e;
+    const std::string req = make_get("/api/v1/admin/subscribers?societyId=s1");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 401 Unauthorized"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_NonAdminRole_403_OnAdminSubscribersGET)
+{
+    TestDb db;
+    seed_session(db, "res-tok", "resident");
+    MicroService e;
+    const std::string req = make_get(
+        "/api/v1/admin/subscribers?societyId=s1&token=res-tok");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 403 Forbidden"));
+}
+
+TEST(MicroServiceAdminGate, AdminGate_AdminRole_200_OnAdminSubscribersGET)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    seed_session(db, "adm-tok", "admin");
+    MicroService e;
+    const std::string req = make_get(
+        "/api/v1/admin/subscribers?societyId=s1&token=adm-tok");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Route-wiring: MicroService::dispatch_pbx_routes() picks the right handler.
 // Asserts the dispatch table only — handler correctness is owned by the
