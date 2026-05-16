@@ -28,11 +28,17 @@ public class StatusService {
     public static class Connectivity {
         public Peer agent     = new Peer();
         public Peer wsdbagent = new Peer();
+        public Peer mongo     = new Peer();
+        public Peer asterisk  = new Peer();
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Peer {
         public boolean connected;
+        /** "pending" when the cloud doesn't yet have a live signal for this peer
+         *  (e.g. asterisk needs an agent→cloud STATUS_REPORT frame, not shipped
+         *  yet). The bar renders these chips as a desaturated "—". */
+        public String signal;
     }
 
     private final RestTemplate probeTemplate;
