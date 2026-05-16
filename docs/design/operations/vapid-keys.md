@@ -29,6 +29,81 @@ keypair invalidates all of them.
 **Heroku holds the canonical copy.** The laptop file is a stash, not
 a backup — see [Backup strategy](#backup-strategy).
 
+## Recovery — if the key is lost
+
+Identify which copy you've lost; the fix depends on it. The two
+recoverable scenarios have **zero subscriber impact**. The third
+forces every browser to re-subscribe.
+
+### Scenario 1 — local PEM lost, Heroku config intact
+
+No regeneration needed. Pull it back down:
+
+```bash
+mkdir -p ~/.vapid
+heroku config:get VAPID_PRIVATE_KEY_B64 -a pabx \
+  | base64 -d > ~/.vapid/pabx-vapid-private.pem
+chmod 600 ~/.vapid/pabx-vapid-private.pem
+```
+
+### Scenario 2 — Heroku config lost, local PEM intact
+
+Re-upload from the laptop copy. Both halves can be derived from the
+private PEM, so one command does it:
+
+```bash
+heroku config:set -a pabx \
+  VAPID_PRIVATE_KEY_B64="$(base64 < ~/.vapid/pabx-vapid-private.pem | tr -d '\n')" \
+  VAPID_PUBLIC_KEY="$(openssl ec -in ~/.vapid/pabx-vapid-private.pem -pubout -outform DER 2>/dev/null \
+                      | tail -c 65 | base64 | tr '+/' '-_' | tr -d '=')" \
+  VAPID_SUBJECT='mailto:ops@example.com'
+```
+
+Heroku auto-restarts the dyno. No browser-side change.
+
+### Scenario 3 — both lost, must regenerate from scratch
+
+> **Cost:** every existing browser push-subscription becomes
+> undeliverable. Users have to re-enable push in the UI (Settings →
+> Enable). Stored `push_subscriptions` documents on Mongo will get
+> cleaned up lazily by `PushSender`'s 410 handling, or you can wipe
+> them manually (step 7 below).
+
+```bash
+# 1. Generate fresh P-256 keypair
+mkdir -p ~/.vapid
+openssl ecparam -name prime256v1 -genkey -noout -out ~/.vapid/pabx-vapid-private.pem
+chmod 600 ~/.vapid/pabx-vapid-private.pem
+
+# 2. Derive public key (base64url, 87 chars, starts with 'B')
+PUB=$(openssl ec -in ~/.vapid/pabx-vapid-private.pem -pubout -outform DER 2>/dev/null \
+      | tail -c 65 | base64 | tr '+/' '-_' | tr -d '=')
+
+# 3. Encode private PEM
+B64=$(base64 < ~/.vapid/pabx-vapid-private.pem | tr -d '\n')
+
+# 4. Push to Heroku (auto-restarts dyno)
+heroku config:set -a pabx \
+  VAPID_PUBLIC_KEY="$PUB" \
+  VAPID_PRIVATE_KEY_B64="$B64" \
+  VAPID_SUBJECT='mailto:ops@example.com'
+
+# 5. Verify cloud is serving the new key
+sleep 5 && curl -sS https://pabx-5fbf3550f938.herokuapp.com/api/v1/push-vapid-key
+#    Expect: {"key":"<same value as $PUB>"}
+
+# 6. Verify entrypoint decoded the PEM and pbx-cloud got --vapid-key-path
+heroku logs -a pabx -n 100 | grep "opt -V"
+#    Expect: opt -V = /tmp/vapid.pem
+
+# 7. (Optional) Wipe stale subscriptions
+#    mongo shell:
+#      db.push_subscriptions.deleteMany({})
+
+# 8. From the softphone: Settings → Enable. Place an inbound call
+#    to a closed tab. Notification fires.
+```
+
 ## What to do when …
 
 ### … you move to a new laptop / lose the local PEM
@@ -91,46 +166,19 @@ the key is wired correctly; absence of that line means
 `webservice_main.cpp` short-circuited (`if (!opt[VAPID_KEY_PATH]) …
 log-only`).
 
-### … you need to rotate the keypair
+### … you need to rotate the keypair (planned)
 
-> **Cost:** every existing `PushSubscription` becomes undeliverable.
-> Browsers will have to re-`subscribe()` the next time the user opens
-> the Settings page and clicks **Enable**. The cloud's
-> `push_subscriptions` Mongo collection will be cleaned up lazily as
-> the push endpoints return HTTP 410 (`PushSender` already handles
-> that gracefully).
-
-```bash
-# 1. Generate
-openssl ecparam -name prime256v1 -genkey -noout -out ~/.vapid/pabx-vapid-private.pem
-chmod 600 ~/.vapid/pabx-vapid-private.pem
-
-# 2. Compute the new public key (base64url) and the new B64 PEM
-PUB=$(openssl ec -in ~/.vapid/pabx-vapid-private.pem -pubout -outform DER 2>/dev/null \
-      | tail -c 65 | base64 | tr '+/' '-_' | tr -d '=')
-B64=$(base64 < ~/.vapid/pabx-vapid-private.pem | tr -d '\n')
-
-# 3. Upload both — Heroku auto-restarts the dyno
-heroku config:set -a pabx \
-  VAPID_PUBLIC_KEY="$PUB" \
-  VAPID_PRIVATE_KEY_B64="$B64"
-
-# 4. (Optional) wipe stale subscriptions so the cloud stops trying to
-#    deliver to dead endpoints before 410-cleanup catches them.
-#    mongo shell:
-#      db.push_subscriptions.deleteMany({})
-```
+Operationally identical to [Scenario 3](#scenario-3--both-lost-must-regenerate-from-scratch)
+above — same subscriber-wipe cost, same commands. Same recipe applies
+whether you're rotating because of a suspected compromise or because
+both copies of the key were lost.
 
 ### … you're bootstrapping a brand-new cloud app
 
-Same as rotation above, but you also need `VAPID_SUBJECT`:
-
-```bash
-heroku config:set -a <new-app> \
-  VAPID_PUBLIC_KEY="$PUB" \
-  VAPID_PRIVATE_KEY_B64="$B64" \
-  VAPID_SUBJECT='mailto:ops@example.com'
-```
+Same generate-then-`heroku config:set` flow as
+[Scenario 3](#scenario-3--both-lost-must-regenerate-from-scratch),
+just against the new app name. There are no subscribers yet, so the
+"cost" caveat doesn't apply.
 
 The cloud image's entrypoint (`docker/Dockerfile.cloud`) takes care of
 the rest: decodes the PEM to `/tmp/vapid.pem` at startup and passes
