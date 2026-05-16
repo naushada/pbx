@@ -297,21 +297,34 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   }
 
   // Exact-match: GET /api/v1/societies (list — `turnSharedSecret` stripped).
-  if (method == "GET" && uri == "/api/v1/societies")
+  // Admin-only: the list itself doesn't carry secrets, but it enumerates
+  // every tenant on the deployment, which is admin-grade information.
+  if (method == "GET" && uri == "/api/v1/societies") {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
     return MicroServicePbx::handle_societies_GET(req, dbInst);
+  }
 
   // Prefix-match: GET /api/v1/society/<id> (detail — includes secrets).
   // Comes after the POST exact-match above (different method, no conflict)
-  // and is distinct from /societies (extra `s`) above.
-  if (method == "GET" && uri.compare(0, 16, "/api/v1/society/") == 0)
+  // and is distinct from /societies (extra `s`) above. Admin-only —
+  // the response surfaces `turnSharedSecret` so the operator can paste
+  // it into the on-prem `.env`.
+  if (method == "GET" && uri.compare(0, 16, "/api/v1/society/") == 0) {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
     return MicroServicePbx::handle_society_detail_GET(req, dbInst);
+  }
 
   // Exact-match: GET /api/v1/admin/subscribers?societyId=…
   // Admin-scoped subscriber list. Distinct from /subscriber (the
   // strip-projected resident directory above) — admin needs every
-  // field for the SubscriberListView + the PUT/DELETE keys.
-  if (method == "GET" && uri == "/api/v1/admin/subscribers")
+  // field for the SubscriberListView + the PUT/DELETE keys. Admin-only.
+  if (method == "GET" && uri == "/api/v1/admin/subscribers") {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
     return MicroServicePbx::handle_admin_subscribers_GET(req, dbInst);
+  }
 
   // Prefix-match: GET /api/v1/cdr[?societyId=…]
   if (method == "GET" && uri.compare(0, 11, "/api/v1/cdr") == 0)
