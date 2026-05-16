@@ -332,6 +332,76 @@ TEST(MicroServicePbx, SocietyDetail_UnknownId_404)
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 404 Not Found"));
 }
 
+// ── Admin subscribers list ───────────────────────────────────────────────────
+
+TEST(MicroServicePbx, AdminSubscribers_MissingSocietyId_400)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    const std::string req = make_get("/api/v1/admin/subscribers");
+    std::string rsp = MicroServicePbx::handle_admin_subscribers_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+}
+
+TEST(MicroServicePbx, AdminSubscribers_DbUnavailable_200_EmptyArray)
+{
+    TestDb db;  // no env → db_available() false → []+200
+    const std::string req = make_get("/api/v1/admin/subscribers?societyId=s1");
+    std::string rsp = MicroServicePbx::handle_admin_subscribers_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("[]"));
+}
+
+TEST(MicroServicePbx, AdminSubscribers_FullRowKeepsAdminFields_StripsSecrets)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({
+        {{"_id", "sub_1"}, {"societyId", "s1"},
+         {"flatNumber", "A-101"}, {"flatId", "f1"},
+         {"name", "Asha Resident"}, {"email", "asha@example.com"},
+         {"phone", "+91 98765 43210"}, {"role", "resident"},
+         {"status", "active"}, {"sipUsername", "u_abc123"},
+         {"autoAnswer", false},
+         {"sipHa1", "DEADBEEF"},
+         {"portalPasswordHash", "$pbkdf2-sha256$i=600000$..."}},
+        {{"_id", "sub_2"}, {"societyId", "s1"},
+         {"flatNumber", "ADMIN"},
+         {"name", "Society Admin"}, {"email", "admin@example.com"},
+         {"role", "admin"}, {"status", "active"},
+         {"sipUsername", "admin-s1"},
+         {"portalPasswordHash", "$pbkdf2-sha256$i=600000$..."}},
+    });
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    const std::string req = make_get("/api/v1/admin/subscribers?societyId=s1");
+    std::string rsp = MicroServicePbx::handle_admin_subscribers_GET(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(2u, arr.size());
+
+    // Admin needs every field for the SubscriberListView + PUT/DELETE keys.
+    EXPECT_EQ("sub_1",       arr[0]["_id"]);
+    EXPECT_EQ("A-101",       arr[0]["flatNumber"]);
+    EXPECT_EQ("Asha Resident", arr[0]["name"]);
+    EXPECT_EQ("asha@example.com", arr[0]["email"]);
+    EXPECT_EQ("+91 98765 43210", arr[0]["phone"]);
+    EXPECT_EQ("resident",    arr[0]["role"]);
+    EXPECT_EQ("active",      arr[0]["status"]);
+    EXPECT_EQ("u_abc123",    arr[0]["sipUsername"]);
+    EXPECT_EQ(false,         arr[0]["autoAnswer"]);
+
+    // Secrets must NOT leak.
+    EXPECT_FALSE(arr[0].contains("portalPasswordHash"));
+    EXPECT_FALSE(arr[0].contains("sipHa1"));
+    EXPECT_FALSE(arr[1].contains("portalPasswordHash"));
+
+    // Admin row shows up alongside residents.
+    EXPECT_EQ("admin", arr[1]["role"]);
+    EXPECT_EQ("ADMIN", arr[1]["flatNumber"]);
+}
+
 // ── Subscriber import ─────────────────────────────────────────────────────────
 
 namespace {
