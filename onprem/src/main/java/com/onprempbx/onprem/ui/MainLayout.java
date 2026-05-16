@@ -35,7 +35,6 @@ public class MainLayout extends AppLayout implements BeforeEnterObserver {
         this.auth = auth;
         this.status = status;
         addHeader();
-        addConnectivityBar();
         addDrawer();
     }
 
@@ -51,6 +50,11 @@ public class MainLayout extends AppLayout implements BeforeEnterObserver {
         final H2 title = new H2("onprem-pbx admin");
         title.addClassNames(LumoUtility.FontSize.LARGE, LumoUtility.Margin.MEDIUM);
 
+        // Status chips live in the middle of the header — between the
+        // page title (left) and the user-label + logout (right). The
+        // bar polls every 5 s; details in ConnectivityBar.
+        final ConnectivityBar statusBar = new ConnectivityBar(status);
+
         final Span userLabel = new Span(currentUserLabel());
         userLabel.addClassNames(LumoUtility.Margin.End.MEDIUM);
 
@@ -61,23 +65,16 @@ public class MainLayout extends AppLayout implements BeforeEnterObserver {
         logout.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
 
         final HorizontalLayout header = new HorizontalLayout(
-                new DrawerToggle(), title, userLabel, logout);
+                new DrawerToggle(), title, statusBar, userLabel, logout);
         header.setDefaultVerticalComponentAlignment(FlexComponent.Alignment.CENTER);
-        header.expand(title);
+        // expand(statusBar) makes the chip row absorb the leftover width
+        // → pushes userLabel + logout to the right edge, leaves the chips
+        // taking the middle of the header.
+        header.expand(statusBar);
         header.setWidthFull();
         header.addClassNames(LumoUtility.Padding.Horizontal.MEDIUM);
 
         addToNavbar(header);
-    }
-
-    /**
-     * Connectivity sub-navbar — added as a second {@code addToNavbar}
-     * call so it stacks under the header strip. Lives the lifetime of
-     * the layout (re-attached per view navigation; polling is bounded
-     * by the bar's own attach/detach hooks).
-     */
-    private void addConnectivityBar() {
-        addToNavbar(new ConnectivityBar(status));
     }
 
     private void addDrawer() {

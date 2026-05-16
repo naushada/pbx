@@ -88,7 +88,13 @@ public:
     if (it == getDocs.end()) return {};
     return it->second.empty() ? std::string{} : it->second.front().second;
   }
-  std::string next_awbno(const std::string &) override { return {}; }
+  // Mongo health-check support for the connectivity endpoint: the
+  // handler interprets a non-empty next_awbno() return as "Mongo
+  // round-trip succeeded." Default is an OK probe string so tests
+  // that don't care about mongo health see it as up; flip
+  // `next_awbno_value = ""` to simulate the Mongo-down branch.
+  std::string next_awbno_value = "HEALTHCHK1";
+  std::string next_awbno(const std::string &) override { return next_awbno_value; }
   std::string store_file(const std::string &, const std::string &,
                          const std::vector<std::uint8_t> &) override {
     return {};
@@ -404,17 +410,23 @@ TEST(MicroServicePbx, AdminSubscribers_FullRowKeepsAdminFields_StripsSecrets)
 
 // ── Admin connectivity probe ─────────────────────────────────────────────────
 
-TEST(MicroServicePbx, AdminConnectivity_BothUp)
+TEST(MicroServicePbx, AdminConnectivity_AllUp)
 {
-    TestDb db;                          // remote_down=false → wsdb connected
+    TestDb db;                          // remote_down=false → wsdb connected;
+                                        // next_awbno_value non-empty → mongo OK
     const std::string req = make_get("/api/v1/admin/connectivity");
     std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
         req, db, /*agent_connected=*/true);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 
     json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
-    EXPECT_EQ(true, body["agent"]["connected"]);
-    EXPECT_EQ(true, body["wsdbagent"]["connected"]);
+    EXPECT_EQ(true,  body["agent"]["connected"]);
+    EXPECT_EQ(true,  body["wsdbagent"]["connected"]);
+    EXPECT_EQ(true,  body["mongo"]["connected"]);
+    // Asterisk is a placeholder chip pending an agent→cloud
+    // STATUS_REPORT frame — should render as not-connected + "signal":"pending"
+    EXPECT_EQ(false,    body["asterisk"]["connected"]);
+    EXPECT_EQ("pending",body["asterisk"]["signal"]);
 }
 
 TEST(MicroServicePbx, AdminConnectivity_AgentDown_WsdbUp)
@@ -426,18 +438,36 @@ TEST(MicroServicePbx, AdminConnectivity_AgentDown_WsdbUp)
     json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
     EXPECT_EQ(false, body["agent"]["connected"]);
     EXPECT_EQ(true,  body["wsdbagent"]["connected"]);
+    EXPECT_EQ(true,  body["mongo"]["connected"]);
 }
 
-TEST(MicroServicePbx, AdminConnectivity_WsdbDown_AgentUp)
+TEST(MicroServicePbx, AdminConnectivity_WsdbDown_AgentUp_MongoDown)
 {
     TestDb db;
-    db.remote_down = true;              // flips is_remote_disconnected → true
+    db.remote_down = true;              // flips is_remote_disconnected → true;
+                                        // also short-circuits the mongo probe
     const std::string req = make_get("/api/v1/admin/connectivity");
     std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
         req, db, /*agent_connected=*/true);
     json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
     EXPECT_EQ(true,  body["agent"]["connected"]);
     EXPECT_EQ(false, body["wsdbagent"]["connected"]);
+    EXPECT_EQ(false, body["mongo"]["connected"]);
+}
+
+TEST(MicroServicePbx, AdminConnectivity_WsdbUp_MongoUnreachable)
+{
+    // Wsdbagent connected to cloud but its downstream Mongo is down —
+    // next_awbno round-trip comes back empty. The handler should
+    // surface this as wsdbagent UP but mongo DOWN.
+    TestDb db;
+    db.next_awbno_value = "";
+    const std::string req = make_get("/api/v1/admin/connectivity");
+    std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
+        req, db, /*agent_connected=*/true);
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    EXPECT_EQ(true,  body["wsdbagent"]["connected"]);
+    EXPECT_EQ(false, body["mongo"]["connected"]);
 }
 
 // ── Subscriber import ─────────────────────────────────────────────────────────

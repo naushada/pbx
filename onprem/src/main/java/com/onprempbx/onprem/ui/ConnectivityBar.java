@@ -2,6 +2,7 @@ package com.onprempbx.onprem.ui;
 
 import com.onprempbx.onprem.service.StatusService;
 import com.onprempbx.onprem.service.StatusService.Connectivity;
+import com.onprempbx.onprem.service.StatusService.Peer;
 import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.DetachEvent;
 import com.vaadin.flow.component.UI;
@@ -13,44 +14,42 @@ import com.vaadin.flow.theme.lumo.LumoUtility;
 import java.time.Duration;
 
 /**
- * Sub-navbar strip showing live cloud-side health of the two on-prem
- * peers: {@code pbx-agent} (SIP tunnel) and {@code pbx-wsdbagent}
- * (DB tunnel).
+ * Inline status strip — lives in the {@link MainLayout} header
+ * between the page title and the logout block, showing live cloud-
+ * side health of the on-prem stack.
  *
- * <p>One {@link Span} chip per peer, refreshed every {@value
- * #POLL_INTERVAL_SECONDS} seconds via Vaadin's polling interval +
- * {@link UI#access(com.vaadin.flow.server.Command)} so the chip can
- * update on the server-side timer without a browser action. The
- * polling stops when the component detaches.
+ * <p>Four chips, refreshed every {@value #POLL_INTERVAL_SECONDS} s
+ * via Vaadin's polling interval + {@link
+ * UI#access(com.vaadin.flow.server.Command)}:
  *
- * <p>Chip colour: green = connected, red = disconnected. We don't show
- * a separate "unknown" state — {@link StatusService} translates every
- * error path to a connected=false response so the safer-looking red
- * always reflects "we can't see green truth."
+ * <ul>
+ *   <li><b>Agent</b> — {@code CloudTunnelEndpoint::has_agent()}</li>
+ *   <li><b>DB tunnel</b> — {@code WsDbServer::is_connected()}</li>
+ *   <li><b>Mongo</b> — derived from a wsdbagent → Mongo ping</li>
+ *   <li><b>Asterisk</b> — placeholder (signal="pending"); will be
+ *       live once the agent→cloud STATUS_REPORT frame is shipped</li>
+ * </ul>
+ *
+ * <p>Polling stops on detach.
  */
 public class ConnectivityBar extends HorizontalLayout {
 
     private static final int POLL_INTERVAL_SECONDS = 5;
 
     private final StatusService status;
-    private final Span agentChip      = chip("Agent");
-    private final Span wsdbagentChip  = chip("DB tunnel");
+    private final Span agentChip     = chip("Agent");
+    private final Span wsdbagentChip = chip("DB");
+    private final Span mongoChip     = chip("Mongo");
+    private final Span asteriskChip  = chip("Asterisk");
 
     public ConnectivityBar(StatusService status) {
         this.status = status;
         setSpacing(true);
         setDefaultVerticalComponentAlignment(FlexComponent.Alignment.CENTER);
-        addClassNames(LumoUtility.Padding.Horizontal.MEDIUM,
-                       LumoUtility.Padding.Vertical.XSMALL,
-                       LumoUtility.Background.CONTRAST_5);
-        setWidthFull();
+        addClassNames(LumoUtility.Padding.Horizontal.MEDIUM);
+        add(agentChip, wsdbagentChip, mongoChip, asteriskChip);
 
-        final Span label = new Span("On-prem stack:");
-        label.addClassNames(LumoUtility.FontSize.SMALL,
-                             LumoUtility.TextColor.SECONDARY);
-        add(label, agentChip, wsdbagentChip);
-
-        applyStatus(new Connectivity());   // start "disconnected" until first poll
+        applyStatus(new Connectivity());   // start in "disconnected" state
     }
 
     @Override
@@ -80,28 +79,37 @@ public class ConnectivityBar extends HorizontalLayout {
     }
 
     private void applyStatus(Connectivity c) {
-        paintChip(agentChip,     "Agent",     c.agent.connected);
-        paintChip(wsdbagentChip, "DB tunnel", c.wsdbagent.connected);
+        paintChip(agentChip,     "Agent",    c.agent);
+        paintChip(wsdbagentChip, "DB",       c.wsdbagent);
+        paintChip(mongoChip,     "Mongo",    c.mongo);
+        paintChip(asteriskChip,  "Asterisk", c.asterisk);
     }
 
     private static Span chip(String label) {
         final Span s = new Span(label);
         s.getElement().getStyle()
-            .set("padding",       "2px 8px")
+            .set("padding",       "2px 10px")
             .set("border-radius", "9999px")
-            .set("font-size",     "0.75em");
+            .set("font-size",     "0.8em")
+            .set("white-space",   "nowrap");
         return s;
     }
 
     /**
-     * Repaint the chip's bullet + color. We rebuild the text from the
-     * label every call so the dot stays in sync with the on/off state.
+     * Repaint the chip. Three states: connected (green), disconnected
+     * (red), pending — the cloud has no live signal for this peer yet
+     * (grey "—"). The asterisk chip uses this until the agent→cloud
+     * STATUS_REPORT plumbing lands.
      */
-    private static void paintChip(Span chip, String label, boolean connected) {
-        final String dot = connected ? "●" : "○";
+    private static void paintChip(Span chip, String label, Peer peer) {
+        final boolean pending = peer != null && "pending".equals(peer.signal);
+        final boolean connected = peer != null && peer.connected;
+        final String dot = pending ? "—" : (connected ? "●" : "○");
         chip.setText(dot + " " + label);
         chip.getElement().getStyle()
-            .set("background", connected ? "#e0f7e9" : "#fde2e1")
-            .set("color",      connected ? "#0a7a3b" : "#a3262c");
+            .set("background", pending ? "#eceff1"
+                                       : (connected ? "#e0f7e9" : "#fde2e1"))
+            .set("color",      pending ? "#6b7780"
+                                       : (connected ? "#0a7a3b" : "#a3262c"));
     }
 }

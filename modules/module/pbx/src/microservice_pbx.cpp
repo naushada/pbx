@@ -360,9 +360,31 @@ std::string handle_admin_subscribers_GET(const std::string &req,
 std::string handle_admin_connectivity_GET(const std::string & /*req*/,
                                           IMongodbClient &db,
                                           bool agent_connected) {
+  // Mongo health: if remote-DB mode is on, the only way the cloud
+  // sees Mongo is through the wsdbagent tunnel, so Mongo can never
+  // be healthier than the tunnel itself. We additionally fire a
+  // cheap `db.next_awbno()` round-trip — if it returns non-empty,
+  // the wsdbagent's downstream Mongo connection is alive too. Empty
+  // return = wsdbagent connected but Mongo unreachable from the
+  // on-prem box (e.g. mongod process down). Cheap because next_awbno
+  // is a single-document upsert that returns immediately on the
+  // already-warm Mongo pool.
+  bool mongo_connected = false;
+  if (!db.is_remote_disconnected()) {
+    try {
+      mongo_connected = !db.next_awbno("HEALTHCHK").empty();
+    } catch (...) {
+      mongo_connected = false;
+    }
+  }
+
   const json body = {
       {"agent",     {{"connected", agent_connected}}},
       {"wsdbagent", {{"connected", !db.is_remote_disconnected()}}},
+      {"mongo",     {{"connected", mongo_connected}}},
+      // Asterisk needs an agent→cloud STATUS_REPORT frame (separate
+      // PR). Placeholder for the UI; renders as "no signal yet".
+      {"asterisk",  {{"connected", false}, {"signal", "pending"}}},
   };
   return http_response(200, "OK", body.dump());
 }
