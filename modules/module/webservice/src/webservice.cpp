@@ -245,20 +245,25 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "POST" && uri == "/api/v1/subscriber/login")
     return MicroServicePbx::handle_subscriber_login_POST(req, dbInst);
 
-  // Prefix-match: POST /api/v1/subscriber/import[?societyId=…]
-  if (method == "POST" && uri.compare(0, 25, "/api/v1/subscriber/import") == 0)
+  // Prefix-match: POST /api/v1/subscriber/import[?societyId=…]  (admin-only)
+  if (method == "POST" && uri.compare(0, 25, "/api/v1/subscriber/import") == 0) {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
     return MicroServicePbx::handle_subscriber_import_POST(req, dbInst);
+  }
 
   // Prefix-match: PUT/DELETE /api/v1/subscriber/<sipUsername>?societyId=…
-  // — admin disable/re-enable + removal. The trailing path segment (the
-  // `/` after `subscriber`) keeps these distinct from the POST-only
-  // /subscriber/login and /subscriber/import above and the GET directory
-  // below. The revocation sink is the SipBridge — null when this
-  // MicroService has no owning WebServer (the routing unit tests), in
-  // which case the handlers still do their DB work, just without the
+  // — admin disable/re-enable + removal (admin-only). The trailing path
+  // segment (the `/` after `subscriber`) keeps these distinct from the
+  // POST-only /subscriber/login and /subscriber/import above and the GET
+  // directory below. The revocation sink is the SipBridge — null when
+  // this MicroService has no owning WebServer (the routing unit tests),
+  // in which case the handlers still do their DB work, just without the
   // cloud→agent SUBSCRIBER_REVOKED signal.
   if ((method == "PUT" || method == "DELETE") &&
       uri.compare(0, 19, "/api/v1/subscriber/") == 0) {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
     IRevocationSink *revoke = m_parent ? webServer().sipBridge() : nullptr;
     return (method == "PUT")
                ? MicroServicePbx::handle_subscriber_status_PUT(req, dbInst,
@@ -276,9 +281,12 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
     return MicroServicePbx::handle_directory_GET(req, dbInst, presence);
   }
 
-  // Exact-match: POST /api/v1/society
-  if (method == "POST" && uri == "/api/v1/society")
+  // Exact-match: POST /api/v1/society  (admin-only)
+  if (method == "POST" && uri == "/api/v1/society") {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
     return MicroServicePbx::handle_society_POST(req, dbInst);
+  }
 
   // Exact-match: GET /api/v1/societies (list — `turnSharedSecret` stripped).
   if (method == "GET" && uri == "/api/v1/societies")

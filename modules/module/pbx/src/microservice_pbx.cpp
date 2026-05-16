@@ -1123,4 +1123,59 @@ SipWsUpgrade handle_sipws_upgrade(const std::string &req, IMongodbClient &db) {
   return {/*error=*/std::string{}, open_meta.dump()};
 }
 
+AdminSession resolve_admin_session(const std::string &req, IMongodbClient &db) {
+  // Same precedence as handle_sipws_upgrade: `?token=` query param first
+  // (the only path the UI can use on `new WebSocket`; HTTP fetches reuse
+  // it for symmetry), `session=` cookie as fallback.
+  const std::string token = extract_session_token(req);
+  if (token.empty()) {
+    return {response_error(401, "Unauthorized",
+                           "Missing or invalid session"),
+            {}, {}, {}};
+  }
+
+  const json query = {{"token", token}};
+  const std::string record = db.get_document("sessions", query.dump(), "{}");
+  if (record.empty()) {
+    return {response_error(401, "Unauthorized",
+                           "Missing or invalid session"),
+            {}, {}, {}};
+  }
+
+  json session;
+  try { session = json::parse(record); }
+  catch (...) {
+    return {response_error(500, "Internal Server Error",
+                           "session record is not valid JSON"),
+            {}, {}, {}};
+  }
+
+  // Expired bearer: refuse AND best-effort drop the row so it can't be
+  // re-resolved by a later request. A delete failure is swallowed — we
+  // still want to surface the 401 to the caller either way.
+  const long now = static_cast<long>(::time(nullptr));
+  if (!session.contains("expiresAt") || !session["expiresAt"].is_number() ||
+      session["expiresAt"].get<long>() <= now) {
+    try { db.delete_document("sessions", query.dump()); }
+    catch (...) { /* swallowed */ }
+    return {response_error(401, "Unauthorized", "Session expired"),
+            {}, {}, {}};
+  }
+
+  // Role gate: only sessions stamped role=admin at /api/v1/subscriber/login
+  // time may touch the admin-only REST endpoints (society create, subscriber
+  // import / disable / delete). Any non-admin bearer — resident, guard,
+  // legacy missing field — is rejected with 403.
+  const std::string role = session.value("role", std::string{});
+  if (role != "admin") {
+    return {response_error(403, "Forbidden", "Admin role required"),
+            {}, {}, {}};
+  }
+
+  return {/*error=*/std::string{},
+          session.value("societyId",   std::string{}),
+          session.value("sipUsername", std::string{}),
+          role};
+}
+
 } // namespace MicroServicePbx
