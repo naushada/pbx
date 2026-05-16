@@ -294,13 +294,36 @@ other and the test fails noisily.
 ### One-shot dry test (`scripts/lima.sh`)
 
 `scripts/lima.sh` provisions a Lima VM (Apple Virtualization framework,
-native arm64 — no QEMU), builds pbx-agent following
-[`xpmile/docker/Dockerfile`](https://github.com/naushada/xpmile/blob/main/docker/Dockerfile)
-verbatim, then runs the agent for 90 s against the deployed Heroku
-cloud and captures the log + any coredump. Useful before deploying to
-a real on-prem host. See
-[`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm)
-for details.
+native arm64 — no QEMU), then brings up the **full five-container
+on-prem stack** via `podman-compose -f docker-compose.agent.yml` inside
+the VM. `pbx-agent` + `pbx-wsdbagent` dial the deployed Heroku cloud,
+so a green run exercises the real cloud-tunnel handshake end-to-end.
+
+```sh
+lima start    # alias → scripts/lima.sh start
+# …~3 min cached / ~30+ min first cold run (bootstrap image build)…
+lima stop     # podman-compose down -v inside VM, then VM is destroyed
+```
+
+What `lima start` does, in order:
+
+1. Provisions or reuses VM `onprem-pbx-test` (Ubuntu 24.04 arm64).
+2. Installs podman + podman-compose.
+3. Acquires `localhost/pbx-cpp-builder:bootstrap`. Three paths,
+   fastest first: already in VM → no-op; on macOS host →
+   `podman save | podman load` stream (~60s); otherwise build inside
+   VM from xpmile's recipe (~30 min, one-time).
+4. Runs `scripts/setup-society.sh demo-society` once
+   (`certs/asterisk-dtls/pbx.crt`, `certs/turnserver.conf`).
+5. Writes `.env` with `CLOUD_HOST`, `AGENT_SOCIETY_ID`, `CERTS_DIR`.
+6. `podman-compose -f docker-compose.agent.yml up --build -d`.
+7. Sleeps `RUN_BUDGET_SECS` (default 120s), then prints container
+   status + last logs from `pbx-agent`, `pbx-wsdbagent`,
+   `pbx-asterisk`.
+
+Override knobs (env): `HEROKU_HOST`, `HEROKU_PORT`, `SOCIETY_ID`,
+`RUN_BUDGET_SECS`. See
+[`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm).
 
 ## Run the softphone UI
 
