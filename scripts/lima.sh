@@ -43,7 +43,7 @@ COMPOSE=docker-compose.agent.yml
 
 usage() {
   cat <<EOF
-usage: $(basename "$0") {start|stop|shell [cmd...]}
+usage: $(basename "$0") {start|stop|shell [cmd...]|list|logs [-f] <container>}
   start            provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
                    bring the 6-container on-prem stack up via podman-compose
                    against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
@@ -53,6 +53,11 @@ usage: $(basename "$0") {start|stop|shell [cmd...]}
                      lima shell                          # interactive bash
                      lima shell sudo podman ps           # one-shot command
                      lima shell sudo podman logs pbx-agent | tail -50
+  list             list all Lima VMs (thin wrapper around \`limactl list\`).
+  logs [-f] NAME   tail container logs from inside the VM. -f follows.
+                     lima logs pbx-agent                 # last 100 lines
+                     lima logs -f pbx-agent              # follow
+                   Bare \`lima logs\` lists running pbx-* containers.
 EOF
   exit 1
 }
@@ -74,6 +79,36 @@ case "$cmd" in
     done
     echo "[lima] done — compose stack down, VM and its disk image are gone."
     exit 0
+    ;;
+  list|ls)
+    # Thin wrapper — host-side, no VM required. Useful for "is my VM
+    # still around / what state is it in" without typing limactl.
+    exec limactl list
+    ;;
+  logs)
+    shift
+    follow_flag=""
+    if [ "${1:-}" = "-f" ]; then follow_flag="-f"; shift; fi
+    if ! limactl list -q 2>/dev/null | grep -qx "$VM"; then
+      echo "[lima] no VM named '$VM' — run \`lima start\` first." >&2
+      exit 1
+    fi
+    if [ "$#" -eq 0 ]; then
+      # No container name → show what's running so the user can pick.
+      echo "[lima] running containers (pick one for \`lima logs <name>\`):"
+      exec limactl shell "$VM" -- sudo podman ps \
+              --filter name=pbx- --format 'table {{.Names}}\t{{.Status}}'
+    fi
+    container="$1"
+    if [ -n "$follow_flag" ]; then
+      # Follow mode — pass through verbatim so Ctrl-C tears the stream
+      # cleanly and the user sees podman's native trailing newline.
+      exec limactl shell "$VM" -- sudo podman logs -f "$container"
+    else
+      # Snapshot — last 100 lines is enough to see boot + the
+      # current crash-loop cycle without flooding the terminal.
+      exec limactl shell "$VM" -- sudo podman logs --tail 100 "$container"
+    fi
     ;;
   shell|vm)
     # `vm` retained as a hidden alias for the old name (PR #38 shipped
