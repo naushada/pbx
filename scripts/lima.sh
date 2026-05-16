@@ -43,16 +43,16 @@ COMPOSE=docker-compose.agent.yml
 
 usage() {
   cat <<EOF
-usage: $(basename "$0") {start|stop|vm [cmd...]}
-  start         provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
-                bring the 6-container on-prem stack up via podman-compose
-                against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
-  stop          compose down + stop + delete the VM (and any legacy ones).
-  vm [cmd...]   shell into the VM. With no args, interactive shell.
-                With args, runs them inside the VM and returns:
-                  lima vm                          # interactive bash
-                  lima vm sudo podman ps           # one-shot command
-                  lima vm sudo podman logs pbx-agent | tail -50
+usage: $(basename "$0") {start|stop|shell [cmd...]}
+  start            provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
+                   bring the 6-container on-prem stack up via podman-compose
+                   against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
+  stop             compose down + stop + delete the VM (and any legacy ones).
+  shell [cmd...]   shell into the VM. With no args, interactive shell.
+                   With args, runs them inside the VM and returns:
+                     lima shell                          # interactive bash
+                     lima shell sudo podman ps           # one-shot command
+                     lima shell sudo podman logs pbx-agent | tail -50
 EOF
   exit 1
 }
@@ -75,8 +75,11 @@ case "$cmd" in
     echo "[lima] done — compose stack down, VM and its disk image are gone."
     exit 0
     ;;
-  vm)
-    shift   # drop the `vm` arg; remainder (if any) runs inside the VM
+  shell|vm)
+    # `vm` retained as a hidden alias for the old name (PR #38 shipped
+    # it; PR #65 renamed to `shell` to match limactl + xpmile lingo).
+    # Drop the `vm` alias after a few weeks once muscle memory fades.
+    shift   # drop the subcommand; remainder (if any) runs inside the VM
     if ! limactl list -q 2>/dev/null | grep -qx "$VM"; then
       echo "[lima] no VM named '$VM' — run \`lima start\` first." >&2
       exit 1

@@ -305,9 +305,9 @@ so a green run exercises the real cloud-tunnel handshake end-to-end.
 ```sh
 lima start                       # alias → scripts/lima.sh start
 # …~3 min cached / ~30+ min first cold run (bootstrap image build)…
-lima vm                          # interactive bash inside the VM
-lima vm sudo podman ps           # one-shot command — runs in the VM, returns
-lima vm sudo podman logs pbx-agent
+lima shell                          # interactive bash inside the VM
+lima shell sudo podman ps           # one-shot command — runs in the VM, returns
+lima shell sudo podman logs pbx-agent
 lima stop                        # podman-compose down -v inside VM, then VM is destroyed
 ```
 
@@ -386,7 +386,7 @@ canonical recipe is:
    the real failure mode instead of a misleading 401).
    ```sh
    lima start    # full 6-container stack inside the Lima VM
-   lima vm sudo podman logs pbx-wsdbagent | grep "session started"
+   lima shell sudo podman logs pbx-wsdbagent | grep "session started"
    ```
 
 2. **Seed the first society + admin** via `scripts/bootstrap-society.sh`.
@@ -407,7 +407,7 @@ canonical recipe is:
    > the operator's host. When Mongo lives inside the Lima VM
    > (`lima start`), it's not reachable from macOS. Workaround until
    > the CLI grows a `--via-lima` flag: do step 1's society POST with
-   > curl, then `lima vm sudo podman exec -i pbx-mongo mongosh --eval
+   > curl, then `lima shell sudo podman exec -i pbx-mongo mongosh --eval
    > "db.subscribers.insertOne({…})"` for step 2.
 
 3. **Flip strict mode on the cloud** so the gate actually enforces
