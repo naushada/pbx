@@ -12,6 +12,11 @@ COPY CMakeLists.txt /src/
 COPY modules/      /src/modules/
 COPY pbx-agent/    /src/pbx-agent/
 COPY test/         /src/test/
+# pjsip_template_drift_test reads docker/asterisk/pjsip.conf to verify
+# the inlined endpoint fields in PjsipProvisioner match the
+# [endpoint-resident-template] section. Skips gracefully if missing
+# (dev machines running tests outside this image).
+COPY docker/      /src/docker/
 
 WORKDIR /src/build
 RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \

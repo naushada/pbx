@@ -78,6 +78,7 @@ file(GLOB SOURCES "*.cc"
     "../pbx-agent/src/test/call_router_test.cc"
     "../pbx-agent/src/main/pjsip_provisioner.cpp"
     "../pbx-agent/src/test/pjsip_provisioner_test.cc"
+    "../pbx-agent/src/test/pjsip_template_drift_test.cc"
     "../pbx-agent/src/main/subscriber_watcher.cpp"
     "../pbx-agent/src/test/subscriber_watcher_test.cc"
     # ── Layer 3 integration ──────────────────────────────────────────
