@@ -6,6 +6,7 @@ VoIP PBX for residential societies. Heroku-hosted control plane (C++ / ACE) + on
 
 See:
 
+- [SALES.md](./SALES.md) — non-technical pitch for societies / installers / decision-makers. Honest pros + cons, cost comparison vs commercial intercoms.
 - [PRD.md](./PRD.md) — product requirements, personas, success metrics.
 - [DESIGN.md](./DESIGN.md) — architecture, components, data model, call flows, media security.
 - [TDD-PLAN.md](./TDD-PLAN.md) — test layers and implementation order.
