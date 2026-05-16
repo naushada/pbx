@@ -4,9 +4,9 @@ Tests are written **before** production code, one slice at a time. The order bel
 
 ## Conventions
 
-- C++ unit & integration tests run inside the built image as the `offtarget` GTest binary (same as xpmile).
+- C++ unit & integration tests run inside the built image as the `offtarget` GTest binary.
 - Filter convention: `--gtest_filter='<Suite>*'`. New suites added under `modules/module/pbx/test/` and `pbx-agent/test/`.
-- Angular tests use Karma + Jasmine (xpmile pattern).
+- Angular tests use Karma + Jasmine.
 - End-to-end browser tests use Playwright headed against a real Asterisk + a synthetic-call helper, in a podman-compose harness.
 - "Red → green → refactor": every commit either adds a failing test or makes a failing test pass. CI rejects commits that only add code with no test diff.
 
@@ -18,7 +18,7 @@ Tests are written **before** production code, one slice at a time. The order bel
 
 | Sub-layer | Suite | Tests | Status |
 |---|---|---:|---|
-| 0.b regression guard | `HttpParser*` (copied verbatim from xpmile) | 20 | ✅ |
+| 0.b regression guard | `HttpParser*` (verbatim copy of the upstream shared-library suite) | 20 | ✅ |
 | 0.b base | `MessageParserBase*` | 8 | ✅ |
 | 0.b SIP | `SipParser*` | 17 | ✅ |
 | 0.a frames | `SipFrame*` | 10 | ✅ |
@@ -43,7 +43,7 @@ Only after this suite is green do we let any code build a frame.
 
 ### 0.b Message-parser refactor (HTTP ⇄ SIP shared base)
 
-Refactoring xpmile's `http_parser` into a `MessageParser` base + `Http` subclass + new `Sip` subclass (see DESIGN.md §11). The order matters: lift the base under test first, prove the xpmile parser still passes its own suite unchanged, then add the SIP layer.
+Refactoring the inherited `http_parser` into a `MessageParser` base + `Http` subclass + new `Sip` subclass (see DESIGN.md §11). The order matters: lift the base under test first, prove the inherited parser still passes its own suite unchanged, then add the SIP layer.
 
 **Suite:** `MessageParserBase*` (in `modules/module/http/test/message_parser_test.cc`)
 
@@ -57,7 +57,7 @@ Refactoring xpmile's `http_parser` into a `MessageParser` base + `Http` subclass
 | `MessageParserBase.MimeHeader_HandlesCRLFOnlyTerminator` | Body starts right after the blank line, not consumed as a header. |
 | `MessageParserBase.PctDecode_KnownVectors`           | Spec examples (`%20`, `%2F`, double-encoded) round-trip. |
 
-**Reused xpmile suite:** `Http*` from `xpmile/modules/module/http/test/httpparser_test.cc` is copied verbatim and must remain 100 % green. This is the regression guard for the refactor — if any xpmile HTTP test breaks, the base extraction is wrong.
+**Inherited suite:** `Http*` from the upstream shared-library `modules/module/http/test/httpparser_test.cc` is copied verbatim and must remain 100 % green. This is the regression guard for the refactor — if any inherited HTTP test breaks, the base extraction is wrong.
 
 **Suite:** `SipParser*` (in `modules/module/sip/test/sip_parser_test.cc`)
 
@@ -83,9 +83,9 @@ Only after Layer 0.a + 0.b are green do we move to Layer 1.
 
 ---
 
-## Layer 1 — Cloud side: HTTP / WS / Mongo (mostly reused from xpmile)
+## Layer 1 — Cloud side: HTTP / WS / Mongo (mostly inherited from the shared library)
 
-Reused tests come over verbatim from `xpmile/test/` (xpmile CLAUDE.md says 46 tests across http/webservice/email — all should still pass after copy).
+Reused tests come over verbatim from the upstream shared-library `test/` tree (46 tests across http/webservice/email — all should still pass after copy).
 
 **New suites:**
 
@@ -131,7 +131,7 @@ Reused tests come over verbatim from `xpmile/test/` (xpmile CLAUDE.md says 46 te
 | `SipBridge.OnBrowserClose_SendsCloseFrame`           | CLOSE op emitted with reason. |
 | `SipBridge.OnTunnelDisconnect_ClosesAllBrowserConns` | All multiplexed streams notified, sockets shut down. |
 | `SipBridge.OnAgentReconnect_NewStreamIdsOnly`        | Old browser sessions stay closed; new browsers get fresh ids on the new tunnel. |
-| `SipBridge.HandoffOrdering`                          | Asserts `remove_handler → m_handle = INVALID → publish to bridge` order; if violated, test deliberately fails (xpmile CLAUDE.md §"WebSocket hand-off mechanics"). |
+| `SipBridge.HandoffOrdering`                          | Asserts `remove_handler → m_handle = INVALID → publish to bridge` order; if violated, test deliberately fails (the well-known WebSocket hand-off invariant). |
 
 ---
 
@@ -252,12 +252,12 @@ Run after every deploy against the live Heroku app + a staging society agent:
 
 ## Order of work (drives the implementation)
 
-1. ✅ Copy xpmile skeleton — minimal subset shipped in Layer 0 commit (`modules/module/http/*`, `test/CMakeLists.txt`, root `CMakeLists.txt`, `docker/Dockerfile.test`, `docker-compose.test.yml`). Remaining xpmile modules (webservice, mongodb, wsdbproxy, email) land alongside Layer 1 when first needed. *(Reuse map in DESIGN.md §12.)*
-2. ✅ **Layer 0.b.** `MessageParser` base extracted; xpmile `HttpParser*` 20/20 still green; `MessageParserBase*` 8/8 + `SipParser*` 17/17 green.
+1. ✅ Seed repo skeleton from the shared library — minimal subset shipped in Layer 0 commit (`modules/module/http/*`, `test/CMakeLists.txt`, root `CMakeLists.txt`, `docker/Dockerfile.test`, `docker-compose.test.yml`). Remaining inherited modules (webservice, mongodb, wsdbproxy, email) land alongside Layer 1 when first needed. *(Reuse map in DESIGN.md §12.)*
+2. ✅ **Layer 0.b.** `MessageParser` base extracted; inherited `HttpParser*` 20/20 still green; `MessageParserBase*` 8/8 + `SipParser*` 17/17 green.
 3. ✅ Layer 0.a `SipFrame*` 10/10 green.
-4. ✅ Layer 1 — complete (modulo `HandoffOrdering`). `SipBridge*` 12/12, xpmile modules verbatim-copy 112/115 (3 environmental skips), `MicroServicePbx*` 23/23, `PushSender*` 8/8, `MicroServiceRouting*` 9/9 (PBX routes intercept first; xpmile URIs fall through). The subscriber directory denormalizes `flatNumber` onto each row (the filter + UI dial by it) and strips secrets from its response. Subscriber portal login is email-keyed with a real strict mode (`PBX_AUTH_STRICT=1` → Mongo lookup + bcrypt verify; default dev mode synthesises a profile); login persists a `sessions` row, and the `/sip-ws` upgrade resolves that token to the subscriber identity it puts in the bridge's OPEN frame. `/sip-ws` upgrade gates on the portal session cookie in `WebConnection::handle_input`; the real `SipBridge` hand-off is stubbed to 503 until the cloud-side tunnel endpoint exists (Layer 2). `HandoffOrdering` deferred to Layer 3 TunnelE2E — it needs ACE reactor mocking that's cheaper to do with a real reactor running.
+4. ✅ Layer 1 — complete (modulo `HandoffOrdering`). `SipBridge*` 12/12, inherited modules verbatim-copy 112/115 (3 environmental skips), `MicroServicePbx*` 23/23, `PushSender*` 8/8, `MicroServiceRouting*` 9/9 (PBX routes intercept first; inherited URIs fall through). The subscriber directory denormalizes `flatNumber` onto each row (the filter + UI dial by it) and strips secrets from its response. Subscriber portal login is email-keyed with a real strict mode (`PBX_AUTH_STRICT=1` → Mongo lookup + bcrypt verify; default dev mode synthesises a profile); login persists a `sessions` row, and the `/sip-ws` upgrade resolves that token to the subscriber identity it puts in the bridge's OPEN frame. `/sip-ws` upgrade gates on the portal session cookie in `WebConnection::handle_input`; the real `SipBridge` hand-off is stubbed to 503 until the cloud-side tunnel endpoint exists (Layer 2). `HandoffOrdering` deferred to Layer 3 TunnelE2E — it needs ACE reactor mocking that's cheaper to do with a real reactor running.
 5. ✅ Layer 2 — feature-complete modulo concrete socket I/O (deferred to Layer 3). `SipFrameDemux*` 14/14, `CloudConnector*` 15/15 (includes the SipFrame-level heartbeat slice — agent-originated PING + PONG/inbound liveness tracking), `AriClient*` 11/11, `CloudTunnelEndpoint*` 12/12. The `/sip-ws` swap shipped as: `CloudTunnelEndpoint` wired into `WebServer` (`cloudTunnelEndpoint()` accessor parallel to `wsDbServer()`); `WebConnection::handle_input` got an `/agent` WS upgrade branch mirroring `/ws/db`'s hand-off ordering; the `/sip-ws` 503 is now context-aware (`X-PBX-AgentConnected: yes|no`).
-6. ✅ Layer 3 — complete. `TunnelE2E*` 8/8, `BrowserStream*` 9/9, `AgentStream*` 10/10, `AceSslTransport*` 10/10, `AriWsClient*` 14/14, `HandoffOrdering*` 8/8 (`BrowserStream`/`AgentStream` counts include the post-Layer-3 WebSocket keep-alive slice — see above). The originally-planned reactor-based `HandoffOrdering` test was replaced with a sharper **source-invariant** test (reads `webservice.cpp` directly and asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three WS upgrade branches — `/sip-ws`, `/agent`, `/ws/db`). The bug class we're guarding against is "swap two lines that both look like teardown" — a real-reactor test could pass even with the bug on some platforms; the source-grep is unambiguous. xpmile's `/ws/db` branch is included as a regression guard so we catch drift in the xpmile copy too.
+6. ✅ Layer 3 — complete. `TunnelE2E*` 8/8, `BrowserStream*` 9/9, `AgentStream*` 10/10, `AceSslTransport*` 10/10, `AriWsClient*` 14/14, `HandoffOrdering*` 8/8 (`BrowserStream`/`AgentStream` counts include the post-Layer-3 WebSocket keep-alive slice — see above). The originally-planned reactor-based `HandoffOrdering` test was replaced with a sharper **source-invariant** test (reads `webservice.cpp` directly and asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three WS upgrade branches — `/sip-ws`, `/agent`, `/ws/db`). The bug class we're guarding against is "swap two lines that both look like teardown" — a real-reactor test could pass even with the bug on some platforms; the source-grep is unambiguous. The inherited `/ws/db` branch is included as a regression guard so we catch drift in the inherited copy too.
 5. ⏳ Layer 2 — `CloudConnector*`. Implement to green.
 6. ⏳ Layer 3 — `TunnelE2E*`. Wire everything end-to-end with fakes.
 7. ⏳ Compose Asterisk + coturn locally. Write `MicroServicePbx*` + `AriClient*`. Implement to green.

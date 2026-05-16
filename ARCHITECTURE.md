@@ -54,7 +54,7 @@ extending it. **For the original design rationale**, see
                 │                                                      │
                 │  ┌────────────┐   ┌──────────────┐                   │
                 │  │ pbx-agent  │   │ pbx-wsdbagent│  (D1+D2 standalone, │
-                │  │            │   │              │   xpmile pattern)    │
+                │  │            │   │              │   wsdbproxy tunnel)  │
                 │  │ • dials    │   │ • dials      │                   │
                 │  │   /agent   │   │   /ws/db     │                   │
                 │  │ • drives   │   │ • forwards   │                   │
@@ -164,7 +164,7 @@ society. Components:
 | `AriWsClient` | The plain-TCP WS client that feeds `/ari/events` into `AriClient`. |
 | `AriRestClient` | The HTTP-Basic REST commander Asterisk exposes at `/ari/*`. Used by `AriClient` for admission `continue`, `originate`, `bridge`, `hangup`, `endpoints`, and (PR #18) `asterisk/config/dynamic` PUT/DELETE for sorcery. |
 | `CallRouter` | Forked-ring driver. Dialed extension → list of `sipUsername` targets (`"0"` → guards via the `subscribers(societyId, role)` index, else flat's active subscribers via the denormalised `flatNumber`). Fans out an `originate` per target; first-answer-wins bridges + tears down losers. |
-| `MongodbClient` | Reuse of xpmile's. Now also exposes `watch_collection(coll, resume_token_json)` (PR #21) backed by `mongocxx::options::change_stream::resume_after()`. |
+| `MongodbClient` | Reuse of the shared-library `MongodbClient`. Now also exposes `watch_collection(coll, resume_token_json)` (PR #21) backed by `mongocxx::options::change_stream::resume_after()`. |
 | `SubscriberWatcher` | Bootstrap full-scan of `subscribers` for the society + change-stream tail at 200 ms cadence. Captures every event's `_id` as the resume token; reopens with `resume_after` on `try_next` exceptions (5-tick backoff after a failed reopen). |
 | `PjsipProvisioner` | Materialises a subscriber row as three Asterisk sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`, `endpoint/<user>`) via ARI dynamic-config PUTs. Idempotent. Drift-checked against `docker/asterisk/pjsip.conf`'s `[endpoint-resident-template]` by PR #22's `PjsipTemplateDrift` test. `set_sip_realm()` (PR #24) swaps the realm on the fly when SOCIETY_BOOTSTRAP arrives. |
 | `CloudConnector::OnConnectedHandler` (PR #20) | Glue: wired in `main.cpp` to (1) send `AGENT_HELLO` (PR #24) for realm bootstrap, then (2) call `ari_client.publish_register_snapshot()` so every reconnect re-syncs the cloud's presence cache. |
@@ -203,7 +203,7 @@ username)`. TTL 300 s. The browser passes these straight into its
 
 ### 2.6 wsdbagent (`pbx-wsdbagent`)
 
-Standalone xpmile-pattern binary at `modules/module/wsdbagent/`.
+Standalone wsdbproxy-tunnel binary at `modules/module/wsdbagent/` (verbatim copy of the upstream shared-library module — do not modify locally).
 Dials `wss://${CLOUD_HOST}/ws/db` with InnerTLS over the outer WSS;
 forwards BSON-framed DB requests to the local `pbx-mongo`. Only
 active when the cloud is started with `--remote-db` (D4 — pending
@@ -612,18 +612,18 @@ onprem-pbx/
 │       │   ├── pjsip_provisioner.*   # PR #18 — Mongo subscriber → pjsip sorcery
 │       │   └── subscriber_watcher.*  # PR #18 — bootstrap + change-stream tail (PR #21 resume)
 │       └── test/                     # GTest sources covered by the offtarget binary
-├── modules/module/                   # Shared libraries (xpmile-derived where noted)
+├── modules/module/                   # Shared libraries (inherited from the upstream shared-library where noted)
 │   ├── pbx/                          # Cloud-side classes: SipBridge, CloudTunnelEndpoint,
 │   │                                 #   AgentStream, BrowserStream, PresenceCache, PushSender,
 │   │                                 #   AceHttpsClient, MicroServicePbx
-│   ├── http/                         # MessageParser + Http subclass (xpmile-derived)
+│   ├── http/                         # MessageParser + Http subclass (inherited, refactored)
 │   ├── sip/                          # SipParser
 │   ├── webservice/                   # WebServer + WebConnection + ./webservice_main.cpp
 │   ├── mongodb/                      # MongodbClient (PR #18 + #21 added change-stream support)
 │   ├── wsdbproxy/                    # /ws/db cloud side + wsframe
-│   ├── wsdbagent/                    # /ws/db on-prem side (xpmile, verbatim)
+│   ├── wsdbagent/                    # /ws/db on-prem side (verbatim copy of the upstream module — do not modify locally)
 │   ├── security/                     # InnerTLS + WsInnerTlsBridge (PR #19) + WebSocketTransport
-│   └── email/                        # SMTP client (xpmile, verbatim)
+│   └── email/                        # SMTP client (verbatim copy of the upstream module — do not modify locally)
 ├── docker/                           # Container assets
 │   ├── Dockerfile.test               # Builds offtarget; COPYs docker/asterisk/* (PR #22)
 │   ├── Dockerfile.agent              # Runtime image for pbx-agent
@@ -674,8 +674,8 @@ lima stop     # tear the VM down
 ```
 
 The script provisions a Lima VM (Apple Virtualization framework,
-native arm64 on Apple Silicon — no QEMU), follows
-`xpmile/docker/Dockerfile`'s build recipe verbatim (apt deps +
+native arm64 on Apple Silicon — no QEMU), follows the established
+C++ toolchain recipe verbatim (apt deps +
 ACE/TAO 7.0.0 with `make install ssl=1 INSTALL_PREFIX=…` +
 mongo-c-driver 1.19.1 + mongo-cxx-driver v3.6 with
 `BSONCXX_POLY_USE_MNMLSTC=1` and `CMAKE_INSTALL_PREFIX=/usr/local`),

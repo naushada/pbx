@@ -19,7 +19,7 @@ A society-scoped VoIP PBX would let any resident reach any other resident (or th
 2. **Privacy** — flat numbers (not phone numbers) are the addressable identity. Voice never leaves the society's network for in-society calls.
 3. **One-touch gate intercom** — every flat can reach the main-gate guard with a single digit (`0`), and the guard can dial any flat.
 4. **Self-contained on-prem footprint** — one box behind the society's NAT runs the PBX. No public-IP requirement beyond a single UDP port-forward.
-5. **Cloud-managed control plane** — admins manage subscribers, see CDRs, and ship updates without visiting the society. Operations style matches the sibling xpmile product.
+5. **Cloud-managed control plane** — admins manage subscribers, see CDRs, and ship updates without visiting the society.
 
 ## 3. Non-goals (v1)
 
@@ -160,10 +160,10 @@ A society-scoped VoIP PBX would let any resident reach any other resident (or th
 ## 8. Constraints and assumptions
 
 - **Heroku platform** — control plane runs on Heroku web dynos. Only HTTP/WebSocket on `$PORT`. No UDP. No inbound to the on-prem box through Heroku. (See DESIGN.md §1.)
-- **Implementation stack** — C++ with ACE_* APIs, reusing xpmile's WebServer/WebConnection/MicroService patterns. UI in Angular. (See DESIGN.md §11 reuse map.)
+- **Implementation stack** — C++ with ACE_* APIs, reusing the project's shared-library `WebServer`/`WebConnection`/`MicroService` patterns. UI in Angular. (See DESIGN.md §11 reuse map.)
 - **Society network** — society must open one public UDP port and DNAT it to coturn on the on-prem box, for off-LAN residents and conference media.
-- **MongoDB** — same MongoDB pattern as xpmile (on-prem with wsdbagent tunnel).
-- **mTLS CA** — reuse xpmile's existing CA.
+- **MongoDB** — on-prem MongoDB reached from the cloud via the `wsdbagent` tunnel.
+- **mTLS CA** — per-society X.509 CA generated at install time; the leaf cert + key ship to the on-prem box.
 - **Residents have modern browsers** — Chrome 90+, Safari 15+, Firefox 90+, Edge 90+. No IE.
 - **Society has reliable broadband** — outbound TLS to Heroku from the on-prem box must stay up.
 - **One society = one pbx-agent deployment** — no multi-tenant on-prem boxes in v1.
@@ -185,7 +185,7 @@ A society-scoped VoIP PBX would let any resident reach any other resident (or th
 
 ### Phase 0 — Foundations (engineering only, no user-facing release)
 
-- Repo skeleton copied from xpmile.
+- Repo skeleton seeded from the shared-library modules.
 - Layer 0 of TDD plan green: `MessageParserBase*`, `Http*` (regression), `SipParser*`, `SipFrame*`.
 - CI green.
 
@@ -232,11 +232,10 @@ A society-scoped VoIP PBX would let any resident reach any other resident (or th
 
 ## 12. Dependencies
 
-- **xpmile codebase** at `/Users/naushada/repo/xpmile` — source of reused modules and mTLS CA.
 - **Heroku** — cloud platform.
 - **Asterisk LTS** — bundled in the agent image.
 - **coturn** — bundled in the agent image.
-- **MongoDB** — bundled in the agent image (same version as xpmile).
+- **MongoDB** — bundled in the agent image.
 - **SIP.js** — npm dependency for the Angular softphone.
 - **VAPID push** — keys generated per cloud deployment; stored in Heroku config vars.
 

@@ -1,13 +1,13 @@
 # email — SMTP client (FSM-driven)
 
-> **Status:** ✅ Copied verbatim from xpmile (Layer 1, transitive — `webservice.cpp` includes `emailservice.hpp`). Inherited `EmailService*` tests green.
+> **Status:** ✅ Verbatim copy of the upstream shared-library module — do not modify locally (Layer 1, transitive — `webservice.cpp` includes `emailservice.hpp`). Inherited `EmailService*` tests green.
 
 Sends transactional email from the cloud. In onprem-pbx the only sender is the CSV-import flow: after the admin uploads a resident list, the cloud generates `sipUsername` + `sipPassword` + portal password for each subscriber, then mails them their credentials.
 
-## Components (xpmile naming)
+## Components
 
 - `EmailService` — SMTP client, configurable provider.
-- `EmailServiceFSM` — finite-state machine driving the SMTP conversation (HELO/EHLO → AUTH → MAIL FROM → RCPT TO → DATA → QUIT). xpmile's tests cover the FSM transitions exhaustively.
+- `EmailServiceFSM` — finite-state machine driving the SMTP conversation (HELO/EHLO → AUTH → MAIL FROM → RCPT TO → DATA → QUIT). The inherited tests cover the FSM transitions exhaustively.
 
 ## Onprem-pbx usage
 
@@ -17,8 +17,8 @@ PRD §11 calls out SMS as the recommended secondary channel; SMS is **not** in s
 
 ## Origin
 
-Verbatim copy from `xpmile/modules/module/email/`. The SMTP FSM is already well-tested in xpmile (the `EmailService*` suite, ~12 tests, will travel with the copy). No API divergence planned.
+Verbatim copy of the upstream shared-library `modules/module/email/` — do not modify locally. The SMTP FSM is already well-tested upstream (the `EmailService*` suite, ~12 tests, travels with the copy). No API divergence planned.
 
 ## Tests
 
-`EmailService*` (xpmile origin) carries over. Must remain green.
+`EmailService*` (inherited from the shared library) carries over. Must remain green.

@@ -1,6 +1,6 @@
 # onprem-pbx
 
-VoIP PBX for residential societies. Heroku-hosted control plane (C++ / ACE) + on-prem `pbx-agent` (C++ / ACE + Asterisk + coturn + MongoDB) + Angular web softphone (SIP.js + WebRTC). Sibling project to [xpmile](../xpmile).
+VoIP PBX for residential societies. Heroku-hosted control plane (C++ / ACE) + on-prem `pbx-agent` (C++ / ACE + Asterisk + coturn + MongoDB) + Angular web softphone (SIP.js + WebRTC).
 
 **Live**: <https://pabx-5fbf3550f938.herokuapp.com/webui/> — single Heroku app (`pabx`) serving UI at `/webui/` + REST + SIP-over-WS + `/agent` mTLS tunnel. UI assets at `/webui/main.js`, `/webui/favicon.svg`, `/webui/sw.js`. SPA login is dev-mode permissive — any non-empty `societyCode` / `flatNumber` / `password` returns a synthetic session until the CSV-import flow + `PBX_AUTH_STRICT=1` are wired.
 
@@ -18,7 +18,7 @@ See:
 | 0.b | `MessageParser` base + `Http` subclass refactor + `Sip` subclass | ✅ Complete (commit `f45b40a`) |
 | 0.a | `SipFrame` wire-format primitives | ✅ Complete (commit `f45b40a`) |
 | 1   | `SipBridge` cloud-side multiplexer | ✅ Complete (first slice) |
-| 1   | xpmile module copies — webservice, mongodb, wsdbproxy, security, email, thirdparty | ✅ Verbatim regression-guard copy green |
+| 1   | Shared-library modules — webservice, mongodb, wsdbproxy, security, email, thirdparty | ✅ Verbatim copy (do not modify locally); regression-guard tests green |
 | 1   | `MicroServicePbx*` REST handlers (society, subscriber-import, cdr, push, sipws-upgrade) | ✅ Complete |
 | 1   | `PushSender*` — VAPID JWT (RFC 8292) + Web Push encryption (RFC 8291) + retry/410 | ✅ Complete |
 | 1   | Route wiring (`MicroService::dispatch_pbx_routes`) + `/sip-ws` upgrade auth gate in `WebConnection` | ✅ Complete |
@@ -32,10 +32,10 @@ See:
 | 3   | `AgentStream` — cloud-side ACE binding for `/agent` (ACE_Event_Handler + private TransportAdapter implementing IAgentTransport). Retires the `/agent` stub | ✅ Complete |
 | 3   | `AceSslTransport` + factory — agent-side outbound mTLS + WS upgrade dial. Concrete `ITransport` for `CloudConnector`'s factory | ✅ Complete |
 | 3   | `AriWsClient` — plain-TCP WS client for Asterisk `/ari/events`; HTTP Basic auth; pushes each JSON event into `AriClient::on_event` | ✅ Complete |
-| 3   | `HandoffOrdering` source-invariant test — guards the xpmile-CLAUDE.md `remove_handler → m_handle=INVALID → publish` ordering for all 3 WS upgrade branches (`/sip-ws`, `/agent`, `/ws/db`) | ✅ Complete |
+| 3   | `HandoffOrdering` source-invariant test — guards the well-known `remove_handler → m_handle=INVALID → publish` ordering invariant for all 3 WS upgrade branches (`/sip-ws`, `/agent`, `/ws/db`) | ✅ Complete |
 | 4   | Production wiring — `pbx-agent` + `pbx-cloud` binaries, `AsteriskWsFactory` (real chan_pjsip WS), `AriRestClient` (admission `continue`), real `PushSender` (AceHttpsClient + VAPID), `docker-compose.{agent,heroku}.yml`, `Dockerfile.{agent,cloud,ui}`, `deploy-heroku.sh` | ✅ Complete (see [§ Layer 4 detail](#layer-4--production-wiring-complete)) |
 | 4   | Cloud REST handlers — `subscriber/login` (dev-mode), `subscriber` directory, `push-vapid-key`, `turn-credentials`, `push-subscribe`. `db_available()` env-var guard short-circuits DB-touching handlers when Mongo isn't configured (defends against Heroku H12 timeouts) | ✅ Complete |
-| 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of xpmile's standalone DB-tunnel binary + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Source committed; verifying live |
+| 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of the upstream shared-library standalone DB-tunnel binary (do not modify locally) + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Source committed; verifying live |
 | 4   | D3: InnerTLS over the `/agent` SIP tunnel — shared `WsInnerTlsBridge` (dual-mode `IInnerTlsTransport`); agent `--inner-tls-{cert,key,ca,hostname}`; cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. `AgentStream` split into `(ctor, auto_attach=false)` + `setup_inner_tls()` + `attach()` so the handshake completes before the endpoint sees a live transport. | ✅ PR #19 (merged) |
 | 4   | Dynamic pjsip provisioning — `PjsipProvisioner` materialises subscriber rows as Asterisk auth/aor/endpoint sorcery objects via ARI dynamic-config PUT/DELETE; `SubscriberWatcher` does a society-scoped bootstrap full-scan + Mongo change-stream tail at 200ms cadence. `pbx-mongo` runs as a 1-node replica set with idempotent `rs.initiate()` healthcheck. Agent `--sip-realm` flag (default `<society-id>.pbx.local`). | ✅ PR #18 (merged) |
 | 4   | Presence reconciliation — `AriClient::publish_register_snapshot()` calls `GET /ari/endpoints/PJSIP` and emits one `REGISTER_STATE` SipFrame per endpoint; `CloudConnector::set_on_connected()` fires it on every (re)connect. Closes the cache-staleness gap from PR #16. | ✅ PR #20 (merged) |
@@ -43,7 +43,7 @@ See:
 | 4   | Pjsip drift-check test — parses `[endpoint-resident-template]` from `docker/asterisk/pjsip.conf`, runs `PjsipProvisioner` against a FakeAriRest, asserts every template field is present in the emitted endpoint PUT. Prevents silent divergence between dev-fixture endpoints and runtime-provisioned subscribers. | ✅ PR #22 (merged) |
 | 4   | Realm-from-society-doc — agent sends `AGENT_HELLO {societyId}` after every (re)connect; cloud's `SipBridge` looks up `societies/{_id}` and emits `SOCIETY_BOOTSTRAP {societyId, sipRealm}`; agent's `PjsipProvisioner.set_sip_realm()` + `SubscriberWatcher.resync()` re-PUTs every endpoint with the canonical realm. CLI `--sip-realm` still overrides. | ✅ PR #24 (merged) |
 | 4   | InnerTLS peer-cert CN exposure + latent-bug fix — `InnerTlsServer::peer_subject_cn()` extracts the agent's verified CN for log labels + future cross-checks; the underlying `SSL_CTX_use_certificate_file`-after-`SSL_new` bug (silently presented no cert) replaced with the per-SSL `SSL_use_certificate_file` API. | ✅ PR #25 (merged) |
-| 4   | `scripts/lima.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following xpmile's recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
+| 4   | `scripts/lima.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following the established C++ toolchain recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
 ### Test totals: **516 / 519** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
@@ -56,7 +56,7 @@ See:
 | 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 + WsInnerTlsBridge 11 + PjsipTemplateDrift 1 + InnerTLS peer-cn 2 | **73** |
 | 4     | AsteriskWsFactory 13 + AriRestClient 16 + AceHttpsClient 13 | **42** |
 | 4+    | SipBridge AGENT_HELLO/BOOTSTRAP 4 + SipFrame round-trip 2 (new ops) | **6** |
-| regression | inherited xpmile suites (verbatim copy) | **115** |
+| regression | inherited shared-library suites (verbatim copy) | **115** |
 | **Total** | **44 suites** | **516** |
 
 Counts will drift over time — `podman-compose -f docker-compose.test.yml run --rm offtarget` prints the authoritative number on every run.
@@ -79,7 +79,7 @@ Counts will drift over time — `podman-compose -f docker-compose.test.yml run -
 | `GET /api/v1/push-vapid-key` | Returns `{key: $VAPID_PUBLIC_KEY}`. |
 | `GET /api/v1/turn-credentials` | Mints RFC 5766 §5 HMAC-SHA1 creds from `$TURN_SHARED_SECRET` / `$TURN_URL`. TTL 300 s. |
 | `POST /api/v1/push-subscribe` (or legacy `/push/subscribe`) | Persists a Web Push subscription. 503 when Mongo unconfigured. |
-| `POST /api/v1/society` | Create a society. Existing handler (xpmile slice 1). |
+| `POST /api/v1/society` | Create a society. Existing handler. |
 | `POST /api/v1/subscriber/import` | CSV import. Existing handler. |
 
 ## Architecture
@@ -92,7 +92,7 @@ Counts will drift over time — `podman-compose -f docker-compose.test.yml run -
   ├─ WebConnection  (one per inbound socket)
   │   ├─ /sip-ws upgrade ─► resolve sessions token ─► BrowserStream
   │   ├─ /agent  upgrade ─► AgentStream
-  │   ├─ /ws/db  upgrade ─► WsDbServer                 (xpmile, unchanged)
+  │   ├─ /ws/db  upgrade ─► WsDbServer                 (shared library, unchanged)
   │   └─ REST / portal   ─► MicroService ─► dispatch_pbx_routes ─► MicroServicePbx
   │                            · login (strict): bcrypt-verify, then write a
   │                              sessions row and set the session cookie
@@ -162,13 +162,13 @@ Counts will drift over time — `podman-compose -f docker-compose.test.yml run -
 
 ### Skipped tests
 
-Three inherited xpmile tests are filtered out by `docker/Dockerfile.test`'s default CMD because they fail in xpmile too and are environment-dependent, not parser/protocol regressions:
+Three inherited shared-library tests are filtered out by `docker/Dockerfile.test`'s default CMD because they fail in the upstream library too — environment-dependent, not real parser/protocol regressions:
 
 | Test                                                          | Why skipped |
 |---------------------------------------------------------------|-------------|
-| `AccountLoginTest.ValidCredentials_Returns200WithAccountData` | Requires a live MongoDB with xpmile shipment-account seed data. |
+| `AccountLoginTest.ValidCredentials_Returns200WithAccountData` | Requires a live MongoDB seeded with the upstream shipment-account fixture data. |
 | `AccountLoginTest.ResponseBody_ExcludesSensitiveFields`       | Same root cause — depends on the 200 OK path that needs seeded Mongo. |
-| `WsDbServer.SecondAgentRejected_When_FirstAlive`              | xpmile's production code returns "stale agent evicted, retry"; the test still asserts a 409 and has drifted from the code. |
+| `WsDbServer.SecondAgentRejected_When_FirstAlive`              | The shared-library production code returns "stale agent evicted, retry"; the test still asserts a 409 and has drifted from the code. |
 
 Override the filter to include them once a Mongo fixture is wired up:
 
@@ -178,16 +178,16 @@ podman run --rm --entrypoint ./offtarget onprem-pbx-test:layer1 --gtest_filter='
 
 ## Build & run
 
-All container operations use **podman** (not docker). Same toolchain as xpmile.
+All container operations use **podman** (not docker).
 
 ```sh
 # Build the test image. Reuses the cached `pbx-cpp-builder:bootstrap`
-# image (a tagged snapshot of xpmile's cpp-builder stage with ACE/TAO 7.0.0,
+# image (a tagged snapshot of the cpp-builder stage with ACE/TAO 7.0.0,
 # googletest, mongo-cxx-driver, and OpenSSL already installed under /usr/local).
 # Build time: ~60 s.
 podman build -f docker/Dockerfile.test -t onprem-pbx-test:latest .
 
-# Run all GTest suites (3 inherited xpmile tests skipped by default — see
+# Run all GTest suites (3 inherited shared-library tests skipped by default — see
 # §Skipped tests below).
 podman run --rm onprem-pbx-test:latest
 
@@ -202,7 +202,7 @@ podman run --rm --entrypoint ./offtarget onprem-pbx-test:latest \
 ```
 
 If `pbx-cpp-builder:bootstrap` is not present locally (fresh machine), the
-from-scratch Dockerfile mirroring xpmile's full cpp-builder is at
+from-scratch Dockerfile (full cpp-builder recipe) is at
 [`docker/Dockerfile.test`](./docker/Dockerfile.test) and rebuilds the
 toolchain in ~30 min.
 
@@ -314,7 +314,8 @@ What `lima start` does, in order:
 3. Acquires `localhost/pbx-cpp-builder:bootstrap`. Three paths,
    fastest first: already in VM → no-op; on macOS host →
    `podman save | podman load` stream (~60s); otherwise build inside
-   VM from xpmile's recipe (~30 min, one-time).
+   VM from the canonical recipe inlined in `scripts/lima.sh` (~30 min,
+   one-time).
 4. Runs `scripts/setup-society.sh demo-society` once
    (`certs/asterisk-dtls/pbx.crt`, `certs/turnserver.conf`).
 5. Writes `.env` with `CLOUD_HOST`, `AGENT_SOCIETY_ID`, `CERTS_DIR`.
@@ -338,7 +339,7 @@ Override knobs (env): `HEROKU_HOST`, `HEROKU_PORT`, `SOCIETY_ID`,
 
 ## Run the softphone UI
 
-Angular 14 + Clarity, scaffolded under `ui/` (mirrors `xpmile/ui/` shape). All toolchain ops run inside a `node:16-alpine` podman container:
+Angular 14 + Clarity, scaffolded under `ui/`. All toolchain ops run inside a `node:16-alpine` podman container:
 
 ```sh
 # One-time install (writes ui/node_modules + ui/package-lock.json).
@@ -379,13 +380,7 @@ HEROKU_APP=pabx ./deploy-heroku.sh deploy
             docker://registry.heroku.com/pabx/web
    ```
 
-2. **Heroku rejects arm64 images** (Common Runtime is amd64-only). Builds on Apple Silicon **must** use `--platform linux/amd64`. The cached `pbx-cpp-builder:bootstrap` must also be amd64 — re-bootstrap from xpmile's Dockerfile if you've only ever built locally:
-
-   ```sh
-   cd ../xpmile
-   podman build --platform linux/amd64 --target cpp-builder \
-       -f docker/Dockerfile -t pbx-cpp-builder:bootstrap .
-   ```
+2. **Heroku rejects arm64 images** (Common Runtime is amd64-only). Builds on Apple Silicon **must** use `--platform linux/amd64`. The cached `pbx-cpp-builder:bootstrap` must also be amd64 — re-bootstrap the image from the canonical recipe inlined in [`scripts/lima.sh`](./scripts/lima.sh) (ACE/TAO 7.0.0 + mongo-c-driver 1.19.1 + mongo-cxx-driver v3.6, all installed under `/usr/local`).
 
 The first-time Heroku app preparation:
 
@@ -409,11 +404,11 @@ After a release, smoke-check with [`scripts/verify-deploy.sh`](./scripts/verify-
 
 ### UI is bundled into the cloud image
 
-`docker/Dockerfile.cloud` is three-stage (matches xpmile's pattern per `DESIGN.md` §11):
+`docker/Dockerfile.cloud` is three-stage (matches the build pattern per `DESIGN.md` §11):
 
 1. `cpp-builder` — compiles `pbx-cloud` against the cached `pbx-cpp-builder:bootstrap` toolchain.
 2. `ui-builder`  — runs `ng build --configuration development` on `ui/`.
-3. `runtime`     — Ubuntu 20.04 slim with the binary at `/opt/pbx-cloud/pbx-cloud` and the SPA at `/opt/webgui/webui/`. The C++ webservice serves the bundle from `../webgui/webui/` (relative to its WORKDIR — inherited from xpmile's `webservice.cpp`).
+3. `runtime`     — Ubuntu 20.04 slim with the binary at `/opt/pbx-cloud/pbx-cloud` and the SPA at `/opt/webgui/webui/`. The C++ webservice serves the bundle from `../webgui/webui/` (relative to its WORKDIR — inherited from the shared-library `webservice.cpp`).
 
 URL surface (single Heroku app, single dyno):
 
@@ -530,7 +525,7 @@ This is the default in `docker/Dockerfile.{agent,wsdbagent}` and `.env.agent.exa
 
 ```
 modules/module/
-  http/         # MessageParser base + Http subclass (xpmile origin, refactored)
+  http/         # MessageParser base + Http subclass (shared-library origin, refactored)
                 #   inc:  message_parser.hpp, http_parser.hpp
                 #   src:  message_parser.cpp, http_parser.cpp
                 #   test: httpparser_test (regression), message_parser_test
@@ -544,13 +539,13 @@ modules/module/
                 #   src:  matching .cpp files
                 #   test: matching _test.cc files
   webservice/   # ACE WebServer / WebConnection / MicroService
-                # (xpmile copy, patched: dispatch_pbx_routes,
+                # (shared-library copy, patched: dispatch_pbx_routes,
                 #  /sip-ws + /agent upgrades, BrowserStream + AgentStream
                 #  + CloudTunnelEndpoint wiring, sipBridge() accessor)
-  mongodb/      # MongodbClient pool (xpmile copy, verbatim)
-  wsdbproxy/    # Cloud-side Mongo-over-WSS proxy (xpmile copy, verbatim)
-  email/        # SMTP FSM (xpmile copy, verbatim)
-  security/     # innertls.cpp — transitively needed by wsdbproxy (xpmile copy)
+  mongodb/      # MongodbClient pool (verbatim copy of the upstream module — do not modify locally)
+  wsdbproxy/    # Cloud-side Mongo-over-WSS proxy (verbatim copy of the upstream module — do not modify locally)
+  email/        # SMTP FSM (verbatim copy of the upstream module — do not modify locally)
+  security/     # innertls.cpp — transitively needed by wsdbproxy (verbatim copy of the upstream module — do not modify locally)
   thirdparty/   # nlohmann/json.hpp
 
 pbx-agent/      # On-prem daemon — Layer 2 + Layer 3 ACE bindings.
@@ -571,7 +566,7 @@ docker/         # Container build context
                 #   coturn/           — minimal use-auth-secret turnserver.conf
 docker-compose.agent.yml    # On-prem stack: mongo + asterisk + coturn + pbx-agent
 docker-compose.heroku.yml   # Cloud stack: pbx-cloud, tagged for registry.heroku.com
-deploy-heroku.sh            # podman + heroku CLI wrapper (xpmile-style)
+deploy-heroku.sh            # podman + heroku CLI wrapper
 .env.agent.example          # Template for docker-compose.agent.yml env
 
 docs/           # PRD, DESIGN, TDD-PLAN are at the root; sub-design docs land here
@@ -602,7 +597,7 @@ Layer 3 closed out the **state machines + ACE bindings**. Layer 4 is the deploym
 | Real `IAriRest` impl — `AriRestClient` POSTs to `/ari/applications/{app}/subscription` and `/ari/channels/{cid}/continue` (HTTP Basic auth, URL-encoded path + query) | ✅ Complete |
 | Real `PushSender` wiring on cloud — `AceHttpsClient` for HTTPS POSTs + `SystemClock`; `--vapid-key-path` + `--vapid-subject` CLI flags; both branches of `webservice_main.cpp` patched. If flags unset, log-only stub remains. | ✅ Complete |
 | `docker-compose.agent.yml` — `pbx-mongo` (mongo:7) + `pbx-asterisk` (andrius/asterisk:20, chan_pjsip + ARI configs in `docker/asterisk/`) + `pbx-coturn` (coturn:4.6, `host` net for STUN replies) + `pbx-agent` (multi-stage `docker/Dockerfile.agent`). `pbx-net` bridge isolates inter-service traffic; Asterisk's WS port stays internal. Env via `.env` (template: `.env.agent.example`). | ✅ Complete |
-| `docker-compose.heroku.yml` + `deploy-heroku.sh` (clone of xpmile's) — `pbx-cloud` built from `docker/Dockerfile.cloud`, tagged `registry.heroku.com/${HEROKU_APP}/web`. Wrapper has `login`/`build`/`push`/`release`/`deploy`/`logs`/`open` subcommands and uses `podman` + the Heroku CLI exactly as xpmile does. | ✅ Complete |
+| `docker-compose.heroku.yml` + `deploy-heroku.sh` — `pbx-cloud` built from `docker/Dockerfile.cloud`, tagged `registry.heroku.com/${HEROKU_APP}/web`. Wrapper has `login`/`build`/`push`/`release`/`deploy`/`logs`/`open` subcommands and uses `podman` + the Heroku CLI. | ✅ Complete |
 | `ui/` (Angular softphone — SIP.js + WebRTC + Clarity + Service Worker). 7-slice plan documented in [`ui/README.md`](./ui/README.md): scaffold → login (`AuthService` + `AuthGuard` + `AuthInterceptor`) → `SipService` over the sip.js seam → directory + outbound call (`SipCallHandle`, `CallPanelComponent`) → inbound + `RingtoneService` + `PushService` + `src/sw.js` → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx). 61 karma specs cover the core services; `app.component.ts` deep-link bug caught by E2E and fixed. | ✅ Complete |
 | `docker/Dockerfile.ui` + nginx (multi-stage `node:16-alpine` build → `nginx:1.25-alpine` runtime, `envsubst` template, `resolver 8.8.8.8 1.1.1.1` for Heroku cold-starts, `/api/`, `/sip-ws`, `/ws/db` proxied with WS upgrade headers + 86 400 s timeouts, SPA fallback) | ✅ Complete |
 | Playwright E2E (`ui/e2e/`) — 12 specs across login / dashboard / directory / history / settings. Runs against the production-shape bundle served by `http-server`; cloud REST surface mocked via `page.route()` so no backend is needed. | ✅ Complete |

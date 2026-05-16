@@ -1,6 +1,6 @@
 # mongodb — MongoDB client pool wrapper
 
-> **Status:** ✅ Copied verbatim from xpmile (Layer 1). `MongodbClient.ImplementsIMongodbClient` passes; integration tests requiring a live Mongo land later with a fixture.
+> **Status:** ✅ Verbatim copy of the upstream shared-library module — do not modify locally (Layer 1). `MongodbClient.ImplementsIMongodbClient` passes; integration tests requiring a live Mongo land later with a fixture.
 
 Thin, thread-safe wrapper around `mongocxx::pool`. One `MongodbClient` per process (the `mongocxx::instance` is a singleton). Every worker thread in the `webservice` module's `MicroService` pool shares the same client; `pool::acquire()` is thread-safe so no external locking is required.
 
@@ -27,7 +27,7 @@ See [`DESIGN.md §4 Data model`](../../../DESIGN.md#4-data-model-mongodb) for th
 
 ## Origin
 
-The xpmile module ships as `modules/module/mongodb/` (note the dir is `mongodb`; the header is `mongodbc.hpp`). Copied verbatim — no API divergence is expected. Patterns reused: atomic counter via `findOneAndUpdate + $inc` (xpmile uses `next_awbno`; we use it for unique `sipUsername` generation during CSV import).
+The module ships as `modules/module/mongodb/` (note the dir is `mongodb`; the header is `mongodbc.hpp`). Verbatim copy of the upstream shared-library module — no API divergence is expected, do not modify locally. Patterns reused: atomic counter via `findOneAndUpdate + $inc` (used here for unique `sipUsername` generation during CSV import).
 
 ## Tests
 

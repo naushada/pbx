@@ -83,7 +83,7 @@ The agent dials `wss://pabx-5fbf3550f938.herokuapp.com/agent` from `AceSslTransp
 |---|---|---|
 | Agent (client) | `agent.crt` + `agent.key` | `${CERTS_DIR}/` → `/opt/pbx-agent/certs/` (compose volume) |
 | Agent CA pin | `cloud-ca.pem` | Same dir, mounted read-only |
-| Cloud (server) | Heroku-managed cert (outer TLS) + xpmile-style mTLS CA (inner client-cert verify) | Heroku-managed |
+| Cloud (server) | Heroku-managed cert (outer TLS) + ACE InnerTLS mTLS CA (inner client-cert verify) | Heroku-managed |
 
 Cert lifecycle:
 - Generated at society install time. The CA stays on a hardened admin host; only the leaf cert + key ship to the on-prem box.

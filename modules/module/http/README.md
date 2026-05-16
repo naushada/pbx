@@ -9,7 +9,7 @@ The module hosts two related parsers:
 
 `Sip` (in the sibling [`sip/`](../sip/README.md) module) is the other consumer of `MessageParser` and the reason the base exists.
 
-> **Origin.** `Http` was lifted verbatim from xpmile's `modules/module/http/` and then refactored to inherit from a new `MessageParser` base. The 20 inherited GTest cases (`HttpParser*`) are the regression guard — they must remain 100 % green for the refactor to be considered correct. See [`DESIGN.md §12 reuse map`](../../../DESIGN.md#12-reuse-map-dry-against-xpmile).
+> **Origin.** `Http` was lifted verbatim from the upstream shared-library `modules/module/http/` and then refactored to inherit from a new `MessageParser` base. The 20 inherited GTest cases (`HttpParser*`) are the regression guard — they must remain 100 % green for the refactor to be considered correct. See [`DESIGN.md §12 reuse map`](../../../DESIGN.md#12-reuse-map).
 
 ---
 
@@ -89,7 +89,7 @@ public:
 };
 ```
 
-Public-API contract: identical to xpmile's original `Http`. The inherited xpmile tests in `test/httpparser_test.cc` enforce this — any incompatible change re-breaks 20 tests.
+Public-API contract: identical to the upstream shared-library `Http`. The inherited tests in `test/httpparser_test.cc` enforce this — any incompatible change re-breaks 20 tests.
 
 ### Body handling
 
@@ -98,7 +98,7 @@ Public-API contract: identical to xpmile's original `Http`. The inherited xpmile
 - **multipart/form-data** without `Content-Length` → sliced up to (and including) the closing `--{boundary}--` marker.
 - Order matters: Transfer-Encoding is decoded first; Content-Encoding (decompression) is applied to the decoded bytes.
 
-### Behaviour pinned by tests (`test/httpparser_test.cc` — 20 tests, **xpmile origin**)
+### Behaviour pinned by tests (`test/httpparser_test.cc` — 20 tests, **inherited from the shared library**)
 
 All 20 inherited cases — method/URI extraction across GET/POST/PUT/DELETE/OPTIONS, query-string parsing, percent + plus decoding, MIME headers all parsed, body via Content-Length, chunked decode (single + multi), gzip decompression, gzip-over-chunked, header includes the `CRLFCRLF` separator.
 
@@ -116,7 +116,7 @@ http/
     http_parser.cpp        # subclass impl (chunked, gzip, multipart)
   test/
     message_parser_test.cc # 8 tests
-    httpparser_test.cc     # 20 tests (xpmile origin, regression guard)
+    httpparser_test.cc     # 20 tests (inherited from the shared library, regression guard)
     httpparser_test.hpp    # zlib helper for gzip test vectors
 ```
 
