@@ -10,6 +10,10 @@ CloudConnector::CloudConnector(Config cfg, ITransportFactory &factory,
 
 void CloudConnector::attach_demux(SipFrameDemux *demux) { m_demux = demux; }
 
+void CloudConnector::set_on_connected(OnConnectedHandler h) {
+  m_on_connected = std::move(h);
+}
+
 bool CloudConnector::connected() const { return m_transport != nullptr; }
 
 void CloudConnector::send_frame(SipFrame::Op op, std::uint32_t stream_id,
@@ -87,6 +91,13 @@ void CloudConnector::attempt_connect() {
   m_last_heartbeat_unix  = m_clock.now_unix();
   m_pings_outstanding    = 0;
   flush_outbound();
+
+  // Production: re-publishes the agent's view of every PJSIP endpoint
+  // so the cloud presence cache resyncs (the cache may have gone stale
+  // mid-disconnect — see AriClient::publish_register_snapshot).
+  // The handler is allowed to call back into send_frame() synchronously
+  // — the transport is fully installed before this fires.
+  if (m_on_connected) m_on_connected();
 }
 
 void CloudConnector::mark_disconnected() {

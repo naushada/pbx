@@ -108,6 +108,15 @@ public:
   virtual Response get_endpoint(const std::string &tech,
                                  const std::string &resource) = 0;
 
+  /// `GET /ari/endpoints/{tech}` — list every endpoint of @p tech. The
+  /// body is a JSON array of objects, each carrying at least
+  /// `technology`, `resource`, and `state`.
+  /// `AriClient::publish_register_snapshot` calls this on tunnel
+  /// reconnect to refresh the cloud's presence cache — Asterisk's
+  /// `EndpointStateChange` only fires on actual changes, so a
+  /// disconnect can leave the cache stale.
+  virtual Response list_endpoints(const std::string &tech) = 0;
+
   /// `PUT /ari/asterisk/config/dynamic/{cfg_class}/{obj_type}/{id}` —
   /// create or replace a sorcery-memory config object. @p fields_json is
   /// the request body the caller has already serialised:
@@ -182,6 +191,18 @@ public:
   using RegisterStateHandler = std::function<void(
       const std::string &sip_username, bool online)>;
   void set_register_state_handler(RegisterStateHandler h);
+
+  /// Refresh the cloud's presence cache with the agent's current view
+  /// of every PJSIP endpoint. Calls `GET /ari/endpoints/PJSIP`, then
+  /// drives `m_register_state_handler` once per endpoint. Idempotent —
+  /// re-publishing the same state is just an upsert on the cache.
+  ///
+  /// Production: invoked from a `CloudConnector::set_on_connected`
+  /// callback so a reconnect resynchronises the cache. Without this,
+  /// any state change that happened while the tunnel was down stays
+  /// invisible until the next live `EndpointStateChange` event (which
+  /// might not arrive for hours on a quiet society).
+  void publish_register_snapshot();
 
   // ── Observability ──────────────────────────────────────────────────────
 

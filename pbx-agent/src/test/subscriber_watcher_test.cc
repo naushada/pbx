@@ -72,6 +72,9 @@ public:
   Response get_endpoint(const std::string &, const std::string &) override {
     return {200, "{}"};
   }
+  Response list_endpoints(const std::string &) override {
+    return {200, "[]"};
+  }
 };
 
 // ─── Recorder change-stream cursor — yields canned events. ─────────────────

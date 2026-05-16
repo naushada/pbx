@@ -482,3 +482,87 @@ TEST(CloudConnector, Heartbeat_DisabledWhenIntervalZero)
     EXPECT_EQ(0u, fac.last_state().sent.size());
     EXPECT_EQ(0, cc.pings_outstanding());
 }
+
+// ── set_on_connected — presence-reconciliation hook ────────────────────────
+
+TEST(CloudConnector, OnConnected_FiresOnInitialConnect)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(default_cfg(), fac, clk);
+
+    int hits = 0;
+    cc.set_on_connected([&hits]() { ++hits; });
+
+    cc.tick();  // initial connect
+    ASSERT_TRUE(cc.connected());
+    EXPECT_EQ(1, hits)
+        << "fires once on the agent's first attach so the cache "
+        << "snapshot lands immediately after boot";
+}
+
+TEST(CloudConnector, OnConnected_FiresOnEveryReconnect)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(default_cfg(), fac, clk);
+
+    int hits = 0;
+    cc.set_on_connected([&hits]() { ++hits; });
+
+    cc.tick();             // initial connect (hits=1)
+    cc.on_transport_lost();
+    clk.advance(1);
+    cc.tick();             // reconnect (hits=2)
+    cc.on_transport_lost();
+    clk.advance(1);
+    cc.tick();             // reconnect again (hits=3)
+
+    EXPECT_EQ(3, hits)
+        << "every successful (re)connect fires the hook — the cloud "
+        << "cache may have drifted during any of the disconnect windows";
+}
+
+TEST(CloudConnector, OnConnected_NotFiredOnConnectFailure)
+{
+    FakeFactory fac;
+    fac.outcomes.push_back(false);  // first attempt fails
+    fac.outcomes.push_back(true);   // second attempt succeeds
+    ManualClock clk;
+    CloudConnector cc(default_cfg(), fac, clk);
+
+    int hits = 0;
+    cc.set_on_connected([&hits]() { ++hits; });
+
+    cc.tick();
+    EXPECT_FALSE(cc.connected());
+    EXPECT_EQ(0, hits);
+
+    // Wait past the backoff and tick again — the success path fires.
+    clk.advance(cc.current_backoff_sec());
+    cc.tick();
+    EXPECT_TRUE(cc.connected());
+    EXPECT_EQ(1, hits);
+}
+
+TEST(CloudConnector, OnConnected_HandlerMayCallSendFrameSynchronously)
+{
+    FakeFactory fac;
+    ManualClock clk;
+    CloudConnector cc(default_cfg(), fac, clk);
+
+    // Mirrors the production wiring's shape: the on-connected handler
+    // immediately publishes via send_frame. The hook fires AFTER the
+    // transport is installed, so send_frame must hit the wire (not
+    // buffer).
+    cc.set_on_connected([&cc]() {
+        cc.send_frame(SipFrame::Op::REGISTER_STATE, 0, R"({"online":true})");
+    });
+
+    cc.tick();
+    ASSERT_TRUE(cc.connected());
+    EXPECT_FALSE(fac.last_state().sent.empty())
+        << "on-connected handler's frame went on the wire, not into "
+        << "the disconnected-buffer";
+    EXPECT_EQ(0u, cc.buffered_frame_count());
+}

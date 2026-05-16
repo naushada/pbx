@@ -70,6 +70,7 @@ public:
                    const std::string &reason) override;
   Response get_endpoint(const std::string &tech,
                          const std::string &resource) override;
+  Response list_endpoints(const std::string &tech) override;
   Response create_dynamic_config(const std::string &cfg_class,
                                   const std::string &obj_type,
                                   const std::string &id,
@@ -117,6 +118,13 @@ public:
   /// are percent-encoded (`PJSIP` + a bare sipUsername in practice).
   static std::string build_get_endpoint_request(
       const std::string &tech, const std::string &resource,
+      const std::string &host, const std::string &basic_auth);
+
+  /// A `GET` — `/ari/endpoints/{tech}`. Only the technology is part of
+  /// the path; the body is an array of endpoint objects (technology +
+  /// resource + state + channel_ids).
+  static std::string build_list_endpoints_request(
+      const std::string &tech,
       const std::string &host, const std::string &basic_auth);
 
   /// A `PUT` with a JSON body — sorcery dynamic-config push. The verb,

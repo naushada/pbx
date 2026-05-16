@@ -120,6 +120,9 @@ public:
   Response get_endpoint(const std::string &, const std::string &) override {
     return {200, "{}"};
   }
+  Response list_endpoints(const std::string &) override {
+    return {200, "[]"};
+  }
   Response create_dynamic_config(const std::string &, const std::string &,
                                   const std::string &,
                                   const std::string &) override {

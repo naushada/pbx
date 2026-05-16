@@ -75,6 +75,16 @@ public:
     return get_endpoint_response;
   }
 
+  // list_endpoints recording — presence-snapshot tests pre-set the
+  // response body to a JSON array and then assert that
+  // publish_register_snapshot drove one handler call per entry.
+  std::vector<std::string> list_endpoint_techs;
+  Response                 list_endpoints_response{200, "[]"};
+  Response list_endpoints(const std::string &tech) override {
+    list_endpoint_techs.push_back(tech);
+    return list_endpoints_response;
+  }
+
   // Dynamic-config recording — PjsipProvisioner tests assert on the
   // exact PUTs and DELETEs that hit Asterisk's sorcery surface.
   struct DynPut    { std::string cfg_class, obj_type, id, fields_json; };
@@ -632,6 +642,142 @@ TEST(AriClient, EndpointStateChange_NoHandler_IsSilentNoOp)
 
     // No handler installed — must not crash, must not throw.
     c.on_event(endpoint_state_change("PJSIP", "u_alice", "online"));
+}
+
+// ── publish_register_snapshot — presence reconciliation on (re)connect ──────
+
+namespace {
+// Builds an `ARI /endpoints/PJSIP` array body matching what Asterisk's
+// `GET /ari/endpoints/PJSIP` returns: one object per endpoint, with
+// `technology`, `resource`, `state` (online/offline/unknown), and an
+// empty `channel_ids` array.
+std::string pjsip_endpoint_list(
+    const std::vector<std::pair<std::string, std::string>> &entries) {
+  json arr = json::array();
+  for (const auto &[resource, state] : entries) {
+    arr.push_back({
+        {"technology",  "PJSIP"},
+        {"resource",    resource},
+        {"state",       state},
+        {"channel_ids", json::array()},
+    });
+  }
+  return arr.dump();
+}
+} // namespace
+
+TEST(AriClient, PublishRegisterSnapshot_FiresHandlerPerEndpoint)
+{
+    FakeAriRest rest;
+    rest.list_endpoints_response = {200, pjsip_endpoint_list({
+        {"u_alice", "online"},
+        {"u_bob",   "offline"},
+        {"u_carol", "unknown"},
+    })};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    std::vector<std::pair<std::string, bool>> hits;
+    c.set_register_state_handler(
+        [&hits](const std::string &user, bool online) {
+            hits.emplace_back(user, online);
+        });
+
+    c.publish_register_snapshot();
+
+    // Exactly one ARI list call to /ari/endpoints/PJSIP, regardless of
+    // how many entries the response carried.
+    ASSERT_EQ(1u, rest.list_endpoint_techs.size());
+    EXPECT_EQ("PJSIP", rest.list_endpoint_techs[0]);
+
+    // Three handler calls in array order; only "online" maps to true
+    // (matches handle_endpoint_state_change's mapping).
+    ASSERT_EQ(3u, hits.size());
+    EXPECT_EQ("u_alice", hits[0].first);
+    EXPECT_TRUE(hits[0].second);
+    EXPECT_EQ("u_bob",   hits[1].first);
+    EXPECT_FALSE(hits[1].second);
+    EXPECT_EQ("u_carol", hits[2].first);
+    EXPECT_FALSE(hits[2].second)
+        << "any state other than 'online' must map to false";
+}
+
+TEST(AriClient, PublishRegisterSnapshot_NoHandler_IsSilentNoOp)
+{
+    FakeAriRest rest;
+    rest.list_endpoints_response = {200, pjsip_endpoint_list({{"u_a", "online"}})};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    // Production sets the handler before plumbing in the on-connected
+    // hook; defensive against an early reconnect arriving before
+    // handler installation.
+    c.publish_register_snapshot();
+
+    EXPECT_TRUE(rest.list_endpoint_techs.empty())
+        << "skip the ARI call entirely when there's nothing to publish "
+        << "into";
+}
+
+TEST(AriClient, PublishRegisterSnapshot_AriError_NoHandlerCalls)
+{
+    FakeAriRest rest;
+    rest.list_endpoints_response = {503, "Service Unavailable"};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    int hits = 0;
+    c.set_register_state_handler(
+        [&hits](const std::string &, bool) { ++hits; });
+
+    c.publish_register_snapshot();
+    EXPECT_EQ(0, hits)
+        << "transient ARI failure mid-reconnect must not synthesise "
+        << "fake state — the cache stays at its last known value until "
+        << "the next snapshot or live EndpointStateChange.";
+}
+
+TEST(AriClient, PublishRegisterSnapshot_BadJson_NoHandlerCalls)
+{
+    FakeAriRest rest;
+    rest.list_endpoints_response = {200, "not json"};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    int hits = 0;
+    c.set_register_state_handler(
+        [&hits](const std::string &, bool) { ++hits; });
+
+    c.publish_register_snapshot();
+    EXPECT_EQ(0, hits);
+}
+
+TEST(AriClient, PublishRegisterSnapshot_SkipsNonPjsipAndEmptyResource)
+{
+    FakeAriRest rest;
+    // Hand-rolled body that includes a non-PJSIP entry and a PJSIP one
+    // with an empty resource — both should be filtered before the
+    // handler runs (mirrors handle_endpoint_state_change's rules).
+    rest.list_endpoints_response = {200, R"([
+        {"technology":"Local","resource":"loop","state":"online"},
+        {"technology":"PJSIP","resource":"","state":"online"},
+        {"technology":"PJSIP","resource":"u_d","state":"online"}
+    ])"};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    std::vector<std::string> who;
+    c.set_register_state_handler(
+        [&who](const std::string &user, bool) { who.push_back(user); });
+
+    c.publish_register_snapshot();
+    ASSERT_EQ(1u, who.size());
+    EXPECT_EQ("u_d", who[0]);
 }
 
 // ── Malformed input tolerance ────────────────────────────────────────────────
