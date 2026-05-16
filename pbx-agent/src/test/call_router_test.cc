@@ -120,6 +120,15 @@ public:
   Response get_endpoint(const std::string &, const std::string &) override {
     return {200, "{}"};
   }
+  Response create_dynamic_config(const std::string &, const std::string &,
+                                  const std::string &,
+                                  const std::string &) override {
+    return {200, "{}"};
+  }
+  Response delete_dynamic_config(const std::string &, const std::string &,
+                                  const std::string &) override {
+    return {204, ""};
+  }
 };
 
 // A subscribers row shaped like handle_subscriber_import_POST writes it.

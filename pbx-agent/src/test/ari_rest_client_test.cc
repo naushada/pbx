@@ -207,6 +207,48 @@ TEST(AriRestClient, BuildGetEndpointRequest_EscapesResource)
     EXPECT_NE(std::string::npos, req.find("/ari/endpoints/PJSIP/weird%2Fres "));
 }
 
+// ── build_create_dynamic_config_request ──────────────────────────────────────
+
+TEST(AriRestClient, BuildCreateDynamicConfigRequest_PutVerbAndJsonBody)
+{
+    const std::string body =
+        R"({"fields":[{"attribute":"type","value":"endpoint"}]})";
+    const std::string req = AriRestClient::build_create_dynamic_config_request(
+        "res_pjsip", "endpoint", "u_alice", body, "127.0.0.1", "YWJj");
+
+    // PUT verb + sorcery path.
+    EXPECT_NE(std::string::npos,
+              req.find("PUT /ari/asterisk/config/dynamic/res_pjsip/endpoint/u_alice "
+                       "HTTP/1.1\r\n"));
+    // application/json body with correct length.
+    EXPECT_NE(std::string::npos, req.find("Content-Type: application/json\r\n"));
+    EXPECT_NE(std::string::npos,
+              req.find("Content-Length: " + std::to_string(body.size()) + "\r\n"));
+    EXPECT_EQ("\r\n" + body, req.substr(req.size() - body.size() - 2));
+    EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
+}
+
+TEST(AriRestClient, BuildCreateDynamicConfigRequest_EscapesId)
+{
+    const std::string req = AriRestClient::build_create_dynamic_config_request(
+        "res_pjsip", "auth", "u with/slash", "{}", "h", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("/ari/asterisk/config/dynamic/res_pjsip/auth/u%20with%2Fslash "));
+}
+
+// ── build_delete_dynamic_config_request ──────────────────────────────────────
+
+TEST(AriRestClient, BuildDeleteDynamicConfigRequest_DeleteVerbAndPath)
+{
+    const std::string req = AriRestClient::build_delete_dynamic_config_request(
+        "res_pjsip", "aor", "u_alice-aor", "h", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("DELETE /ari/asterisk/config/dynamic/res_pjsip/aor/u_alice-aor "
+                       "HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Content-Length: 0\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Connection: close\r\n"));
+}
+
 // ── parse_response ────────────────────────────────────────────────────────────
 
 TEST(AriRestClient, ParseResponse_204NoContent)
@@ -277,5 +319,11 @@ TEST(AriRestClient, UnreachableHost_ReturnsStatusZero)
     EXPECT_EQ(0, r.status);
 
     r = client.get_endpoint("PJSIP", "u_a");
+    EXPECT_EQ(0, r.status);
+
+    r = client.create_dynamic_config("res_pjsip", "endpoint", "u_a", "{}");
+    EXPECT_EQ(0, r.status);
+
+    r = client.delete_dynamic_config("res_pjsip", "endpoint", "u_a");
     EXPECT_EQ(0, r.status);
 }

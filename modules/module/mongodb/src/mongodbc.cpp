@@ -6,6 +6,9 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <mongocxx/change_stream.hpp>
+#include <mongocxx/options/change_stream.hpp>
+
 #include "json.hpp"
 #include "mongodbc.hpp"
 
@@ -608,6 +611,77 @@ bool MongodbClient::delete_file(const std::string &oid_str) {
              "%D [MongodbClient:%t] %M %N:%l delete_file '%s' failed: %s\n"),
          oid_str.c_str(), e.what()));
     return false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Change streams — see DESIGN.md §4 (pjsip endpoint provisioning).
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Concrete IChangeStreamCursor backed by a mongocxx::change_stream.
+/// Holds the pool entry for the cursor's lifetime so the underlying
+/// connection stays valid.
+class MongoChangeStreamCursor : public IChangeStreamCursor {
+public:
+  MongoChangeStreamCursor(mongocxx::pool::entry conn,
+                          const std::string &db_name,
+                          const std::string &coll_name)
+      : m_conn(std::move(conn)) {
+    auto coll = (*m_conn)[db_name][coll_name];
+    // Default 0ms await — we set it per-call from try_next() instead so
+    // the same cursor can serve a fast tick (await=0) vs. a slow probe
+    // (await=200ms) without rebuilding.
+    m_stream = std::make_unique<mongocxx::change_stream>(coll.watch());
+  }
+
+  std::string try_next(int /*max_await_ms*/) override {
+    // mongocxx exposes the await deadline at watch() time — we'd need
+    // to recreate the stream to change it (and lose the resume token).
+    // For the v1 polling caller a true non-blocking begin() suffices:
+    // begin() returns end() immediately when no event is buffered.
+    if (!m_stream) return {};
+    auto it = m_stream->begin();
+    if (it == m_stream->end()) return {};
+    std::string out = bsoncxx::to_json(*it);
+    return out;
+  }
+
+private:
+  // Order matters: m_stream must be destroyed before m_conn so the
+  // change_stream's borrowed connection is released first. unique_ptr
+  // member declared after the entry achieves that destruction order.
+  mongocxx::pool::entry                    m_conn;
+  std::unique_ptr<mongocxx::change_stream> m_stream;
+};
+
+} // namespace
+
+std::unique_ptr<IChangeStreamCursor>
+MongodbClient::watch_collection(const std::string &coll) {
+  if (!m_pool) return nullptr;
+
+  auto conn = m_pool->acquire();
+  if (!conn) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [MongodbClient:%t] %M %N:%l watch_collection: "
+                        "acquire failed\n")));
+    return nullptr;
+  }
+
+  try {
+    return std::make_unique<MongoChangeStreamCursor>(
+        std::move(conn), m_dbName, coll);
+  } catch (const std::exception &e) {
+    // Most common cause: mongod is standalone, not a replica set.
+    // The agent treats null as "change streams unavailable" and falls
+    // back to its bootstrap full-scan (no live updates).
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [MongodbClient:%t] %M %N:%l watch_collection "
+                        "failed (is mongod a replica set?): %s\n"),
+               e.what()));
+    return nullptr;
   }
 }
 

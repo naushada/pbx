@@ -25,7 +25,9 @@
 #include "cloud_connector.hpp"
 #include "json.hpp"
 #include "mongodbc.hpp"
+#include "pjsip_provisioner.hpp"
 #include "sip_frame_demux.hpp"
+#include "subscriber_watcher.hpp"
 
 #include "ace/Get_Opt.h"
 #include "ace/Log_Msg.h"
@@ -96,6 +98,36 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SubscriberWatcherTimer — drives `SubscriberWatcher::tick()` from the
+// reactor at ~200 ms. Each tick drains one Mongo change-stream event,
+// keeping the reactor responsive even if a burst of subscriber edits
+// arrives. Cadence is independent from `ReconnectSupervisor`'s 1 s.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class SubscriberWatcherTimer : public ACE_Event_Handler {
+public:
+  SubscriberWatcherTimer(SubscriberWatcher &watcher, ACE_Reactor *reactor)
+      : m_watcher(watcher) {
+    this->reactor(reactor);
+  }
+
+  int schedule_first_tick() {
+    // 200 ms delay before first fire, then every 200 ms.
+    return reactor()->schedule_timer(this, nullptr,
+                                      ACE_Time_Value(0, 200000),
+                                      ACE_Time_Value(0, 200000));
+  }
+
+  int handle_timeout(const ACE_Time_Value &, const void *) override {
+    m_watcher.tick();
+    return 0;
+  }
+
+private:
+  SubscriberWatcher &m_watcher;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Signal handler — terminates the reactor loop cleanly.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -131,6 +163,7 @@ void print_usage(const char *prog) {
                       "  --ari-app           <name>  Stasis app name       (default: pbx)\n"
                       "  --ari-user          <user>  ARI Basic-auth username (default: asterisk)\n"
                       "  --ari-pass          <pass>  ARI Basic-auth password (default: asterisk)\n"
+                      "  --sip-realm         <r>     SIP auth realm           (default: <society-id>.pbx.local)\n"
                       "  --help                      Show this help\n"),
              prog));
 }
@@ -153,8 +186,9 @@ int main(int argc, char *argv[]) {
   std::string ari_app  = "pbx";
   std::string ari_user = "asterisk";
   std::string ari_pass = "asterisk";
+  std::string sip_realm;  // defaults to <society-id>.pbx.local after parsing
 
-  ACE_Get_Opt args(argc, argv, ACE_TEXT("H:P:E:K:A:U:S:a:p:n:u:w:h"), 1);
+  ACE_Get_Opt args(argc, argv, ACE_TEXT("H:P:E:K:A:U:S:a:p:n:u:w:r:h"), 1);
   args.long_option(ACE_TEXT("cloud-host"),     'H', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("cloud-port"),     'P', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("tls-cert"),       'E', ACE_Get_Opt::ARG_REQUIRED);
@@ -167,6 +201,7 @@ int main(int argc, char *argv[]) {
   args.long_option(ACE_TEXT("ari-app"),        'n', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("ari-user"),       'u', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("ari-pass"),       'w', ACE_Get_Opt::ARG_REQUIRED);
+  args.long_option(ACE_TEXT("sip-realm"),      'r', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("help"),           'h', ACE_Get_Opt::NO_ARG);
 
   for (int c; (c = args()) != EOF;) {
@@ -183,6 +218,7 @@ int main(int argc, char *argv[]) {
     case 'n': ari_app    = args.opt_arg(); break;
     case 'u': ari_user   = args.opt_arg(); break;
     case 'w': ari_pass   = args.opt_arg(); break;
+    case 'r': sip_realm  = args.opt_arg(); break;
     case 'h': print_usage(argv[0]); return 0;
     case '?': print_usage(argv[0]); return -1;
     default:  break;
@@ -196,6 +232,12 @@ int main(int argc, char *argv[]) {
     print_usage(argv[0]);
     return -1;
   }
+
+  // Default the SIP realm to the cloud-side convention (see
+  // microservice_pbx.cpp handle_society_POST: `code + ".pbx.local"`). If a
+  // society's code differs from its id the operator should pass the
+  // explicit realm via --sip-realm.
+  if (sip_realm.empty()) sip_realm = society_id + ".pbx.local";
 
   ACE_DEBUG((LM_INFO,
              ACE_TEXT("%D [pbx-agent] starting: cloud=%s:%d society=%s "
@@ -230,6 +272,21 @@ int main(int argc, char *argv[]) {
   ari_cfg.app_name   = ari_app;
   AriClient ari_client(ari_cfg, ari_rest, *db, call_router);
   ari_client.start();  // POSTs the subscription to Asterisk
+
+  // ── PjsipProvisioner + SubscriberWatcher ───────────────────────────────
+  //
+  // Materialise every active `subscribers` row as auth/aor/endpoint sorcery
+  // objects in Asterisk via ARI dynamic-config, then tail the Mongo change
+  // stream to keep them in sync as admins create/disable/delete subscribers
+  // upstream. Bootstrap runs synchronously here — pre-existing rows are
+  // pushed before the reactor starts. ARI errors during bootstrap are
+  // logged-and-dropped; the next change-stream event re-applies. Change
+  // streams require Mongo to be a (single-node) replica set — see
+  // docker-compose.agent.yml's `pbx-mongo` service. On a standalone mongod
+  // bootstrap still runs but `tick()` becomes a silent no-op.
+  PjsipProvisioner pjsip(ari_rest, sip_realm);
+  SubscriberWatcher watcher(*db, society_id, pjsip);
+  watcher.bootstrap();
 
   AriWsClient::Config ari_ws_cfg;
   ari_ws_cfg.host     = ast_host;
@@ -332,6 +389,15 @@ int main(int argc, char *argv[]) {
   if (supervisor.schedule_first_tick() == -1) {
     ACE_ERROR((LM_ERROR,
                ACE_TEXT("%D [pbx-agent] schedule_timer failed\n")));
+    return -1;
+  }
+
+  // ── Subscriber change-stream tail (200 ms tick) ───────────────────────
+  SubscriberWatcherTimer watcher_timer(watcher, reactor);
+  if (watcher_timer.schedule_first_tick() == -1) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] SubscriberWatcher schedule_timer "
+                        "failed\n")));
     return -1;
   }
 

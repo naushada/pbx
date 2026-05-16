@@ -74,6 +74,27 @@ public:
     endpoint_lookups.push_back({tech, resource});
     return get_endpoint_response;
   }
+
+  // Dynamic-config recording — PjsipProvisioner tests assert on the
+  // exact PUTs and DELETEs that hit Asterisk's sorcery surface.
+  struct DynPut    { std::string cfg_class, obj_type, id, fields_json; };
+  struct DynDelete { std::string cfg_class, obj_type, id; };
+  std::vector<DynPut>    dyn_puts;
+  std::vector<DynDelete> dyn_deletes;
+
+  Response create_dynamic_config(const std::string &cfg_class,
+                                  const std::string &obj_type,
+                                  const std::string &id,
+                                  const std::string &fields_json) override {
+    dyn_puts.push_back({cfg_class, obj_type, id, fields_json});
+    return {200, ""};
+  }
+  Response delete_dynamic_config(const std::string &cfg_class,
+                                  const std::string &obj_type,
+                                  const std::string &id) override {
+    dyn_deletes.push_back({cfg_class, obj_type, id});
+    return {204, ""};
+  }
 };
 
 // Minimal IMongodbClient that records inserts. CDR is the only collection
