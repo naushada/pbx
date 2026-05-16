@@ -540,20 +540,28 @@ $EDITOR .env                          # set CLOUD_HOST, AGENT_SOCIETY_ID, CERTS_
 podman-compose -f docker-compose.agent.yml up --build -d
 ```
 
-The `pbx-agent` container is built from [`docker/Dockerfile.agent`](../docker/Dockerfile.agent) — multi-stage, `FROM pbx-cpp-builder:bootstrap` for the build stage, `FROM ubuntu:focal` for the runtime stage with only ACE/TAO + mongocxx + OpenSSL shared libs copied across. CLI flags are passed via env vars expanded in the container `CMD`:
+The `pbx-agent` container is built from [`docker/Dockerfile.agent`](../docker/Dockerfile.agent) — multi-stage, `FROM pbx-cpp-builder:bootstrap` for the build stage, `FROM ubuntu:focal` for the runtime stage with only ACE/TAO + mongocxx + OpenSSL shared libs copied across.
 
-| Env var              | CLI flag           | Default                 | Note |
-|----------------------|--------------------|--------------------------|------|
-| `CLOUD_HOST`         | `--cloud-host`     | _(required)_             | Heroku hostname for `/agent` WS upgrade. |
-| `CLOUD_PORT`         | `--cloud-port`     | `443`                    | |
-| `TLS_CERT`           | `--tls-cert`       | `/opt/pbx-agent/certs/agent.crt` | Mounted via `CERTS_DIR` bind. |
-| `TLS_KEY`            | `--tls-key`        | `/opt/pbx-agent/certs/agent.key` | |
-| `TLS_CA`             | `--tls-ca`         | `/opt/pbx-agent/certs/cloud-ca.pem` | |
-| `MONGO_URI`          | `--mongo-uri`      | `mongodb://pbx-mongo:27017/pabx` | Service DNS via the `pbx-net` bridge. DB name is `pabx`, matching the Heroku app name. |
-| `AGENT_SOCIETY_ID`   | `--society-id`     | _(required)_             | Mongo ObjectId or short code matching the society document. |
-| `ASTERISK_HOST`/`_PORT` | `--asterisk-host`/`-port` | `pbx-asterisk:8088` | chan_pjsip WS endpoint. |
-| `ARI_APP`            | `--ari-app`        | `pbx`                    | Stasis app name in `extensions.conf`. |
-| `ARI_USER`/`ARI_PASS`| `--ari-user`/`-pass` | `asterisk`/`asterisk` | **Override in prod.** |
+The container's `CMD` is intentionally lean — it only passes the two operator-required args plus an optional inner-TLS hostname:
+
+| Env var              | CLI flag passed by CMD          | Note |
+|----------------------|---------------------------------|------|
+| `CLOUD_HOST`         | `--cloud-host`                  | Heroku hostname for `/agent` WS upgrade (**required**). |
+| `AGENT_SOCIETY_ID`   | `--society-id`                  | Mongo ObjectId or short code matching the society document (**required**). The agent emits this in `AGENT_HELLO` so the cloud replies with the canonical sipRealm. |
+| `INNER_TLS_HOSTNAME` | `--inner-tls-hostname` (if set) | Optional SAN/CN to verify the cloud's InnerTLS cert against. |
+
+Everything else (mongo URI, asterisk service DNS, ARI app/user/pass, cert paths) lives as compile-time defaults inside [`pbx-agent/src/main/main.cpp`](src/main/main.cpp) since they're invariant for a compose-deployed agent:
+
+| Compile-time default in `main.cpp` | Value |
+|------------------------------------|-------|
+| `tls_cert` / `tls_key` / `tls_ca` | `/opt/pbx-agent/certs/{agent.crt,agent.key,cloud-ca.pem}` (CERTS_DIR mount lands here) |
+| `inner_tls_cert/key/ca` | Same triple — reused for the inner handshake |
+| `mongo_uri` | `mongodb://pbx-mongo:27017/pabx` (compose service DNS) |
+| `ast_host` / `ast_port` | `pbx-asterisk` / `8088` |
+| `ari_app` / `ari_user` / `ari_pass` | `pbx` / `asterisk` / `asterisk` (matches `docker/asterisk/ari.conf`; **override for prod** by adding `command: ["…", "--ari-user", "…"]` to the pbx-agent service) |
+| `sip_realm` | empty → cloud-provided via `SOCIETY_BOOTSTRAP`; CLI `--sip-realm` overrides |
+
+Bare-metal / dev / Lima-VM use can still pass any flag explicitly (`./pbx-agent --asterisk-host 127.0.0.1 --mongo-uri …`); the binary's flag surface is unchanged.
 
 Smoke test once the stack is up:
 
