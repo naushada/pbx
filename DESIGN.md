@@ -17,9 +17,9 @@ VoIP PBX for residential societies. Heroku-hosted control plane + on-prem `pbx-a
 
 **Non-functional**
 - Heroku web dyno: HTTP/WSS only on `$PORT`. No UDP. No inbound to `pbx-agent` through Heroku.
-- All new network code in **C++ using ACE_*** APIs, mirroring xpmile (`WebServer` / `WebConnection` / `MicroService`, `ACE_SSL_SOCK_Connector`, `ACE_Reactor`, `ACE_Message_Block` queues).
-- Reuse xpmile's mTLS CA. Heroku auto-cert (Let's Encrypt) for public WSS.
-- Reuse xpmile's MongoDB client pool (`MongodbClient`).
+- All new network code in **C++ using ACE_*** APIs, following the shared-library `WebServer` / `WebConnection` / `MicroService`, `ACE_SSL_SOCK_Connector`, `ACE_Reactor`, `ACE_Message_Block` queue patterns.
+- Per-society mTLS CA generated at install time. Heroku auto-cert (Let's Encrypt) for public WSS.
+- Reuse the shared-library MongoDB client pool (`MongodbClient`).
 - Society opens **one public UDP port** with DNAT to coturn on `pbx-agent`.
 
 **Out of scope (v1)**
@@ -45,9 +45,9 @@ VoIP PBX for residential societies. Heroku-hosted control plane + on-prem `pbx-a
                 │  ├─ SipBridge — multiplexes SIP-WS frames onto    │
                 │  │   the single agent tunnel                      │
                 │  ├─ PushSender — VAPID Web Push                   │
-                │  └─ MongodbProxy → wsdbagent (reuse xpmile)       │
+                │  └─ MongodbProxy → wsdbagent (shared-library)     │
                 └────────────────────────┬──────────────────────────┘
-                                         │  WSS, mTLS (xpmile CA)
+                                         │  WSS, mTLS (per-society CA)
                                          │  (pbx-agent dials OUT)
             ┌────────────────────────────┴─────────────────────────┐
             │ Society LAN  (pbx-agent host: Linux box, 4-core/8GB) │
@@ -76,7 +76,7 @@ VoIP PBX for residential societies. Heroku-hosted control plane + on-prem `pbx-a
 ```
 
 The browser keeps **two** independent network paths:
-1. **Signaling** — WSS to Heroku, tunneled to Asterisk. Always available, follows xpmile's reachability.
+1. **Signaling** — WSS to Heroku, tunneled to Asterisk. Always available as long as the cloud is reachable.
 2. **Media** — UDP/SRTP directly to the other browser (or to coturn when relay needed). Never traverses Heroku.
 
 ---
@@ -85,12 +85,12 @@ The browser keeps **two** independent network paths:
 
 ### 3.1 Heroku cloud app — `onprem-pbx-cloud` (C++ / ACE)
 
-Single `uniservice`-style binary, modelled on xpmile. New module: `modules/module/pbx/`.
+Single `uniservice`-style binary, modelled on the shared-library `WebServer` pattern. New module: `modules/module/pbx/`.
 
 | Class (ACE-based)        | Role |
 |--------------------------|------|
-| `WebServer`              | Reused from xpmile. Owns reactor, Mongo proxy, MicroService pool. |
-| `WebConnection`          | Per-socket handler. Detects WS upgrade for `/sip-ws` (browser) and `/agent` (pbx-agent). Hand-off pattern identical to xpmile's `/ws/db`. |
+| `WebServer`              | Reused from the shared library. Owns reactor, Mongo proxy, MicroService pool. |
+| `WebConnection`          | Per-socket handler. Detects WS upgrade for `/sip-ws` (browser) and `/agent` (pbx-agent). Hand-off pattern identical to the inherited `/ws/db`. |
 | `MicroService` (extended)| Routes new endpoints: `POST /api/v1/society`, `POST /api/v1/subscriber/import`, `GET /api/v1/cdr/...`, `POST /api/v1/push/subscribe`, etc. |
 | `SipBridge` *(new)*      | Owns the WSS agent socket(s). Frames each browser's SIP-WS traffic with a per-stream id; demux'es responses from the agent back to the right browser connection. Subclass of `ACE_Event_Handler`. |
 | `PushSender` *(new)*     | Asynchronous Web-Push (VAPID-signed JWT). Uses `ACE_SOCK_Connector` + curl for HTTPS to push services. Triggered by an INVITE-arrived hook from `SipBridge`. |
@@ -100,7 +100,7 @@ Heroku app talks to MongoDB only via the existing wsdbagent tunnel. There is no 
 
 ### 3.2 On-prem `pbx-agent` (C++ / ACE)
 
-A small daemon, structurally similar to xpmile's `wsdbagent`. New binary: `pbx-agent`.
+A small daemon, structurally similar to the shared-library `wsdbagent`. New binary: `pbx-agent`.
 
 | Class (ACE-based)            | Role |
 |------------------------------|------|
@@ -110,16 +110,16 @@ A small daemon, structurally similar to xpmile's `wsdbagent`. New binary: `pbx-a
 | `AriClient` *(new)*          | HTTP REST client to Asterisk ARI for admission control (count active channels, enforce 5-call cap), CDR scraping, ConfBridge orchestration. `ACE_SOCK_Connector` + HTTP. |
 | `PjsipProvisioner` *(new)*   | Materialises a subscriber row as three Asterisk sorcery objects (auth/aor/endpoint) via ARI dynamic-config PUTs (`/ari/asterisk/config/dynamic`). Idempotent — re-provisioning the same subscriber is the create-or-replace path. |
 | `SubscriberWatcher` *(new)*  | Keeps Asterisk's pjsip endpoints in sync with the `subscribers` collection. Bootstraps via a society-scoped full-scan, then tails a Mongo change stream to react to inserts/updates/deletes in real time. Drives `PjsipProvisioner`. See §4.1. |
-| `MongoSink`                  | Reuses xpmile's `MongodbClient` to persist CDRs and replicate subscriber records pushed from cloud. |
+| `MongoSink`                  | Reuses the shared-library `MongodbClient` to persist CDRs and replicate subscriber records pushed from cloud. |
 
 Third-party processes co-located on the agent host (not rewritten):
 - **Asterisk** with `chan_pjsip`, WebSocket transport on `127.0.0.1:8088`, `directmedia=yes` for 1:1, `ConfBridge` for flat-group calls.
 - **coturn** bound to LAN + the DNAT'd public UDP port. Configured with `use-auth-secret` (RFC 5766 §5 REST API). The cloud mints **time-limited TURN credentials** for each browser at REGISTER time: `username = <unix-ts-expiry>:<sipUsername>`, `password = HMAC-SHA1(secret, username)`. The shared secret lives in `societies.turnSharedSecret`. Browser gets these via `GET /api/v1/turn-credentials`; passes them straight into its `RTCConfiguration.iceServers`. Asterisk's own `ice_support=yes` is a separate flag enabling ICE on its RTP — unrelated to credential issuance.
-- **MongoDB** (reused, identical to xpmile).
+- **MongoDB** (reused from the shared library).
 
 ### 3.3 Web softphone (Angular, in `ui/`)
 
-- Angular workspace following xpmile's conventions (Clarity, `$any()` cast pattern).
+- Angular workspace following the project's established conventions (Clarity, `$any()` cast pattern).
 - Library: **SIP.js** for SIP-over-WS + WebRTC stack.
 - Service Worker for VAPID push handler — on `notificationclick`, opens the portal which re-registers and accepts the incoming INVITE.
 - Pages: login, dial-pad, contacts (search by flat), in-call (hold/mute/DTMF), call history, settings, conference room.
@@ -503,7 +503,7 @@ For 1:1 directmedia, Asterisk's DTLS cert isn't actually used on the media path 
 
 ## 10. Security checklist
 
-- All WSS uses TLS 1.2+ (Heroku-managed cert public side; xpmile mTLS CA inside the tunnel).
+- All WSS uses TLS 1.2+ (Heroku-managed cert public side; per-society mTLS CA inside the tunnel).
 - Two credentials per subscriber (see §5): `sipHa1` (MD5, Asterisk-readable) + `portalPasswordHash` (bcrypt cost 12). Plaintext of either shown once on CSV-import download, then unrecoverable.
 - Portal session cookie `HttpOnly; Secure; SameSite=Strict`.
 - CSRF: state-changing REST endpoints (`POST/PUT/DELETE`) require an `X-CSRF-Token` header echoed from a per-session token issued at login.
@@ -519,7 +519,7 @@ For 1:1 directmedia, Asterisk's DTLS cert isn't actually used on the media path 
 
 | Artifact                 | Where                                    | How |
 |--------------------------|------------------------------------------|-----|
-| `onprem-pbx-cloud` image | Heroku app `onprem-pbx` (one container)  | `deploy-heroku.sh` clone of xpmile's |
+| `onprem-pbx-cloud` image | Heroku app `onprem-pbx` (one container)  | `deploy-heroku.sh` |
 | `pbx-agent` image        | On-prem host (society)                   | `docker-compose.agent.yml` |
 | Asterisk image           | Same host as pbx-agent                   | Same compose file |
 | coturn image             | Same host as pbx-agent                   | Same compose file |
@@ -530,17 +530,17 @@ CSV-import is a one-shot REST call `POST /api/v1/society/<id>/subscribers/import
 
 ---
 
-## 12. Reuse map (DRY against xpmile)
+## 12. Reuse map
 
-Anything reused is **copied into `onprem-pbx/modules/...` verbatim or near-verbatim** so the two projects can evolve independently; no shared library coupling. The source file in xpmile is the canonical reference; the copy here is patched only as needed.
+Anything reused from the upstream shared library is **copied into `onprem-pbx/modules/...` verbatim or near-verbatim** so the two projects can evolve independently; no shared library coupling. The upstream source is the canonical reference; the copy here is patched only as needed.
 
-| New file in onprem-pbx | Copied from xpmile | Modifications |
+| New file in onprem-pbx | Source in the shared library | Modifications |
 |---|---|---|
 | `modules/module/webservice/webserver.{hpp,cpp}` | `modules/module/webservice/webserver.{hpp,cpp}` | Add routes for `/sip-ws` and `/agent` WS upgrades. |
-| `modules/module/webservice/webconnection.{hpp,cpp}` | same | Add WS upgrade detection for the two new paths; reuse the exact hand-off mechanics (`remove_handler` → clear `m_handle` → publish to bridge) documented in xpmile CLAUDE.md §"WebSocket hand-off mechanics". |
+| `modules/module/webservice/webconnection.{hpp,cpp}` | same | Add WS upgrade detection for the two new paths; reuse the exact hand-off mechanics (`remove_handler` → clear `m_handle` → publish to bridge) — the well-known WebSocket hand-off invariant. |
 | `modules/module/webservice/microservice.{hpp,cpp}` | same | Add `handle_subscriber_*`, `handle_society_*`, `handle_cdr_*`, `handle_push_*`. URI-prefix routing pattern unchanged. |
-| `modules/module/http/inc/message_parser.hpp`<br>`modules/module/http/src/message_parser.cpp` | extracted from xpmile `http_parser.{hpp,cpp}` | New base class. Hosts the protocol-agnostic logic: `message_length` (CRLFCRLF + `Content-Length`), `get_header`, `parse_mime_header`, lowercased `m_tokenMap`, `pct_decode`. ~200 lines lifted unchanged. |
-| `modules/module/http/inc/http_parser.hpp`<br>`modules/module/http/src/http_parser.cpp` | xpmile `http_parser.{hpp,cpp}` | Becomes a thin subclass of `MessageParser`. Keeps `parse_first_line()` (METHOD URI HTTP/1.1), query-string parsing, chunked/gzip body decode. Public API (`uri()`, `method()`, `body()`, `add_element`, `get_element`) preserved so reused xpmile code compiles unchanged. |
+| `modules/module/http/inc/message_parser.hpp`<br>`modules/module/http/src/message_parser.cpp` | extracted from `http_parser.{hpp,cpp}` | New base class. Hosts the protocol-agnostic logic: `message_length` (CRLFCRLF + `Content-Length`), `get_header`, `parse_mime_header`, lowercased `m_tokenMap`, `pct_decode`. ~200 lines lifted unchanged. |
+| `modules/module/http/inc/http_parser.hpp`<br>`modules/module/http/src/http_parser.cpp` | `http_parser.{hpp,cpp}` | Becomes a thin subclass of `MessageParser`. Keeps `parse_first_line()` (METHOD URI HTTP/1.1), query-string parsing, chunked/gzip body decode. Public API (`uri()`, `method()`, `body()`, `add_element`, `get_element`) preserved so the inherited code compiles unchanged. |
 | `modules/module/sip/inc/sip_parser.hpp`<br>`modules/module/sip/src/sip_parser.cpp` *(new — landed in Layer 0)* | inherits from `MessageParser` | SIP-specific bits only: detects request vs status line (`SIP/2.0 …` prefix → status), parses `METHOD Request-URI SIP/2.0` or `SIP/2.0 <code> <reason>`, exposes `is_request()`, `status_code()`, `reason_phrase()`, `error()`. Compact-header alias table (`l`→`content-length`, `v`→`via`, `i`→`call-id`, `f`→`from`, `t`→`to`, `m`→`contact`, `c`→`content-type`, `s`→`subject`, `k`→`supported`, `e`→`content-encoding`, `o`→`event`); `add_element()` canonicalizes on insert so lookups by either form resolve. Multi-value arrival-ordered storage (`m_multiMap`) for `via`, `record-route`, `route`, `contact`, `proxy-authenticate`, `www-authenticate`; `get_all()` returns the vector, `get_element()` returns the topmost entry. Refuses `Transfer-Encoding: chunked` (RFC 3261 §7.5). |
 | `modules/module/mongodb/*` | `modules/module/mongodb/*` | Verbatim. `MongodbClient` pool; reuse `next_awbno`-style atomic counter for SIP-username generation. |
 | `modules/module/wsdbproxy/*` | same | Verbatim. Cloud reads Mongo through wsdbagent in remote-db mode. |
@@ -549,11 +549,11 @@ Anything reused is **copied into `onprem-pbx/modules/...` verbatim or near-verba
 | `Dockerfile.cloud`, `Dockerfile.agent` | `Dockerfile`, `Dockerfile.wsdbagent` | Same multi-stage `cpp-builder`. `BUILD_TESTS=OFF` for agent. |
 | `docker-compose.heroku.yml`, `docker-compose.agent.yml` | same | Add Asterisk + coturn services to agent compose. |
 | `deploy-heroku.sh`, `run.sh`, `run-agent.sh` | same | s/marvel/onprem-pbx/ and s/uniservice/pbx-cloud/. |
-| `ui/` (Angular skeleton, build config, Clarity setup) | xpmile `ui/` | Keep build pipeline; replace shipment screens with softphone screens. Reuse `$any()`, pdfMake patterns, dynamic FormGroup helpers. |
+| `ui/` (Angular skeleton, build config, Clarity setup) | shared-library `ui/` | Keep build pipeline; replace shipment screens with softphone screens. Reuse `$any()`, pdfMake patterns, dynamic FormGroup helpers. |
 | `CMakeLists.txt` top-level + per-module | same | Verbatim; add `add_subdirectory(modules/module/pbx)` and `pbx-agent`. |
 | `test/` GTest setup (`offtarget` binary) | same | Verbatim. New tests slot in under `BUILD_TESTS=ON`. |
 
-**Genuinely new code** (no xpmile counterpart):
+**Genuinely new code** (no shared-library counterpart):
 
 - `modules/module/pbx/{inc,src}/sip_frame.{hpp,cpp}` — wire-format encode/decode (10-byte big-endian header, op-code whitelist, 1 MiB payload cap, `Status::Ok/NeedMore/Invalid` decode result). **Landed in Layer 0.** Hand-rolled big-endian readers chosen over `ACE_CDR` since the wire format does not match `ACE_CDR`'s default native-byte-order layout and the swap calls add no value at this scale.
 - `modules/module/pbx/sipbridge.{hpp,cpp}` — multiplexer (ACE event handler). Layer 1.
@@ -568,6 +568,6 @@ Anything reused is **copied into `onprem-pbx/modules/...` verbatim or near-verba
 
 This keeps the parser off the hot path while still earning its keep in tests and giving us a clean extension point for future cloud-side admission policy.
 
-**Rule of thumb when implementing**: if a behavior already exists in xpmile (HTTP parse, WS upgrade, Mongo CRUD, mTLS dial-out, build/deploy script), copy the file over first, get it compiling under the new project, *then* extend. No re-deriving from scratch.
+**Rule of thumb when implementing**: if a behavior already exists in the shared library (HTTP parse, WS upgrade, Mongo CRUD, mTLS dial-out, build/deploy script), copy the file over first, get it compiling under this project, *then* extend. No re-deriving from scratch.
 
 ---

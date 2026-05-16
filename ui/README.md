@@ -2,11 +2,11 @@
 
 > **Status:** ✅ Slice 0 (Angular project scaffold) complete. `ng build` green. Login + SIP + WebRTC come in subsequent slices.
 
-Angular 14 + Clarity Design System (mirrors the xpmile `ui/` shape) + [SIP.js](https://sipjs.com/) for SIP-over-WebSocket signalling. The cloud serves this bundle from `/` and proxies REST under `/api/v1/...`; SIP signalling goes over the `/sip-ws` WebSocket upgrade and media flows directly browser↔browser via DTLS-SRTP.
+Angular 14 + Clarity Design System + [SIP.js](https://sipjs.com/) for SIP-over-WebSocket signalling. The cloud serves this bundle from `/` and proxies REST under `/api/v1/...`; SIP signalling goes over the `/sip-ws` WebSocket upgrade and media flows directly browser↔browser via DTLS-SRTP.
 
 ## Repo layout
 
-Same shape as `xpmile/ui/`:
+The standard Angular workspace shape used across the project:
 
 ```
 ui/
@@ -75,8 +75,8 @@ podman run --rm -v "$PWD/ui:/work" -w /work mcr.microsoft.com/playwright:v1.40.1
 ## Notable pinning
 
 - `@types/node` pinned to `^16.18.x` — TypeScript 4.7 (Angular 14's compiler) cannot consume the `^20` typings shipped on `latest`.
-- `overrides` in `package.json` forces `lit-html@^2.3.0` + `lit-element@^3.0.0` for both `@clr/core` (which lists `lit-html@^1` as a peer) and `@cds/core` (which needs the `TemplateResult<1>` generic from lit-html 2). Same pattern xpmile resolves via its checked-in `package-lock.json`.
-- `--legacy-peer-deps` is currently needed because `@clr/angular@13` lists Angular 13 as a peer while we run Angular 14. Identical to xpmile's setup.
+- `overrides` in `package.json` forces `lit-html@^2.3.0` + `lit-element@^3.0.0` for both `@clr/core` (which lists `lit-html@^1` as a peer) and `@cds/core` (which needs the `TemplateResult<1>` generic from lit-html 2). The checked-in `package-lock.json` pins the resolved tree.
+- `--legacy-peer-deps` is currently needed because `@clr/angular@13` lists Angular 13 as a peer while we run Angular 14.
 
 ## Slices ahead
 
@@ -93,4 +93,4 @@ podman run --rm -v "$PWD/ui:/work" -w /work mcr.microsoft.com/playwright:v1.40.1
 
 ## Origin
 
-The scaffold is a curated copy of `xpmile/ui/` — same Angular/Clarity/CDS stack, same `httpsvc`/`pubsubsvc` pattern, same Clarity-themed `styles.scss`. The feature surface (softphone) is wholly new; the xpmile shipment/inventory/tracking modules are not carried over.
+The scaffold reuses the project's established Angular workspace structure — same Angular/Clarity/CDS stack, same `httpsvc`/`pubsubsvc` pattern, same Clarity-themed `styles.scss`. The feature surface (softphone) is wholly new.

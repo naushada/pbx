@@ -2,7 +2,7 @@
 
 > **Status:** ✅ Layer 2 complete. ✅ Layer 3 ACE bindings complete (`AceSslTransport`, `AriWsClient`, plus the cloud-side `BrowserStream`/`AgentStream` and `HandoffOrdering` source-invariant test). 🔄 Layer 4: the agent-side components (`AsteriskWsFactory`, `AriRestClient`) are complete, and `pbx-agent/src/main/main.cpp` wires every Layer 0–4 component into one ACE reactor with no placeholders (`--help` works; pure glue, no new logic). Remaining Layer 4 work is the `SipScenarios*` integration tests against a real Asterisk (see [`TDD-PLAN.md → Layer 4`](../TDD-PLAN.md)).
 
-C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to xpmile's `wsdbagent` (the analog directory in xpmile is `xpmile/onprem/` — same role, different name).
+C++/ACE daemon that runs on the society's on-prem host alongside Asterisk, coturn, and MongoDB. Structurally similar to the shared-library `wsdbagent` pattern (dial-out + WSS upgrade + persistent reconnect loop).
 
 ## Components
 
@@ -200,7 +200,7 @@ The concrete `ITransport` that `CloudConnector` uses in production. Lives betwee
 ### Dial-out flow
 
 1. `ACE_SSL_Context::instance()` is configured per dial with the caller's CA + client cert + client key. `SSL_VERIFY_PEER` is enabled whenever a CA is supplied so we refuse cloud certs that aren't signed by our trust anchor.
-2. `ACE_SSL_SOCK_Connector::connect(m_stream, addr, &timeout)` with a 10-second timeout (Heroku's router can accept the SYN but never complete TLS if the dyno is wedged — same wedge xpmile's wsdbagent guards against).
+2. `ACE_SSL_SOCK_Connector::connect(m_stream, addr, &timeout)` with a 10-second timeout (Heroku's router can accept the SYN but never complete TLS if the dyno is wedged — the same wedge the shared-library `wsdbagent` already guards against).
 3. Send an HTTP/1.1 WebSocket upgrade request: `GET /agent`, `Host`, `Upgrade: websocket`, `Connection: Upgrade`, random base64 `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`.
 4. Read response headers until `CRLFCRLF`.
 5. Validate via `validate_upgrade_response(headers, key)` — `HTTP/1.x 101 …` status + a `Sec-WebSocket-Accept` value matching `wsframe::accept_key(key)`. Any deviation → `connect_and_handshake` returns `false` and the factory returns nullptr (`CloudConnector` then bumps its backoff and retries).
@@ -527,7 +527,7 @@ Third-party processes co-located on the same host (not built or shipped by this 
 
 ## Origin
 
-`CloudConnector` repurposes the xpmile pattern at `xpmile/modules/module/wsdbagent/`. The dial-out + WSS upgrade + reconnect loop is identical; only the per-frame handler changes (BSON DB-call payload → [`sip_frame`](../modules/module/pbx/README.md) multiplex).
+`CloudConnector` repurposes the shared-library `wsdbagent` pattern. The dial-out + WSS upgrade + reconnect loop is identical; only the per-frame handler changes (BSON DB-call payload → [`sip_frame`](../modules/module/pbx/README.md) multiplex).
 
 ## Build & run
 

@@ -112,7 +112,7 @@ The browser passes these into `RTCConfiguration.iceServers`. coturn's `use-auth-
 2. Set its `m_handle` to `ACE_INVALID_HANDLE`
 3. Publish the upgraded socket to `SipBridge`
 
-In that order. Reversing any two of these leaks the socket, double-frees, or leaves a stale reactor entry. Same invariant for `/agent` (cloud accept side) and `/ws/db` (xpmile compatibility).
+In that order. Reversing any two of these leaks the socket, double-frees, or leaves a stale reactor entry. Same invariant for `/agent` (cloud accept side) and `/ws/db` (wsdbproxy tunnel).
 
 **Where.** `modules/module/webservice/src/webconnection.cpp` — handler shape; `test/integration/handoff_ordering_test.cc` — source-invariant regression guard. The test reads `webconnection.cpp` and asserts the textual ordering of the three calls for each of the three WS upgrade branches.
 

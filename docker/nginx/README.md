@@ -53,8 +53,8 @@ run" below.
 - **Production cloud (`pabx.herokuapp.com`).** `Dockerfile.cloud`'s
   stage 2 runs `ng build` and copies the Angular bundle straight into
   the `pbx-cloud` runtime image at `/opt/webgui/webui/`. The cloud's
-  `WebServer` serves the SPA via the static-file handler inherited
-  from xpmile. The browser hits `pabx.herokuapp.com` for both REST
+  `WebServer` serves the SPA via the shared-library static-file
+  handler. The browser hits `pabx.herokuapp.com` for both REST
   and `/webui/*` — no second app, no separate nginx.
 - **On-prem agent stack** (`docker-compose.agent.yml`). No nginx
   service. The agent stack is mongo + asterisk + coturn + pbx-agent

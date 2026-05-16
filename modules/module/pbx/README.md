@@ -1,6 +1,6 @@
 # pbx — cloud-side PBX module
 
-Cloud-side (Heroku) module. Contains the new code that has no xpmile counterpart: the multiplex tunnel framing, the `SipBridge` event handler, and the VAPID Web Push sender.
+Cloud-side (Heroku) module. Contains the new code that has no shared-library counterpart: the multiplex tunnel framing, the `SipBridge` event handler, and the VAPID Web Push sender.
 
 Current status:
 
@@ -98,7 +98,7 @@ DecodeResult decode(const std::string& buf);
 
 ### Why hand-rolled big-endian readers, not ACE_CDR?
 
-`ACE_InputCDR` / `ACE_OutputCDR` default to **native byte order** with explicit `ACE_CDR::swap_4()` calls required for wire format. For an 8-byte integer field on either side of a 1-byte op code, the swap call overhead exceeds the value-add. The hand-rolled big-endian readers are six lines, branch-free, and trivially auditable. See [`DESIGN.md §12`](../../../DESIGN.md#12-reuse-map-dry-against-xpmile) note.
+`ACE_InputCDR` / `ACE_OutputCDR` default to **native byte order** with explicit `ACE_CDR::swap_4()` calls required for wire format. For an 8-byte integer field on either side of a 1-byte op code, the swap call overhead exceeds the value-add. The hand-rolled big-endian readers are six lines, branch-free, and trivially auditable. See [`DESIGN.md §12`](../../../DESIGN.md#12-reuse-map) note.
 
 ### Behaviour pinned by tests (`test/sip_frame_test.cc` — 12 tests)
 
@@ -203,7 +203,7 @@ Out-of-band ops: `OnTunnelPushNotify_InvokesPushHandler`, `OnTunnelCdrPush_Invok
 
 Revocation (`IRevocationSink`): `Revoke_EmitsSubscriberRevokedFrame` (a `SUBSCRIBER_REVOKED` frame with stream-id 0 and the `{societyId, sipUsername}` payload), `Revoke_NoTunnel_IsSilentNoOp` (agent disconnected → no crash, no frame), `Revoke_AfterReconnect_GoesToNewTunnel`.
 
-> **Not yet pinned:** `HandoffOrdering` (TDD plan Layer 1) — this asserts the `remove_handler → m_handle = INVALID → publish to bridge` ordering in `WebConnection`. The test belongs to the [`webservice/`](../webservice/README.md) module's suite, lands when that module is copied from xpmile.
+> **Not yet pinned:** `HandoffOrdering` (TDD plan Layer 1) — this asserts the `remove_handler → m_handle = INVALID → publish to bridge` ordering in `WebConnection`. The test belongs to the [`webservice/`](../webservice/README.md) module's suite, lands when that module is copied in.
 
 ---
 
@@ -211,7 +211,7 @@ Revocation (`IRevocationSink`): `Revoke_EmitsSubscriberRevokedFrame` (a `SUBSCRI
 
 ## MicroServicePbx — REST handlers
 
-Free functions in the `MicroServicePbx::` namespace, each of shape `(const std::string& req, IMongodbClient& db) -> std::string`. They follow xpmile's `MicroService::handle_account_login_POST` style: take a raw HTTP request, return a raw HTTP response. The choice of free functions (vs methods on `MicroService`) keeps the xpmile-copied `webservice/` module untouched and locates all PBX-specific logic in our own module.
+Free functions in the `MicroServicePbx::` namespace, each of shape `(const std::string& req, IMongodbClient& db) -> std::string`. They follow the inherited `MicroService::handle_account_login_POST` style: take a raw HTTP request, return a raw HTTP response. The choice of free functions (vs methods on `MicroService`) keeps the inherited `webservice/` module untouched and locates all PBX-specific logic in our own module.
 
 Wired into `MicroService::process_request()` by URI prefix when the webservice slice patches it in (a small targeted patch — not part of this commit).
 
@@ -235,7 +235,7 @@ The two lifecycle handlers take an optional `IRevocationSink*` (default `nullptr
 ### Crypto
 
 - **sipHa1**: `MD5(sipUsername : sipRealm : sipPassword)` via OpenSSL `EVP_md5`. Asterisk's `auth_type=md5` consumes this directly; we never store the plaintext SIP password.
-- **portalPasswordHash**: `MongodbClient::hash_password()` (xpmile-provided bcrypt) for the portal login.
+- **portalPasswordHash**: `MongodbClient::hash_password()` (shared-library bcrypt helper) for the portal login.
 - **Random secrets**: `OPENSSL_RAND_bytes` over a 62-char alphanumeric alphabet (fallback to `std::random_device` if `RAND_bytes` fails). `sipPassword`/`portalPassword` are 16 chars, `sipUsername` is 10 chars prefixed `u_`, `turnSharedSecret` is 32 chars.
 
 ### Behaviour pinned by tests (`test/microservice_pbx_test.cc` — 47 tests)
@@ -266,7 +266,7 @@ Subscriber-lifecycle gate on `/sip-ws` (strict mode): `SipWsUpgrade_Strict_Rejec
 
 Session TTL — role-based base + sliding refresh: `SubscriberLogin_Strict_GuardRole_LongerTtl` (a `role=guard` login mints `expiresAt ≥ now+7d` and `Set-Cookie: Max-Age=604800`, vs the resident default 86400). `SipWsUpgrade_OnSuccess_BumpsSessionExpiry` (a successful `/sip-ws` upgrade slides `expiresAt` forward); `SipWsUpgrade_OnFailure_NoBump` (a 401 doesn't refresh). `Ping_NoToken_NoDbWrite_AlwaysReturnsOk` (anonymous ping never touches the DB), `Ping_WithQueryToken_RefreshesExpiry`, `Ping_WithSessionCookie_RefreshesExpiry`, `Ping_UnknownToken_NoDbWrite`, `Ping_ExpiredSession_DoesNotResurrect`, `Ping_GuardSession_RefreshesByGuardTtl` (an active guard ping bumps to `now+7d`, not `now+1d`).
 
-Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collection, query-fragment)` to a canned response — small extension over xpmile's single-result `MockMongodbClient` because MicroServicePbx handlers issue several different queries per call (society lookup + flat lookup + duplicate-email check). It records `inserts`, `updates`, and `deletes` for write-side assertions.
+Tests use a per-suite `TestDb` (subclass of `IMongodbClient`) that maps `(collection, query-fragment)` to a canned response — small extension over the shared-library single-result `MockMongodbClient` because MicroServicePbx handlers issue several different queries per call (society lookup + flat lookup + duplicate-email check). It records `inserts`, `updates`, and `deletes` for write-side assertions.
 
 ---
 
@@ -373,7 +373,7 @@ Edge: `NoSubscriptions_NotifyReturnsZero`.
 
 Mirror of agent-side [`CloudConnector`](../../../pbx-agent/README.md#cloudconnector). Where `CloudConnector` actively dials the cloud, `CloudTunnelEndpoint` is **fed** a connected transport after `WebConnection`'s `/agent` WebSocket-upgrade hand-off. Implements `TunnelSink` so `SipBridge` and the cloud's `PushSender` can write frames upstream without knowing about ACE_SSL or WS framing.
 
-Owned by `WebServer` and exposed via `WebServer::cloudTunnelEndpoint()` (parallel to xpmile's `wsDbServer()` accessor). Bound to the cloud's `SipBridge` instance at startup via `endpoint.attach_bridge(&bridge)`.
+Owned by `WebServer` and exposed via `WebServer::cloudTunnelEndpoint()` (parallel to the inherited `wsDbServer()` accessor). Bound to the cloud's `SipBridge` instance at startup via `endpoint.attach_bridge(&bridge)`.
 
 ### Dependency injection
 
@@ -468,7 +468,7 @@ bs->register_with_reactor();   // READ_MASK + keep-alive ping timer
 
 ### Frame handling
 
-Uses xpmile's `wsframe::{encode, decode, ping_frame, pong_frame, close_frame}`. On `handle_input`:
+Uses the shared-library `wsframe::{encode, decode, ping_frame, pong_frame, close_frame}` helpers. On `handle_input`:
 
 | Inbound WS opcode | Action |
 |---|---|
@@ -496,7 +496,7 @@ The Layer 1 / Layer 2 503 stub is retired. The new flow in `WebConnection::handl
 
 1. Resolve the portal session — `handle_sipws_upgrade(request, *mongodbcInst())` looks the `?token=`/cookie up in the `sessions` collection. A null Mongo client or an absent/unknown/expired session → send the error response and close. On success it yields the OPEN-frame `open_meta`.
 2. If `WebServer::cloudTunnelEndpoint()` is null, `sipBridge()` is null, or the agent isn't connected → 503 with `X-PBX-AgentConnected:` + `X-PBX-Hint:` headers.
-3. Otherwise: 101 Switching Protocols + xpmile-mechanic hand-off ordering (`remove_handler → m_handle=INVALID`) → construct `BrowserStream` on the raw fd with the resolved `open_meta` → register on the same reactor → release this WebConnection from the pool.
+3. Otherwise: 101 Switching Protocols + the well-known hand-off ordering (`remove_handler → m_handle=INVALID`) → construct `BrowserStream` on the raw fd with the resolved `open_meta` → register on the same reactor → release this WebConnection from the pool.
 
 ---
 
@@ -549,7 +549,7 @@ Tests use `socketpair()` so reads come from a real fd; `handle_input` (and `hand
 
 Mirrors the `/sip-ws` swap: on detected `/agent` WS upgrade:
 1. Send `101 Switching Protocols` + `Sec-WebSocket-Accept`.
-2. xpmile-mechanic hand-off (`remove_handler → m_handle=INVALID`).
+2. The well-known hand-off ordering (`remove_handler → m_handle=INVALID`).
 3. Read `CloudTunnelEndpoint::inner_tls_config()` — if a cert is configured (production), construct `AgentStream(endpoint, fd, /*auto_attach=*/false)`. Otherwise the legacy `auto_attach=true` ctor attaches immediately (test path; raw WS frames, no InnerTLS).
 4. If InnerTLS is configured: `as->setup_inner_tls(cert, key, ca)` — runs the synchronous `InnerTlsServer::accept` handshake over the WS frames via `WsInnerTlsBridge` (in blocking mode for the handshake, then switched to a buffered queue for steady state). On handshake failure: `delete as; return`. On success: `as->attach()` publishes the `TransportAdapter` to `CloudTunnelEndpoint::on_agent_connected`.
 5. `as->reactor(reactor()) + as->register_with_reactor()` (READ_MASK + keep-alive ping timer).
