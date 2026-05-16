@@ -385,3 +385,99 @@ TEST_F(InnerTlsTest, Mitm_TamperedFrame_Detected)
     EXPECT_FALSE(server.recv(recv))
         << "Tampered TLS frame must be detected (decryption failure)";
 }
+
+// ─── PeerSubjectCn — server can read client cert's CN after handshake
+
+TEST_F(InnerTlsTest, PeerSubjectCn_ReadableAfterMtlsHandshake)
+{
+    // Spec: when the client presents a cert (mTLS, both sides signed by
+    // the shared CA), `InnerTlsServer::peer_subject_cn()` returns the
+    // CN string from that cert's Subject. Used by the cloud's
+    // `AgentStream` for log labels + future AGENT_HELLO cross-checks.
+
+    MockTransport ct, st;
+    auto exchange = [&]() {
+        if (!ct.sentData.empty()) {
+            st.recvBuffer.insert(st.recvBuffer.end(),
+                                  ct.sentData.begin(), ct.sentData.end());
+            ct.sentData.clear();
+        }
+        if (!st.sentData.empty()) {
+            ct.recvBuffer.insert(ct.recvBuffer.end(),
+                                  st.sentData.begin(), st.sentData.end());
+            st.sentData.clear();
+        }
+    };
+
+    // Server wants the client cert. CA path enables SSL_VERIFY_PEER;
+    // the client only presents a cert if set_cert was called.
+    InnerTlsServer server(st,
+                           "/src/certs/server.crt",
+                           "/src/certs/server.key",
+                           "/src/certs/ca.crt");
+    InnerTlsClient client(ct);
+    client.set_ca("/src/certs/ca.crt");
+    ASSERT_TRUE(client.set_cert("/src/certs/client.crt",
+                                  "/src/certs/client.key"))
+        << "client.crt/client.key required (generate.sh outputs them)";
+
+    bool cd = false, sd = false;
+    for (int i = 0; i < 20; ++i) {
+        exchange();
+        if (!cd) cd = client.handshake();
+        exchange();
+        if (!sd) sd = server.accept();
+        if (cd && sd) break;
+    }
+    ASSERT_TRUE(cd && sd);
+
+    // The certs the repo's generate.sh mints use a fixed CN — check
+    // it's non-empty and matches what we expect for the client leaf.
+    const std::string cn = server.peer_subject_cn();
+    EXPECT_FALSE(cn.empty())
+        << "server must see the client's cert CN after a successful "
+        << "mTLS handshake (SSL_VERIFY_PEER + client.set_cert).";
+}
+
+TEST_F(InnerTlsTest, PeerSubjectCn_EmptyWhenClientPresentsNoCert)
+{
+    // SSL_VERIFY_PEER without FAIL_IF_NO_PEER_CERT permits the client
+    // to skip presenting a cert. In that case `peer_subject_cn()`
+    // must return empty (NOT crash, NOT lie). The cloud uses this as
+    // a "log only" path — falls back to AGENT_HELLO's claimed
+    // societyId.
+    MockTransport ct, st;
+    auto exchange = [&]() {
+        if (!ct.sentData.empty()) {
+            st.recvBuffer.insert(st.recvBuffer.end(),
+                                  ct.sentData.begin(), ct.sentData.end());
+            ct.sentData.clear();
+        }
+        if (!st.sentData.empty()) {
+            ct.recvBuffer.insert(ct.recvBuffer.end(),
+                                  st.sentData.begin(), st.sentData.end());
+            st.sentData.clear();
+        }
+    };
+
+    // Server WITHOUT a CA path → no SSL_VERIFY_PEER → client cert
+    // not requested.
+    InnerTlsServer server(st,
+                           "/src/certs/server.crt",
+                           "/src/certs/server.key");
+    InnerTlsClient client(ct);  // no set_cert call
+
+    bool cd = false, sd = false;
+    for (int i = 0; i < 20; ++i) {
+        exchange();
+        if (!cd) cd = client.handshake();
+        exchange();
+        if (!sd) sd = server.accept();
+        if (cd && sd) break;
+    }
+    ASSERT_TRUE(cd && sd);
+
+    EXPECT_TRUE(server.peer_subject_cn().empty())
+        << "anonymous client → no peer cert → empty CN; caller must "
+        << "tolerate this without crashing";
+}

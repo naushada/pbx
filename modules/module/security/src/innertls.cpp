@@ -86,11 +86,17 @@ bool InnerTlsClient::handshake()
 
 bool InnerTlsClient::set_cert(const std::string &cert_path, const std::string &key_path)
 {
-    if (SSL_CTX_use_certificate_file(m_ctx.get(), cert_path.c_str(), SSL_FILETYPE_PEM) != 1)
+    // SSL_CTX_use_certificate sets a default that NEW SSL objects
+    // inherit at SSL_new time — `m_ssl` was created in the ctor before
+    // this call, so we have to set the cert on the SSL object directly.
+    // Without this fix the client silently presents no cert and the
+    // server's `peer_subject_cn()` returns empty after a "successful"
+    // handshake.
+    if (SSL_use_certificate_file(m_ssl.get(), cert_path.c_str(), SSL_FILETYPE_PEM) != 1)
         return false;
-    if (SSL_CTX_use_PrivateKey_file(m_ctx.get(), key_path.c_str(), SSL_FILETYPE_PEM) != 1)
+    if (SSL_use_PrivateKey_file(m_ssl.get(), key_path.c_str(), SSL_FILETYPE_PEM) != 1)
         return false;
-    return SSL_CTX_check_private_key(m_ctx.get()) == 1;
+    return SSL_check_private_key(m_ssl.get()) == 1;
 }
 
 bool InnerTlsClient::verify_hostname(const std::string &hostname)
@@ -276,6 +282,19 @@ bool InnerTlsServer::recv(std::vector<std::uint8_t> &plaintext)
         ERR_clear_error();
         return false;
     }
+}
+
+std::string InnerTlsServer::peer_subject_cn() const
+{
+    X509 *cert = SSL_get_peer_certificate(m_ssl.get());
+    if (!cert) return {};
+    char cn[256] = {0};
+    const int n = X509_NAME_get_text_by_NID(X509_get_subject_name(cert),
+                                              NID_commonName,
+                                              cn, sizeof(cn));
+    X509_free(cert);
+    if (n <= 0) return {};
+    return std::string(cn, static_cast<std::size_t>(n));
 }
 
 bool InnerTlsServer::flush_wbio()

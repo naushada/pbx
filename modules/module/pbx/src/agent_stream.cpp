@@ -91,9 +91,20 @@ bool AgentStream::setup_inner_tls(const std::string &cert_path,
   // data that arrived in the same TCP segment as the handshake's final
   // record isn't lost on the next handle_input.
   m_recv_buf = m_bridge->leftover_socket_bytes();
-  ACE_DEBUG((LM_INFO,
-             ACE_TEXT("%D [AgentStream:%t] %M %N:%l inner-TLS handshake "
-                      "established\n")));
+  // Capture the agent cert's CN for log labels + future cross-checks
+  // against the AGENT_HELLO `societyId`. Empty CN is normal when the
+  // agent didn't present a cert (CA not configured on the cloud side).
+  m_peer_cn = m_inner_tls->peer_subject_cn();
+  if (!m_peer_cn.empty()) {
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [AgentStream:%t] %M %N:%l inner-TLS handshake "
+                        "established (peer CN=%s)\n"),
+               m_peer_cn.c_str()));
+  } else {
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [AgentStream:%t] %M %N:%l inner-TLS handshake "
+                        "established (anonymous client — no peer cert)\n")));
+  }
   return true;
 }
 

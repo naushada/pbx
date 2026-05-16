@@ -82,6 +82,12 @@ public:
                         const std::string &key_path,
                         const std::string &ca_path);
 
+  /// Subject CN of the agent's client cert (empty if not configured,
+  /// or if the handshake hasn't completed). Populated by
+  /// `setup_inner_tls()`. Used for log labels and reserved for future
+  /// cross-checks against AGENT_HELLO's claimed `societyId`.
+  const std::string &peer_cn() const { return m_peer_cn; }
+
   /// Publish the `TransportAdapter` to the endpoint. Idempotent.
   /// Production (with inner TLS): called only after `setup_inner_tls()`
   /// returns true. Default-constructed (no inner TLS): the constructor
@@ -148,6 +154,8 @@ private:
   /// automatic: m_inner_tls dies before m_bridge.
   std::unique_ptr<WsInnerTlsBridge> m_bridge;
   std::unique_ptr<InnerTlsServer>   m_inner_tls;
+  /// Captured from `m_inner_tls->peer_subject_cn()` post-handshake.
+  std::string                       m_peer_cn;
 };
 
 #endif // AGENT_STREAM_HPP
