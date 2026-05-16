@@ -306,6 +306,13 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "GET" && uri.compare(0, 16, "/api/v1/society/") == 0)
     return MicroServicePbx::handle_society_detail_GET(req, dbInst);
 
+  // Exact-match: GET /api/v1/admin/subscribers?societyId=…
+  // Admin-scoped subscriber list. Distinct from /subscriber (the
+  // strip-projected resident directory above) — admin needs every
+  // field for the SubscriberListView + the PUT/DELETE keys.
+  if (method == "GET" && uri == "/api/v1/admin/subscribers")
+    return MicroServicePbx::handle_admin_subscribers_GET(req, dbInst);
+
   // Prefix-match: GET /api/v1/cdr[?societyId=…]
   if (method == "GET" && uri.compare(0, 11, "/api/v1/cdr") == 0)
     return MicroServicePbx::handle_cdr_GET(req, dbInst);

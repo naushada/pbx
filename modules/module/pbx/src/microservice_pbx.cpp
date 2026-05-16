@@ -322,6 +322,41 @@ std::string handle_society_detail_GET(const std::string &req,
   return http_response(200, "OK", doc);
 }
 
+std::string handle_admin_subscribers_GET(const std::string &req,
+                                         IMongodbClient &db) {
+  const std::string uri        = raw_uri_with_query(req);
+  const std::string society_id = query_param(uri, "societyId");
+  if (society_id.empty())
+    return response_error(400, "Bad Request",
+                          "Missing required query param: societyId");
+
+  if (!db_available()) return http_response(200, "OK", "[]");
+
+  std::string raw;
+  try {
+    const json query = {{"societyId", society_id}};
+    raw = db.get_documents("subscribers", query.dump(), "{}");
+  } catch (...) {
+    return http_response(200, "OK", "[]");
+  }
+  if (raw.empty()) return http_response(200, "OK", "[]");
+
+  json arr;
+  try { arr = json::parse(raw); }
+  catch (...) { return http_response(200, "OK", "[]"); }
+  if (!arr.is_array()) return http_response(200, "OK", "[]");
+
+  // Strip server-only fields per row. Admin keeps every other field —
+  // contrast `handle_directory_GET` which rebuilds a 4-field projection
+  // for resident dashboards.
+  for (auto &row : arr) {
+    if (!row.is_object()) continue;
+    row.erase("portalPasswordHash");
+    row.erase("sipHa1");
+  }
+  return http_response(200, "OK", arr.dump());
+}
+
 std::string handle_subscriber_import_POST(const std::string &req,
                                           IMongodbClient &db) {
   Http parsed(req);

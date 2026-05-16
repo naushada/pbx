@@ -51,6 +51,19 @@ std::string handle_societies_GET(const std::string &req, IMongodbClient &db);
 std::string handle_society_detail_GET(const std::string &req,
                                       IMongodbClient &db);
 
+/// GET /api/v1/admin/subscribers?societyId=<id>
+/// Admin-scoped subscriber list. Distinct from /subscriber (the
+/// resident-facing directory, which strip-projects to
+/// `{flatNumber, displayName, sipUri, online}`): admin needs `_id`,
+/// `email`, `phone`, `role`, `status`, `sipUsername`, `autoAnswer`,
+/// `flatNumber`, `flatId`, `name` — every field the SubscriberListView
+/// renders + the PUT/DELETE endpoints key off. Stripped:
+/// `portalPasswordHash`, `sipHa1` — those never leave the server.
+/// 400 if `societyId` missing; same db_available() H12 guard as the
+/// other list GETs (returns `[]` + 200 when no DB is configured).
+std::string handle_admin_subscribers_GET(const std::string &req,
+                                         IMongodbClient &db);
+
 /// POST /api/v1/subscriber/import
 /// Body: a CSV (Content-Type: text/csv) with header row
 ///   `flat_number,name,email,phone,role`
