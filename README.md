@@ -302,20 +302,23 @@ the VM. `pbx-agent` + `pbx-wsdbagent` dial the deployed Heroku cloud,
 so a green run exercises the real cloud-tunnel handshake end-to-end.
 
 ```sh
-lima start    # alias → scripts/lima.sh start
+lima start                       # alias → scripts/lima.sh start
 # …~3 min cached / ~30+ min first cold run (bootstrap image build)…
-lima stop     # podman-compose down -v inside VM, then VM is destroyed
+lima vm                          # interactive bash inside the VM
+lima vm sudo podman ps           # one-shot command — runs in the VM, returns
+lima vm sudo podman logs pbx-agent
+lima stop                        # podman-compose down -v inside VM, then VM is destroyed
 ```
 
 What `lima start` does, in order:
 
-1. Provisions or reuses VM `onprem-pbx-test` (Ubuntu 24.04 arm64).
+1. Provisions or reuses VM `vm-onprem-pbx` (Ubuntu 24.04 arm64).
 2. Installs podman + podman-compose.
 3. Acquires `localhost/pbx-cpp-builder:bootstrap`. Three paths,
-   fastest first: already in VM → no-op; on macOS host →
-   `podman save | podman load` stream (~60s); otherwise build inside
-   VM from the canonical recipe inlined in `scripts/lima.sh` (~30 min,
-   one-time).
+   fastest first: already in VM → no-op; on macOS host with matching
+   arch → `podman save | podman load` stream (~60s); otherwise build
+   inside VM from the canonical recipe inlined in `scripts/lima.sh`
+   (~30 min, one-time).
 4. Runs `scripts/setup-society.sh demo-society` once
    (`certs/asterisk-dtls/pbx.crt`, `certs/turnserver.conf`).
 5. Writes `.env` with `CLOUD_HOST`, `AGENT_SOCIETY_ID`, `CERTS_DIR`.
@@ -327,15 +330,6 @@ What `lima start` does, in order:
 Override knobs (env): `HEROKU_HOST`, `HEROKU_PORT`, `SOCIETY_ID`,
 `RUN_BUDGET_SECS`. See
 [`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm).
-
-> **What `lima start` does NOT do.** It is a **binary-only smoke test**
-> of `pbx-agent` dialing the deployed cloud — Mongo, Asterisk, coturn,
-> and wsdbagent are **not** started. `SubscriberWatcher`'s Mongo URI
-> deliberately uses `serverSelectionTimeoutMS=2000` so the bootstrap
-> fails fast and the reactor reaches the cloud-tunnel handshake inside
-> the 90 s budget. For the real on-prem topology — the five containers
-> in the table above — use `podman-compose -f docker-compose.agent.yml
-> up --build -d`.
 
 ## Run the softphone UI
 
