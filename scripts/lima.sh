@@ -108,7 +108,13 @@ fi
 # downgrades to older codenames. --break-system-packages because PEP 668
 # blocks system-wide pip on Noble; safe here — the VM is single-purpose
 # and discarded by `lima stop`.
-step "apt deps (podman + podman-compose)"
+#
+# The `unqualified-search-registries` drop-in is what makes bare
+# `mongo:7` / `andrius/asterisk:20` / `coturn/coturn:4.6` resolve to
+# docker.io. Stock Debian/Ubuntu podman ships with that list empty for
+# safety; without it, every short-name pull hard-errors with "did not
+# resolve to an alias." Same surface as Docker, just opt-in.
+step "apt deps (podman + podman-compose + registries config)"
 SH "
   set -e
   if [ -f $SENT_APT ]; then exit 0; fi
@@ -116,6 +122,8 @@ SH "
   sudo apt-get install -y -qq ca-certificates curl podman python3-pip
   sudo apt-get install -y -qq podman-compose \
     || sudo pip3 install --break-system-packages podman-compose
+  echo 'unqualified-search-registries = [\"docker.io\"]' \
+    | sudo tee /etc/containers/registries.conf.d/00-docker.conf >/dev/null
   sudo touch $SENT_APT
 "
 
@@ -126,18 +134,37 @@ SH "
 # ubuntu:20.04 base (matches Dockerfile.agent's runtime stage glibc).
 # Three acquisition paths, fastest first:
 #
-#   a) already in VM   — no-op (re-run case).
-#   b) host has it     — stream via `podman save | podman load` (~60s).
-#   c) build inside VM — last resort; ~30 min cold from xpmile's recipe.
+#   a) already in VM         — no-op (re-run case).
+#   b) host image arch=VM    — stream via `podman save | podman load`.
+#   c) host image arch≠VM    — build inside VM (Apple Silicon devs
+#                              usually have only the amd64 deploy
+#                              bootstrap on the host; streaming it
+#                              would produce `Exec format error` at
+#                              every `RUN` step in stage 1).
+#   d) host has no bootstrap — build inside VM. ~30 min cold,
+#                              sentinel-cached as a tagged image.
 step "acquire pbx-cpp-builder:bootstrap image"
+vm_uname=$(SH "uname -m" 2>/dev/null | tr -d '\r\n')
+case "$vm_uname" in
+  aarch64|arm64) vm_arch=arm64 ;;
+  x86_64|amd64)  vm_arch=amd64 ;;
+  *) vm_arch=unknown ;;
+esac
+host_arch=$(podman image inspect localhost/pbx-cpp-builder:bootstrap \
+              --format '{{.Architecture}}' 2>/dev/null || echo "")
+
 if SH "sudo podman image exists localhost/pbx-cpp-builder:bootstrap" 2>/dev/null; then
   echo "[lima] bootstrap image already present in VM"
-elif podman image exists localhost/pbx-cpp-builder:bootstrap 2>/dev/null; then
+elif [ -n "$host_arch" ] && [ "$host_arch" = "$vm_arch" ]; then
   echo "[lima] streaming bootstrap image from host podman → VM podman..."
   podman save localhost/pbx-cpp-builder:bootstrap \
     | limactl shell "$VM" -- sudo podman load
 else
-  echo "[lima] bootstrap not on host either — building inside VM (~30 min)"
+  if [ -n "$host_arch" ]; then
+    echo "[lima] host bootstrap is $host_arch but VM is $vm_arch — building inside VM (~30 min)"
+  else
+    echo "[lima] bootstrap not on host either — building inside VM (~30 min)"
+  fi
   # Heredoc the Dockerfile through `tee` to the virtiofs-mounted repo
   # so podman build can pick it up. Build context is empty — every
   # source is pulled from upstream inside the Dockerfile.
@@ -167,7 +194,7 @@ RUN cd /root && \
 # what mongo-cxx-driver's pkg-config probe expects.
 RUN cd /root && \
     git clone -b 1.19.1 --depth 1 https://github.com/mongodb/mongo-c-driver.git && \
-    cd mongo-c-driver && mkdir build && cd build && \
+    cd mongo-c-driver && mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release \
              -DCMAKE_INSTALL_PREFIX=/usr/local \
              -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF && \
@@ -177,7 +204,7 @@ RUN cd /root && \
 # boost variant linkage that v3.6 defaults to.
 RUN cd /root && \
     git clone -b releases/v3.6 --depth 1 https://github.com/mongodb/mongo-cxx-driver.git && \
-    cd mongo-cxx-driver && mkdir build && cd build && \
+    cd mongo-cxx-driver && mkdir -p build && cd build && \
     cmake .. -DBSONCXX_POLY_USE_MNMLSTC=1 \
              -DCMAKE_BUILD_TYPE=Release \
              -DCMAKE_INSTALL_PREFIX=/usr/local \
@@ -188,7 +215,7 @@ RUN cd /root && \
 # googletest 1.12.1 — offtarget's link target. Matches xpmile.
 RUN cd /root && \
     git clone -b release-1.12.1 --depth 1 https://github.com/google/googletest.git && \
-    cd googletest && mkdir build && cd build && \
+    cd googletest && mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
     make -j$(nproc) && make install && ldconfig
 DOCKEREOF
