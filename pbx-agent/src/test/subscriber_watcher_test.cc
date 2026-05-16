@@ -82,7 +82,17 @@ public:
 class RecorderCursor : public IChangeStreamCursor {
 public:
   std::deque<std::string> queue;
+  /// When true, next try_next() throws to simulate a mid-stream Mongo
+  /// disconnect. Cleared after firing so a second call would fall back
+  /// to normal queue behaviour — though in practice the watcher tears
+  /// down the cursor on the throw, so a second call never happens on
+  /// the same cursor instance.
+  bool throw_on_next = false;
   std::string try_next(int /*max_await_ms*/) override {
+    if (throw_on_next) {
+      throw_on_next = false;
+      throw std::runtime_error("simulated Mongo disconnect");
+    }
     if (queue.empty()) return {};
     std::string s = std::move(queue.front());
     queue.pop_front();
@@ -96,7 +106,17 @@ class FakeDb : public IMongodbClient {
 public:
   std::string             bootstrap_json;  ///< canned JSON array
   bool                    enable_stream = true;
-  RecorderCursor         *issued_cursor = nullptr; ///< observed by the test
+  RecorderCursor         *issued_cursor = nullptr; ///< most recent
+  /// Queue of cursors to hand out on successive watch_collection() calls.
+  /// Empty queue defaults to a fresh single-use RecorderCursor (matches
+  /// the prior single-cursor contract). Tests that exercise the
+  /// reopen-after-throw path push two cursors here — pre- and
+  /// post-disconnect — and assert ordering.
+  std::deque<std::unique_ptr<RecorderCursor>> cursor_queue;
+  /// Record of every `watch_collection(coll, token)` call. `.token` is
+  /// the raw JSON of the resume token (empty for the initial open).
+  struct WatchCall { std::string coll; std::string token; };
+  std::vector<WatchCall> watch_calls;
 
   const std::string &get_database() const override { return m_db; }
   std::string create_document(const std::string &, const std::string &,
@@ -128,9 +148,23 @@ public:
   bool delete_file(const std::string &) override { return false; }
 
   std::unique_ptr<IChangeStreamCursor>
-  watch_collection(const std::string &) override {
+  watch_collection(const std::string &coll) override {
+    return watch_collection(coll, std::string{});
+  }
+
+  std::unique_ptr<IChangeStreamCursor>
+  watch_collection(const std::string &coll,
+                    const std::string &resume_token_json) override {
+    watch_calls.push_back({coll, resume_token_json});
     if (!enable_stream) return nullptr;
-    auto cur = std::make_unique<RecorderCursor>();
+    std::unique_ptr<RecorderCursor> cur;
+    if (!cursor_queue.empty()) {
+      cur = std::move(cursor_queue.front());
+      cursor_queue.pop_front();
+      if (!cur) return nullptr;  // explicit null = simulate reopen failure
+    } else {
+      cur = std::make_unique<RecorderCursor>();
+    }
     issued_cursor = cur.get();
     return cur;
   }
@@ -367,4 +401,162 @@ TEST(SubscriberWatcher, Tick_DrainsOneEventPerCall)
 
     w.tick();  // queue empty
     EXPECT_EQ(6u, rest.puts.size());
+}
+
+// ─── Resume-token capture + reopen recovery ────────────────────────────────
+
+namespace {
+/// Build a change event that includes its own `_id` (the resume token).
+/// Used by the resume-token tests below — production-shape events look
+/// exactly like this when emitted by mongocxx.
+std::string event_with_token(const std::string &op, const json &full_doc,
+                              const std::string &token_data) {
+  json e = json::parse(event("insert", full_doc));
+  e["operationType"] = op;
+  e["_id"]           = {{"_data", token_data}};
+  return e.dump();
+}
+} // namespace
+
+TEST(SubscriberWatcher, HandleEvent_CapturesIdAsResumeToken)
+{
+    FakeDb db;
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "soc1.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+
+    json doc = json::parse(subscriber_row("0000000000000000000000a1", "u_a"));
+    SubscriberWatcherTestAccess::deliver(
+        w, event_with_token("insert", doc, "TOKEN-1"));
+
+    // The watcher must carry the bare `_id` JSON forward so a subsequent
+    // reopen passes the same shape mongocxx expects in `resume_after`.
+    EXPECT_NE(std::string::npos, w.resume_token().find("TOKEN-1"));
+}
+
+TEST(SubscriberWatcher, HandleEvent_OtherSociety_StillCapturesToken)
+{
+    // Even when an event is dispatched as a no-op (wrong society, etc.)
+    // the server has moved past it. If we don't capture the token,
+    // every reopen replays this event forever.
+    FakeDb db;
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "soc1.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+
+    json doc = json::parse(
+        subscriber_row("0000000000000000000000a1", "u_a", "active", "soc2"));
+    SubscriberWatcherTestAccess::deliver(
+        w, event_with_token("insert", doc, "OTHER-SOCIETY-TOKEN"));
+
+    EXPECT_TRUE(rest.puts.empty());  // not our society — no provision
+    EXPECT_NE(std::string::npos,
+              w.resume_token().find("OTHER-SOCIETY-TOKEN"))
+        << "token captured even when dispatch is a no-op";
+}
+
+TEST(SubscriberWatcher, Tick_TryNextThrows_ReopensWithResumeToken)
+{
+    FakeDb db;
+    // Two cursors: pre-disconnect (cur_a, delivers one event then
+    // throws) and post-disconnect (cur_b, queue empty).
+    auto cur_a = std::make_unique<RecorderCursor>();
+    auto cur_b = std::make_unique<RecorderCursor>();
+    RecorderCursor *a_ptr = cur_a.get();
+    json doc = json::parse(subscriber_row("0000000000000000000000a1", "u_a"));
+    a_ptr->queue.push_back(event_with_token("insert", doc, "RESUME-A"));
+    db.cursor_queue.push_back(std::move(cur_a));
+    db.cursor_queue.push_back(std::move(cur_b));
+
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "soc1.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+    ASSERT_EQ(1u, db.watch_calls.size())
+        << "first open is cursor A (no resume token yet)";
+    EXPECT_EQ("",         db.watch_calls[0].token);
+    EXPECT_EQ("subscribers", db.watch_calls[0].coll);
+
+    // Drain the queued event so the watcher captures RESUME-A as its
+    // last applied token.
+    w.tick();
+    EXPECT_EQ(3u, rest.puts.size());
+    EXPECT_NE(std::string::npos, w.resume_token().find("RESUME-A"));
+
+    // Arm cursor A to throw on the next try_next, then tick: the
+    // watcher must catch, drop cursor A, and (on the SAME tick or the
+    // next) call watch_collection again with the captured token.
+    a_ptr->throw_on_next = true;
+    w.tick();  // throw → cursor torn down; reopen scheduled for next tick
+    w.tick();  // reopen attempt fires — m_reopen_skip_ticks was 0
+
+    ASSERT_EQ(2u, db.watch_calls.size())
+        << "second open uses the resume token from the last applied event";
+    EXPECT_NE(std::string::npos, db.watch_calls[1].token.find("RESUME-A"));
+}
+
+TEST(SubscriberWatcher, Tick_ReopenFailure_BacksOffBeforeRetry)
+{
+    FakeDb db;
+    // Bootstrap cursor succeeds, but it'll throw on the first try_next.
+    auto cur_a = std::make_unique<RecorderCursor>();
+    cur_a->throw_on_next = true;
+    db.cursor_queue.push_back(std::move(cur_a));
+    // Every subsequent reopen returns null — simulate Mongo still down.
+    for (int i = 0; i < 10; ++i) db.cursor_queue.push_back(nullptr);
+
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "soc1.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+    ASSERT_EQ(1u, db.watch_calls.size());
+
+    // Throw tears down cursor.
+    w.tick();
+    // Next tick: reopen attempt (fails, arms backoff = 5 ticks).
+    w.tick();
+    EXPECT_EQ(2u, db.watch_calls.size());
+
+    // Next 5 ticks should NOT call watch_collection — they're the
+    // backoff window so we don't hammer the pool while Mongo's down.
+    for (int i = 0; i < 5; ++i) w.tick();
+    EXPECT_EQ(2u, db.watch_calls.size())
+        << "no reopen attempts during the backoff window";
+
+    // 6th tick after the failed reopen: a new attempt fires.
+    w.tick();
+    EXPECT_EQ(3u, db.watch_calls.size());
+}
+
+TEST(SubscriberWatcher, Tick_StandaloneMongo_StillReopenAttempts)
+{
+    // mongod is standalone → bootstrap can't open a cursor, but the
+    // operator may flip the deployment to a replica set without
+    // restarting the agent. The watcher must keep trying so it picks
+    // up the change-streams capability when it appears.
+    FakeDb db;
+    db.cursor_queue.push_back(nullptr);  // bootstrap fails
+    db.cursor_queue.push_back(nullptr);  // first reopen fails
+    db.cursor_queue.push_back(std::make_unique<RecorderCursor>()); // RS now up
+
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "soc1.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+    ASSERT_EQ(1u, db.watch_calls.size());
+
+    w.tick();  // first reopen — fails, arms backoff
+    EXPECT_EQ(2u, db.watch_calls.size());
+    for (int i = 0; i < 5; ++i) w.tick();  // backoff ticks
+    EXPECT_EQ(2u, db.watch_calls.size());
+
+    w.tick();  // 6th tick — retry succeeds
+    EXPECT_EQ(3u, db.watch_calls.size());
+    EXPECT_NE(nullptr, db.issued_cursor);
+
+    // No token was ever captured (bootstrap saw no events), so every
+    // reopen attempt sent an empty token.
+    for (const auto &call : db.watch_calls) EXPECT_EQ("", call.token);
 }

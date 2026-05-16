@@ -52,6 +52,16 @@ using JsonDocList = std::vector<std::tuple<std::string, std::string>>;
  * `docker-compose.agent.yml` `pbx-mongo` service); a standalone mongod
  * does not enable the oplog and `MongodbClient::watch_collection()`
  * returns null on it.
+ *
+ * **Resume token.** Every change event the server emits carries an `_id`
+ * field whose value IS the resume token — opaque BSON to callers, but
+ * round-tripped back through `watch_collection(coll, resume_token)` it
+ * tells the server to deliver every event strictly AFTER the one whose
+ * token this was. Survives a brief Mongo disconnect: a cursor opened
+ * with a recent token replays everything that fell into the gap
+ * (provided the events are still in the oplog window — typically hours
+ * to days, well beyond a typical reconnect). The watcher tracks the
+ * token of the last successfully-applied event and uses it on reopen.
  */
 class IChangeStreamCursor {
 public:
@@ -142,6 +152,20 @@ public:
   virtual std::unique_ptr<IChangeStreamCursor>
   watch_collection(const std::string & /*coll*/) {
     return nullptr;
+  }
+
+  /// Resume-aware open. @p resume_token_json is the bare BSON-as-JSON
+  /// of a prior event's `_id`; empty defers to `watch_collection(coll)`.
+  /// Used by `SubscriberWatcher` to reopen the cursor after a Mongo
+  /// disconnect without losing events that fell into the gap (provided
+  /// they're still in the server's oplog window). Default routes
+  /// through the no-token overload so existing fakes need only override
+  /// one — bespoke test cursors that simulate disconnect/resume should
+  /// override this directly.
+  virtual std::unique_ptr<IChangeStreamCursor>
+  watch_collection(const std::string &coll,
+                    const std::string & /*resume_token_json*/) {
+    return watch_collection(coll);
   }
 };
 
@@ -371,6 +395,14 @@ public:
   /// `--replSet rs0` setup.
   std::unique_ptr<IChangeStreamCursor>
   watch_collection(const std::string &coll) override;
+  /// Resume-aware variant. @p resume_token_json is the BSON-as-JSON of
+  /// a prior event's `_id`; the server replays everything strictly
+  /// after it (oplog-window permitting). Empty token falls through to
+  /// the no-token overload. Returns nullptr if the underlying mongod
+  /// isn't a replica set or the token's no longer in the oplog.
+  std::unique_ptr<IChangeStreamCursor>
+  watch_collection(const std::string &coll,
+                    const std::string &resume_token_json) override;
   ///@}
 
   /** @name Password hashing */

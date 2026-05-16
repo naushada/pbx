@@ -625,15 +625,27 @@ namespace {
 /// connection stays valid.
 class MongoChangeStreamCursor : public IChangeStreamCursor {
 public:
+  /// @p resume_token_json — bare BSON-as-JSON of a prior event's `_id`,
+  /// or empty for a fresh-from-now cursor. The constructor itself
+  /// surfaces any handshake failure as an exception so the factory can
+  /// log + return null without leaking a half-open cursor.
   MongoChangeStreamCursor(mongocxx::pool::entry conn,
                           const std::string &db_name,
-                          const std::string &coll_name)
+                          const std::string &coll_name,
+                          const std::string &resume_token_json)
       : m_conn(std::move(conn)) {
     auto coll = (*m_conn)[db_name][coll_name];
-    // Default 0ms await — we set it per-call from try_next() instead so
-    // the same cursor can serve a fast tick (await=0) vs. a slow probe
-    // (await=200ms) without rebuilding.
-    m_stream = std::make_unique<mongocxx::change_stream>(coll.watch());
+
+    if (resume_token_json.empty()) {
+      m_stream = std::make_unique<mongocxx::change_stream>(coll.watch());
+    } else {
+      // mongocxx's resume_after takes the raw `_id` document. Convert
+      // the JSON token back to BSON before passing — the server then
+      // delivers events strictly after the one whose `_id` this was.
+      mongocxx::options::change_stream opts;
+      opts.resume_after(bsoncxx::from_json(resume_token_json));
+      m_stream = std::make_unique<mongocxx::change_stream>(coll.watch(opts));
+    }
   }
 
   std::string try_next(int /*max_await_ms*/) override {
@@ -660,6 +672,12 @@ private:
 
 std::unique_ptr<IChangeStreamCursor>
 MongodbClient::watch_collection(const std::string &coll) {
+  return watch_collection(coll, "");
+}
+
+std::unique_ptr<IChangeStreamCursor>
+MongodbClient::watch_collection(const std::string &coll,
+                                 const std::string &resume_token_json) {
   if (!m_pool) return nullptr;
 
   auto conn = m_pool->acquire();
@@ -672,14 +690,17 @@ MongodbClient::watch_collection(const std::string &coll) {
 
   try {
     return std::make_unique<MongoChangeStreamCursor>(
-        std::move(conn), m_dbName, coll);
+        std::move(conn), m_dbName, coll, resume_token_json);
   } catch (const std::exception &e) {
-    // Most common cause: mongod is standalone, not a replica set.
-    // The agent treats null as "change streams unavailable" and falls
-    // back to its bootstrap full-scan (no live updates).
+    // Most common causes: mongod is standalone (no oplog), or — when a
+    // token was supplied — the token has aged out of the oplog window
+    // and the server can no longer replay. Either way the agent treats
+    // null as "change streams unavailable for now" and falls back to
+    // its bootstrap full-scan / next-event recovery.
     ACE_ERROR((LM_ERROR,
                ACE_TEXT("%D [MongodbClient:%t] %M %N:%l watch_collection "
-                        "failed (is mongod a replica set?): %s\n"),
+                        "failed (is mongod a replica set? has the resume "
+                        "token aged out?): %s\n"),
                e.what()));
     return nullptr;
   }
