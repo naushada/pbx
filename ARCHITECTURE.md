@@ -553,7 +553,7 @@ heroku logs --tail --app pabx | grep agent
 #   ... CloudTunnelEndpoint: has_agent=true
 ```
 
-`scripts/lama.sh` (see §6.2a) automates a one-shot verification of
+`scripts/lima.sh` (see §6.2a) automates a one-shot verification of
 the agent side against the deployed Heroku cloud — useful before a
 real on-prem install.
 
@@ -668,9 +668,9 @@ For a real-Linux integration smoke against the deployed Heroku cloud
 (skips the macOS-podman-via-QEMU segfault path we hit early on):
 
 ```sh
-lama start    # or: bash scripts/lama.sh start
+lima start    # or: bash scripts/lima.sh start
 # … run the dry test …
-lama stop     # tear the VM down
+lima stop     # tear the VM down
 ```
 
 The script provisions a Lima VM (Apple Virtualization framework,
