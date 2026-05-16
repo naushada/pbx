@@ -350,6 +350,79 @@ podman run --rm -p 4200:4200 -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-a
 
 See [`ui/README.md`](./ui/README.md) for slice plan and dependency pinning notes.
 
+## Run the Vaadin admin UI
+
+The admin UI lives under `onprem/` — Java 17 + Vaadin 24 + Spring Boot
+3.2 + Maven, modelled after `xpmile/onprem/`. It's a separate app from
+the resident softphone (`ui/`): admins log in to onboard subscribers in
+bulk, manage societies, and see at-a-glance dashboards.
+
+```sh
+# Start the admin UI on :8081, pointed at the deployed Heroku cloud.
+# Java / Maven NOT required on the host — runs inside a podman maven
+# container with a named volume for the ~/.m2 cache.
+scripts/run-admin-ui.sh
+
+# Override the backend (e.g. against a local pbx-cloud on :8080):
+scripts/run-admin-ui.sh --backend-url http://localhost:8080
+
+# Different listen port:
+PORT=9090 scripts/run-admin-ui.sh
+```
+
+### First-time admin bootstrap
+
+The admin UI's login is gated on a real `subscribers` row with
+`role=admin` (the `MicroServicePbx::resolve_admin_session` helper).
+No such row exists on a fresh deploy — chicken-and-egg. The
+canonical recipe is:
+
+1. **Bring up the on-prem stack** so `pbx-wsdbagent` is connected to
+   the cloud's `/ws/db` tunnel. The cloud runs with `REMOTE_DB=1` —
+   without an attached wsdbagent the login handler short-circuits to
+   `503 "On-prem agent not connected to cloud"` (deliberate; surfaces
+   the real failure mode instead of a misleading 401).
+   ```sh
+   lima start    # full 5-container stack inside the Lima VM
+   lima vm sudo podman logs pbx-wsdbagent | grep "session started"
+   ```
+
+2. **Seed the first society + admin** via `scripts/bootstrap-society.sh`.
+   The CLI POSTs `/api/v1/society` to mint the society's `sipRealm` +
+   `turnSharedSecret`, then writes the admin `subscribers` row directly
+   with a PBKDF2-SHA256 password hash matching the cloud's
+   `MongodbClient::hash_password` format.
+   ```sh
+   # Defaults shown — pick your own; rotate before any non-dev deploy.
+   scripts/bootstrap-society.sh \
+     --society-code   SUNSET \
+     --society-name   'Sunset Towers' \
+     --admin-email    admin@sunset.example \
+     --admin-password 'changeme123' \
+     --mongo-uri      mongodb://localhost:27017/pabx
+   ```
+   > **Caveat (live):** the CLI runs `mongosh` against `MONGO_URI` on
+   > the operator's host. When Mongo lives inside the Lima VM
+   > (`lima start`), it's not reachable from macOS. Workaround until
+   > the CLI grows a `--via-lima` flag: do step 1's society POST with
+   > curl, then `lima vm sudo podman exec -i pbx-mongo mongosh --eval
+   > "db.subscribers.insertOne({…})"` for step 2.
+
+3. **Flip strict mode on the cloud** so the gate actually enforces
+   bcrypt + `role=admin`:
+   ```sh
+   heroku config:set PBX_AUTH_STRICT=1 --app pabx
+   ```
+
+4. **Log in** at `http://localhost:8081/login` with the credentials
+   from step 2 (`societyCode=SUNSET`, `flatNumber=ADMIN`,
+   `password=changeme123`). You'll land on the Dashboard with
+   Societies / Subscribers links in the sidenav.
+
+See [`onprem/README.md`](./onprem/README.md) for the Vaadin app layout
++ package map, and `scripts/bootstrap-society.sh --help` for every
+CLI flag.
+
 ## Deploy the cloud to Heroku
 
 The cloud side runs one container — `pbx-cloud` — pushed to `registry.heroku.com/pabx/web`. The simple path is:
