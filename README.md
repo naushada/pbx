@@ -673,3 +673,9 @@ The TDD-style coverage stays the same shape — every Layer 4 piece either has i
 ## Implementation order
 
 See [TDD-PLAN.md → Order of work](./TDD-PLAN.md#order-of-work-drives-the-implementation). Each layer is fully green before the next starts.
+
+## License
+
+[MIT](./LICENSE) — copyright © 2026 onprem-pbx contributors. Use, fork,
+embed in proprietary or open products; the only ask is preserving the
+copyright + license notice in copies and substantial portions.
