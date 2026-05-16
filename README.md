@@ -22,7 +22,6 @@ See:
 | 1   | `MicroServicePbx*` REST handlers (society, subscriber-import, cdr, push, sipws-upgrade) | ✅ Complete |
 | 1   | `PushSender*` — VAPID JWT (RFC 8292) + Web Push encryption (RFC 8291) + retry/410 | ✅ Complete |
 | 1   | Route wiring (`MicroService::dispatch_pbx_routes`) + `/sip-ws` upgrade auth gate in `WebConnection` | ✅ Complete |
-| 1   | `HandoffOrdering` test (asserts `remove_handler → m_handle=INVALID → bridge.publish` order in `WebConnection`) | ⏭️ Deferred to Layer 3 TunnelE2E — needs reactor mocking |
 | 2   | `SipFrameDemux` — agent-side mirror of `SipBridge`, demuxes cloud tunnel ↔ per-stream Asterisk sockets | ✅ Complete |
 | 2   | `CloudConnector` — agent-side mTLS dial-out, reconnect-backoff state machine, outbound buffer | ✅ Complete (state machine; `AceSslTransport` deferred to Layer 3) |
 | 2   | `AriClient` — ARI event consumer, bridge-counter admission, CDR writer, conference detection | ✅ Complete (state machine; WS subscription glue deferred to Layer 3) |
@@ -35,7 +34,7 @@ See:
 | 3   | `HandoffOrdering` source-invariant test — guards the well-known `remove_handler → m_handle=INVALID → publish` ordering invariant for all 3 WS upgrade branches (`/sip-ws`, `/agent`, `/ws/db`) | ✅ Complete |
 | 4   | Production wiring — `pbx-agent` + `pbx-cloud` binaries, `AsteriskWsFactory` (real chan_pjsip WS), `AriRestClient` (admission `continue`), real `PushSender` (AceHttpsClient + VAPID), `docker-compose.{agent,heroku}.yml`, `Dockerfile.{agent,cloud,ui}`, `deploy-heroku.sh` | ✅ Complete (see [§ Layer 4 detail](#layer-4--production-wiring-complete)) |
 | 4   | Cloud REST handlers — `subscriber/login` (dev-mode), `subscriber` directory, `push-vapid-key`, `turn-credentials`, `push-subscribe`. `db_available()` env-var guard short-circuits DB-touching handlers when Mongo isn't configured (defends against Heroku H12 timeouts) | ✅ Complete |
-| 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of the upstream shared-library standalone DB-tunnel binary (do not modify locally) + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Source committed; verifying live |
+| 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of the upstream shared-library standalone DB-tunnel binary (do not modify locally) + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Verified live in Lima dry-test (PR #35) — `inner TLS established` ↔ `session started` |
 | 4   | D3: InnerTLS over the `/agent` SIP tunnel — shared `WsInnerTlsBridge` (dual-mode `IInnerTlsTransport`); agent `--inner-tls-{cert,key,ca,hostname}`; cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. `AgentStream` split into `(ctor, auto_attach=false)` + `setup_inner_tls()` + `attach()` so the handshake completes before the endpoint sees a live transport. | ✅ PR #19 (merged) |
 | 4   | Dynamic pjsip provisioning — `PjsipProvisioner` materialises subscriber rows as Asterisk auth/aor/endpoint sorcery objects via ARI dynamic-config PUT/DELETE; `SubscriberWatcher` does a society-scoped bootstrap full-scan + Mongo change-stream tail at 200ms cadence. `pbx-mongo` runs as a 1-node replica set with idempotent `rs.initiate()` healthcheck. Agent `--sip-realm` flag (default `<society-id>.pbx.local`). | ✅ PR #18 (merged) |
 | 4   | Presence reconciliation — `AriClient::publish_register_snapshot()` calls `GET /ari/endpoints/PJSIP` and emits one `REGISTER_STATE` SipFrame per endpoint; `CloudConnector::set_on_connected()` fires it on every (re)connect. Closes the cache-staleness gap from PR #16. | ✅ PR #20 (merged) |
@@ -46,18 +45,18 @@ See:
 | 4   | `scripts/lima.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following the established C++ toolchain recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
-### Test totals: **516 / 519** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
+### Test totals: **518 / 521** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
 
 | Layer | Suites | Tests |
 |-------|--------|------:|
 | 0     | HttpParser 20 + MessageParserBase 8 + SipParser 17 + SipFrame 10 | **55** |
-| 1     | SipBridge 14 + MicroServicePbx 23 + MicroServiceRouting 9 + PushSender 8 | **54** |
+| 1     | SipBridge 14 + MicroServicePbx 25 + MicroServiceRouting 9 + PushSender 8 | **56** |
 | 2     | SipFrameDemux 19 + CloudConnector 19 + AriClient 16 + CloudTunnelEndpoint 12 + CallRouter 17 + PjsipProvisioner 8 + SubscriberWatcher 17 | **108** |
 | 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 + WsInnerTlsBridge 11 + PjsipTemplateDrift 1 + InnerTLS peer-cn 2 | **73** |
 | 4     | AsteriskWsFactory 13 + AriRestClient 16 + AceHttpsClient 13 | **42** |
 | 4+    | SipBridge AGENT_HELLO/BOOTSTRAP 4 + SipFrame round-trip 2 (new ops) | **6** |
 | regression | inherited shared-library suites (verbatim copy) | **115** |
-| **Total** | **44 suites** | **516** |
+| **Total** | **44 suites** | **518** |
 
 Counts will drift over time — `podman-compose -f docker-compose.test.yml run --rm offtarget` prints the authoritative number on every run.
 
