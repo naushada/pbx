@@ -1,6 +1,7 @@
 package com.onprempbx.onprem.ui;
 
 import com.onprempbx.onprem.service.AuthService;
+import com.onprempbx.onprem.service.StatusService;
 import com.vaadin.flow.component.applayout.AppLayout;
 import com.vaadin.flow.component.applayout.DrawerToggle;
 import com.vaadin.flow.component.button.Button;
@@ -28,10 +29,13 @@ import com.vaadin.flow.theme.lumo.LumoUtility;
 public class MainLayout extends AppLayout implements BeforeEnterObserver {
 
     private final AuthService auth;
+    private final StatusService status;
 
-    public MainLayout(AuthService auth) {
+    public MainLayout(AuthService auth, StatusService status) {
         this.auth = auth;
+        this.status = status;
         addHeader();
+        addConnectivityBar();
         addDrawer();
     }
 
@@ -64,6 +68,16 @@ public class MainLayout extends AppLayout implements BeforeEnterObserver {
         header.addClassNames(LumoUtility.Padding.Horizontal.MEDIUM);
 
         addToNavbar(header);
+    }
+
+    /**
+     * Connectivity sub-navbar — added as a second {@code addToNavbar}
+     * call so it stacks under the header strip. Lives the lifetime of
+     * the layout (re-attached per view navigation; polling is bounded
+     * by the bar's own attach/detach hooks).
+     */
+    private void addConnectivityBar() {
+        addToNavbar(new ConnectivityBar(status));
     }
 
     private void addDrawer() {
