@@ -43,7 +43,7 @@ See:
 | 4   | Pjsip drift-check test — parses `[endpoint-resident-template]` from `docker/asterisk/pjsip.conf`, runs `PjsipProvisioner` against a FakeAriRest, asserts every template field is present in the emitted endpoint PUT. Prevents silent divergence between dev-fixture endpoints and runtime-provisioned subscribers. | ✅ PR #22 (merged) |
 | 4   | Realm-from-society-doc — agent sends `AGENT_HELLO {societyId}` after every (re)connect; cloud's `SipBridge` looks up `societies/{_id}` and emits `SOCIETY_BOOTSTRAP {societyId, sipRealm}`; agent's `PjsipProvisioner.set_sip_realm()` + `SubscriberWatcher.resync()` re-PUTs every endpoint with the canonical realm. CLI `--sip-realm` still overrides. | ✅ PR #24 (merged) |
 | 4   | InnerTLS peer-cert CN exposure + latent-bug fix — `InnerTlsServer::peer_subject_cn()` extracts the agent's verified CN for log labels + future cross-checks; the underlying `SSL_CTX_use_certificate_file`-after-`SSL_new` bug (silently presented no cert) replaced with the per-SSL `SSL_use_certificate_file` API. | ✅ PR #25 (merged) |
-| 4   | `scripts/start.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following xpmile's recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
+| 4   | `scripts/lama.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following xpmile's recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
 ### Test totals: **516 / 519** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
@@ -291,9 +291,9 @@ match `pjsip.conf`'s `[endpoint-resident-template]` by
 `PjsipTemplateDrift` (PR #22). Edit either side without updating the
 other and the test fails noisily.
 
-### One-shot dry test (`scripts/start.sh`)
+### One-shot dry test (`scripts/lama.sh`)
 
-`scripts/start.sh` provisions a Lima VM (Apple Virtualization framework,
+`scripts/lama.sh` provisions a Lima VM (Apple Virtualization framework,
 native arm64 — no QEMU), builds pbx-agent following
 [`xpmile/docker/Dockerfile`](https://github.com/naushada/xpmile/blob/main/docker/Dockerfile)
 verbatim, then runs the agent for 90 s against the deployed Heroku
