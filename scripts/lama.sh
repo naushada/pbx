@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# scripts/start.sh — one-shot unattended dry test for pbx-agent.
+# scripts/lama.sh — drive the Lima-VM dry test for pbx-agent.
+#
+# Usage:
+#   lama start   provision Lima VM, build pbx-agent natively, run
+#                against the deployed Heroku cloud, capture logs +
+#                any coredump. Idempotent; re-runs skip already-done
+#                steps via sentinel files.
+#   lama stop    tear the VM down + reclaim its ~30 GB disk image.
 #
 # Provisions a Lima VM (Apple Virtualization framework, native arm64
 # on Apple Silicon — no QEMU), follows xpmile/docker/Dockerfile's
@@ -15,9 +22,6 @@
 # `pbx-cpp-builder:bootstrap` was built from. Different ACE/mongocxx
 # build flags break the link step (saw this with the wrong
 # CMAKE_INSTALL_PREFIX on mongocxx and missing `ssl=1` on ACE).
-#
-# Idempotent. Re-run skips already-done steps via sentinel files.
-# Tear down: `limactl stop -f onprem-pbx-test && limactl delete -f onprem-pbx-test`.
 
 set -euo pipefail
 
@@ -27,13 +31,40 @@ HEROKU_HOST="${HEROKU_HOST:-pabx-5fbf3550f938.herokuapp.com}"
 HEROKU_PORT="${HEROKU_PORT:-443}"
 SOCIETY_ID="${SOCIETY_ID:-demo-society}"
 RUN_BUDGET_SECS="${RUN_BUDGET_SECS:-90}"
-LOG=/tmp/start.sh.log
+LOG=/tmp/lama.sh.log
+
+usage() {
+  cat <<EOF
+usage: $(basename "$0") {start|stop}
+  start  provision Lima VM '${VM}', build pbx-agent natively, run
+         against ${HEROKU_HOST}:${HEROKU_PORT} for ${RUN_BUDGET_SECS}s.
+  stop   stop + delete the VM (releases its disk image).
+EOF
+  exit 1
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  start) ;;
+  stop)
+    printf '\n\033[1;34m[lama] stopping + deleting Lima VM %s\033[0m\n' "$VM"
+    if limactl list -q 2>/dev/null | grep -qx "$VM"; then
+      limactl stop -f "$VM" 2>&1 | grep -v "^time=" || true
+      limactl delete -f "$VM" 2>&1 | grep -v "^time=" || true
+      echo "[lama] done — VM and its disk image are gone."
+    else
+      echo "[lama] no VM named '$VM' — already stopped."
+    fi
+    exit 0
+    ;;
+  *) usage ;;
+esac
 
 # Shadow stdout/stderr so step output lands on screen AND in the
 # log file for post-mortem.
 exec > >(tee "$LOG") 2>&1
 
-step() { printf '\n\033[1;34m[start.sh] %s\033[0m\n' "$*"; }
+step() { printf '\n\033[1;34m[lama] %s\033[0m\n' "$*"; }
 SH()   { limactl shell "$VM" -- bash -c "$1"; }
 
 # Sentinel files (inside the VM) for skip-already-done.
