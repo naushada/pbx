@@ -18,7 +18,7 @@ import com.vaadin.flow.router.Route;
 import com.vaadin.flow.server.auth.AnonymousAllowed;
 
 /**
- * Public login page. Three fields — society code, flat number (defaults
+ * Public login page. Three fields — society label, flat number (defaults
  * to {@code ADMIN}), password — bound to a {@link LoginCredentials}.
  *
  * <p>On success → navigates to {@code /dashboard}. On
@@ -41,7 +41,11 @@ public class LoginView extends VerticalLayout {
 
         final H1 title = new H1("onprem-pbx admin");
 
-        final TextField societyCode = new TextField("Society code");
+        // Form-label only. The wire field stays `societyCode` (bound to
+        // LoginCredentials.societyCode, matched by the cloud's
+        // handle_subscriber_login_POST). "Society label" reads friendlier
+        // for non-technical operators — "code" implied a system identifier.
+        final TextField societyCode = new TextField("Society label");
         societyCode.setRequiredIndicatorVisible(true);
         societyCode.setWidth("20em");
 

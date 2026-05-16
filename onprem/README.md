@@ -68,11 +68,11 @@ the README at the repo root for the full version):
    ```
 4. Refresh `http://localhost:8081/login` and log in:
 
-   | Field         | What to type                                                  |
-   |---------------|---------------------------------------------------------------|
-   | `societyCode` | the `--society-code` from step 2 (e.g. `SUNSET`)              |
-   | `flatNumber`  | `ADMIN` (bootstrap seeds the first admin with this flatNumber)|
-   | `password`    | the `--admin-password` from step 2                            |
+   | Form field      | What to type                                                |
+   |-----------------|-------------------------------------------------------------|
+   | `Society label` | the `--society-code` from step 2 (e.g. `SUNSET`)            |
+   | `Flat number`   | `ADMIN` (bootstrap seeds the first admin with this flatNumber)|
+   | `Password`      | the `--admin-password` from step 2                          |
 
 ## Direct `mvn` (no script)
 

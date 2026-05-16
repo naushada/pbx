@@ -418,11 +418,11 @@ canonical recipe is:
 4. **Log in** at `http://localhost:8081/login` with the credentials
    from step 2. The Vaadin login form expects three fields:
 
-   | Field         | What to type                                            |
-   |---------------|---------------------------------------------------------|
-   | `societyCode` | the `--society-code` you passed to bootstrap (e.g. `SUNSET`) |
-   | `flatNumber`  | `ADMIN` (bootstrap always seeds the first admin with this flatNumber) |
-   | `password`    | the `--admin-password` you passed to bootstrap          |
+   | Form field      | What to type                                            |
+   |-----------------|---------------------------------------------------------|
+   | `Society label` | the `--society-code` you passed to bootstrap (e.g. `SUNSET`) |
+   | `Flat number`   | `ADMIN` (bootstrap always seeds the first admin with this flatNumber) |
+   | `Password`      | the `--admin-password` you passed to bootstrap          |
 
    On success you land on the Dashboard with Societies / Subscribers
    links in the sidenav.
