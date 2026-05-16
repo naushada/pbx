@@ -35,19 +35,16 @@ void PjsipProvisioner::provision(const std::string &sip_username,
   const std::string auth_id = sip_username + "-auth";
   const std::string aor_id  = sip_username + "-aor";
 
-  // Order: auth + aor first (the endpoint references both), then endpoint.
-  // Asterisk tolerates the reverse but creating dependents-first is the
-  // sorcery norm and avoids a brief window where endpoint exists pointing
-  // at not-yet-created auth/aor.
-  m_rest.create_dynamic_config(
-      kCfgClass, "auth", auth_id,
-      make_fields_body({
-          {"type",      "auth"},
-          {"auth_type", "md5"},
-          {"realm",     m_sip_realm},
-          {"username",  sip_username},
-          {"md5_cred",  sip_ha1},
-      }));
+  // SIP digest auth is intentionally NOT provisioned. The browser has
+  // no password (see ui/src/common/sip-ua-sipjs.ts:18); the cloud
+  // `/sip-ws` upgrade authenticates by bearer token, and only that
+  // tunnel can reach this Asterisk. A second digest layer would
+  // refuse REGISTER unanswerably. Legacy `<user>-auth` docs from
+  // pre-fix deployments are pruned best-effort below so re-provisioning
+  // an existing subscriber drops the stale auth association on its
+  // first pass — Asterisk returns 404 for already-gone, which the
+  // ARI client treats as a silent no-op.
+  m_rest.delete_dynamic_config(kCfgClass, "auth", auth_id);
 
   m_rest.create_dynamic_config(
       kCfgClass, "aor", aor_id,
@@ -85,9 +82,14 @@ void PjsipProvisioner::provision(const std::string &sip_username,
           {"dtls_cert_file",                "/etc/asterisk/keys/pbx.crt"},
           {"dtls_private_key",              "/etc/asterisk/keys/pbx.key"},
           {"dtls_rekey",                    "0"},
-          {"auth",                          auth_id},
+          // `auth` field deliberately absent — see the comment at
+          // the top of provision(). sip_ha1 is unused here too; we
+          // accept it to preserve the public signature for now (a
+          // future PR removes the parameter once the realm plumbing
+          // is cleaned up too).
           {"aors",                          aor_id},
       }));
+  (void)sip_ha1;
 }
 
 void PjsipProvisioner::deprovision(const std::string &sip_username) {
