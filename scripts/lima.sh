@@ -31,7 +31,8 @@
 
 set -euo pipefail
 
-VM=onprem-pbx-test
+VM=vm-onprem-pbx
+LEGACY_VMS=(onprem-pbx-test)   # cleaned up by `lima stop` so old names don't linger
 REPO_HOST="$(cd "$(dirname "$0")/.." && pwd -P)"
 HEROKU_HOST="${HEROKU_HOST:-pabx-5fbf3550f938.herokuapp.com}"
 HEROKU_PORT="${HEROKU_PORT:-443}"
@@ -42,11 +43,16 @@ COMPOSE=docker-compose.agent.yml
 
 usage() {
   cat <<EOF
-usage: $(basename "$0") {start|stop}
-  start  provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
-         bring the 5-container on-prem stack up via podman-compose
-         against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
-  stop   compose down + stop + delete the VM.
+usage: $(basename "$0") {start|stop|vm [cmd...]}
+  start         provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
+                bring the 5-container on-prem stack up via podman-compose
+                against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
+  stop          compose down + stop + delete the VM (and any legacy ones).
+  vm [cmd...]   shell into the VM. With no args, interactive shell.
+                With args, runs them inside the VM and returns:
+                  lima vm                          # interactive bash
+                  lima vm sudo podman ps           # one-shot command
+                  lima vm sudo podman logs pbx-agent | tail -50
 EOF
   exit 1
 }
@@ -56,16 +62,35 @@ case "$cmd" in
   start) ;;
   stop)
     printf '\n\033[1;34m[lima] tearing down compose stack + VM %s\033[0m\n' "$VM"
-    if limactl list -q 2>/dev/null | grep -qx "$VM"; then
-      limactl shell "$VM" -- bash -c \
-        "cd '$REPO_HOST' && sudo podman-compose -f $COMPOSE down -v 2>/dev/null" || true
-      limactl stop -f "$VM" 2>&1 | grep -v "^time=" || true
-      limactl delete -f "$VM" 2>&1 | grep -v "^time=" || true
-      echo "[lima] done — compose stack down, VM and its disk image are gone."
-    else
-      echo "[lima] no VM named '$VM' — already stopped."
-    fi
+    for v in "$VM" "${LEGACY_VMS[@]}"; do
+      if limactl list -q 2>/dev/null | grep -qx "$v"; then
+        # Best-effort compose-down inside the VM before deletion.
+        limactl shell "$v" -- bash -c \
+          "cd '$REPO_HOST' && sudo podman-compose -f $COMPOSE down -v 2>/dev/null" || true
+        limactl stop -f "$v" 2>&1 | grep -v "^time=" || true
+        limactl delete -f "$v" 2>&1 | grep -v "^time=" || true
+        echo "[lima] removed VM '$v'"
+      fi
+    done
+    echo "[lima] done — compose stack down, VM and its disk image are gone."
     exit 0
+    ;;
+  vm)
+    shift   # drop the `vm` arg; remainder (if any) runs inside the VM
+    if ! limactl list -q 2>/dev/null | grep -qx "$VM"; then
+      echo "[lima] no VM named '$VM' — run \`lima start\` first." >&2
+      exit 1
+    fi
+    if [ "$#" -eq 0 ]; then
+      # Interactive shell — drop the `bash -c` wrapper so the user gets
+      # a real TTY with their shell history etc.
+      exec limactl shell "$VM"
+    else
+      # One-shot command. `--` passes through to limactl shell, then to
+      # the user's args verbatim — quoting/globbing behaves the way
+      # they typed it on the host.
+      exec limactl shell "$VM" -- "$@"
+    fi
     ;;
   *) usage ;;
 esac
