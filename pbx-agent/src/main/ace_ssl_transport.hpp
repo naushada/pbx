@@ -13,6 +13,8 @@
 #include <vector>
 
 class ACE_Reactor;
+class InnerTlsClient;
+class WsInnerTlsBridge;
 
 /**
  * @file ace_ssl_transport.hpp
@@ -55,13 +57,37 @@ public:
   AceSslTransport(const AceSslTransport &) = delete;
   AceSslTransport &operator=(const AceSslTransport &) = delete;
 
+  /// Outer mTLS to Heroku is theatre — Heroku terminates TLS at the
+  /// router, so the agent's cert is never round-tripped against a
+  /// verifiable peer. The inner TLS handshake layered on the WS
+  /// transport is what makes the trust boundary real (mirrors the
+  /// `/ws/db` path). Cert paths in this struct feed `InnerTlsClient`.
+  ///
+  /// Leave `cert_path` empty to skip inner TLS entirely — used only by
+  /// tests that drive `handle_input` directly with raw WS frames; in
+  /// production, the cloud side requires inner TLS and the agent will
+  /// fail the handshake without these.
+  struct InnerTlsConfig {
+    std::string cert_path;
+    std::string key_path;
+    std::string ca_path;
+    /// Verified against the cloud's server cert CN/SAN post-handshake.
+    /// Empty disables the check.
+    std::string hostname;
+  };
+
   /// Build the `ACE_SSL_Context`, dial @p host:@p port, perform the
-  /// WebSocket upgrade to @p path. Returns true on full success.
+  /// WebSocket upgrade to @p path. When @p inner_tls.cert_path is
+  /// non-empty, also layers an `InnerTlsClient` handshake on top before
+  /// returning (and switches the bridge to buffered mode so subsequent
+  /// `handle_input` events drain plaintext via the queue). Returns true
+  /// on full success.
   bool connect_and_handshake(const std::string &host, std::uint16_t port,
                               const std::string &cert_path,
                               const std::string &key_path,
                               const std::string &ca_path,
-                              const std::string &path = "/agent");
+                              const std::string &path = "/agent",
+                              const InnerTlsConfig &inner_tls = {});
 
   /// Register with @p reactor for `READ_MASK`. Production calls this
   /// after a successful `connect_and_handshake`. Tests can skip it and
@@ -104,6 +130,15 @@ private:
   ACE_HANDLE                               m_handle = ACE_INVALID_HANDLE;
   std::vector<std::uint8_t>                m_recv_buf;
   bool                                     m_close_notified = false;
+
+  /// Inner-TLS layer (optional; nullptr in tests that drive raw WS
+  /// frames directly). Order matters: m_bridge owns no resources of
+  /// m_inner_tls, but m_inner_tls holds a reference to *m_bridge, so
+  /// the bridge must outlive the inner-tls object. Member declaration
+  /// order makes that automatic (m_bridge declared first, destroyed
+  /// after m_inner_tls).
+  std::unique_ptr<WsInnerTlsBridge> m_bridge;
+  std::unique_ptr<InnerTlsClient>   m_inner_tls;
 };
 
 /// `ITransportFactory` that returns real `AceSslTransport` instances.
@@ -111,9 +146,13 @@ private:
 /// it to the connector's constructor.
 class AceSslTransportFactory : public ITransportFactory {
 public:
+  /// Inner-TLS cert paths are baked into the factory at construction
+  /// (every transport the factory creates uses the same set); they're
+  /// independent of the outer mTLS paths handed to `create_connected`.
   AceSslTransportFactory(ACE_Reactor                              *reactor,
                           std::function<void(const std::string &)> on_bytes,
-                          std::function<void()>                     on_disconnect);
+                          std::function<void()>                     on_disconnect,
+                          AceSslTransport::InnerTlsConfig           inner_tls = {});
 
   std::unique_ptr<ITransport>
   create_connected(const std::string &host, std::uint16_t port,
@@ -125,6 +164,7 @@ private:
   ACE_Reactor                              *m_reactor;
   std::function<void(const std::string &)>  m_on_bytes;
   std::function<void()>                     m_on_disconnect;
+  AceSslTransport::InnerTlsConfig           m_inner_tls;
 };
 
 #endif // ACE_SSL_TRANSPORT_HPP

@@ -5,8 +5,12 @@
 #include "ace/Event_Handler.h"
 #include "ace/SOCK_Stream.h"
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
+
+class InnerTlsServer;
+class WsInnerTlsBridge;
 
 /**
  * @file agent_stream.hpp
@@ -43,19 +47,49 @@
 class AgentStream : public ACE_Event_Handler {
 public:
   /**
-   * @param endpoint  Cloud-side accept-end of the tunnel. Must outlive
-   *                  the stream.
-   * @param fd        Raw fd from `WebConnection`'s `/agent` hand-off.
-   *                  Ownership transfers to this object.
+   * @param endpoint     Cloud-side accept-end of the tunnel. Must outlive
+   *                     the stream.
+   * @param fd           Raw fd from `WebConnection`'s `/agent` hand-off.
+   *                     Ownership transfers to this object.
+   * @param auto_attach  When true (default), the constructor immediately
+   *                     publishes a `TransportAdapter` to the endpoint
+   *                     via `on_agent_connected` — matches the legacy
+   *                     contract and keeps existing tests working.
+   *                     Production paths that need an inner-TLS
+   *                     handshake before exposing the transport pass
+   *                     `false`, run `setup_inner_tls(...)`, and then
+   *                     call `attach()`.
    */
-  AgentStream(CloudTunnelEndpoint &endpoint, ACE_HANDLE fd);
+  explicit AgentStream(CloudTunnelEndpoint &endpoint, ACE_HANDLE fd,
+                        bool auto_attach = true);
   ~AgentStream() override;
 
   AgentStream(const AgentStream &) = delete;
   AgentStream &operator=(const AgentStream &) = delete;
 
+  /// Drive the cloud-side InnerTLS accept handshake synchronously
+  /// against the agent's already-WS-upgraded socket. The blocking read
+  /// path lives in `WsInnerTlsBridge` so the same code drives the
+  /// handshake here and the steady-state queue post-handshake. Must be
+  /// called before `attach()` and `register_with_reactor()`.
+  ///
+  /// All three paths are required for a useful inner-TLS endpoint —
+  /// cert+key for the server's identity, CA for verifying the agent's
+  /// client cert. Returns false if cert loading, handshake, or peer
+  /// verification fails. Caller should `delete this` and close the fd
+  /// on false.
+  bool setup_inner_tls(const std::string &cert_path,
+                        const std::string &key_path,
+                        const std::string &ca_path);
+
+  /// Publish the `TransportAdapter` to the endpoint. Idempotent.
+  /// Production (with inner TLS): called only after `setup_inner_tls()`
+  /// returns true. Default-constructed (no inner TLS): the constructor
+  /// already attached when `auto_attach=true`.
+  void attach();
+
   /// Register with the calling reactor for `READ_MASK`. Production calls
-  /// this immediately after construction; tests skip it and drive
+  /// this immediately after `attach()`; tests skip it and drive
   /// `handle_input` directly.
   int register_with_reactor();
 
@@ -105,7 +139,15 @@ private:
   TransportAdapter        *m_adapter; // non-owning; endpoint owns via unique_ptr
   std::vector<std::uint8_t> m_recv_buf;
   bool                     m_close_notified = false;
+  bool                     m_attached = false; // set by attach()
   long                     m_ping_timer = -1; // reactor timer id; -1 = unscheduled
+
+  /// Inner-TLS layer (optional). Order matters: the inner-TLS object
+  /// holds a reference to *m_bridge, so the bridge must outlive it.
+  /// Member declaration order (bridge first) makes destruction order
+  /// automatic: m_inner_tls dies before m_bridge.
+  std::unique_ptr<WsInnerTlsBridge> m_bridge;
+  std::unique_ptr<InnerTlsServer>   m_inner_tls;
 };
 
 #endif // AGENT_STREAM_HPP

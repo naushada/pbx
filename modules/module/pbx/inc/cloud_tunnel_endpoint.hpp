@@ -67,6 +67,20 @@ public:
     /// existing tests that don't drive the clock).
     int heartbeat_interval_sec = 15;
     int heartbeat_max_missed   = 3;
+
+    /// Inner-TLS cert paths driven into every newly-attached
+    /// `AgentStream`'s `setup_inner_tls()`. Heroku's router terminates
+    /// the outer TLS, so this layer is the real mTLS trust boundary
+    /// (mirrors `/ws/db`). Leave `cert_path` empty to skip — used by
+    /// tests that drive `AgentStream` with raw frames; production
+    /// requires all three paths and the agent will fail to register
+    /// without them.
+    struct InnerTlsConfig {
+      std::string cert_path;
+      std::string key_path;
+      std::string ca_path;
+    };
+    InnerTlsConfig inner_tls;
   };
 
   /// @param clock  Optional. When null the heartbeat is fully disabled
@@ -128,6 +142,11 @@ public:
   /// Reaches `Config::heartbeat_max_missed` only when the agent has
   /// gone silent — the next `tick()` then drops the transport.
   int         pings_outstanding()     const { return m_pings_outstanding; }
+  /// `WebConnection`'s `/agent` upgrade reads this to drive each new
+  /// `AgentStream::setup_inner_tls(...)` before attaching.
+  const Config::InnerTlsConfig &inner_tls_config() const {
+    return m_cfg.inner_tls;
+  }
 
 private:
   void mark_disconnected();

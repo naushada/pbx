@@ -100,6 +100,8 @@ file(GLOB SOURCES "*.cc"
     # ── security (xpmile copy, transitive dependency of wsdbproxy) ────
     "../modules/module/security/src/innertls.cpp"
     "../modules/module/security/test/innertls_test.cc"
+    "../modules/module/security/src/ws_inner_tls_bridge.cpp"
+    "../modules/module/security/test/ws_inner_tls_bridge_test.cc"
     # ── email (xpmile copy, Layer 1) ──────────────────────────────────
     "../modules/module/email/src/emailservice.cpp"
     "../modules/module/email/src/emailservice_fsm.cpp"

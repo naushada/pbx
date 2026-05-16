@@ -47,7 +47,11 @@ if(BUILD_BINARIES)
       modules/module/pbx/src/sip_frame.cpp
       modules/module/pbx/src/sip_bridge.cpp
       modules/module/wsdbproxy/src/wsframe.cpp
-      modules/module/mongodb/src/mongodbc.cpp)
+      modules/module/mongodb/src/mongodbc.cpp
+      # InnerTLS over the /agent WS tunnel — same mTLS trust boundary
+      # `/ws/db` already gets. See DESIGN.md §3.2 + ws_inner_tls_bridge.hpp.
+      modules/module/security/src/innertls.cpp
+      modules/module/security/src/ws_inner_tls_bridge.cpp)
   # AsteriskWsFactory is part of pbx-agent/src/main, picked up via the
   # glob above. No additional source list needed.
   add_executable(pbx-agent ${PBX_AGENT_MAIN_SRC} ${PBX_AGENT_DEPS})

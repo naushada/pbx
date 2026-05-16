@@ -164,6 +164,10 @@ void print_usage(const char *prog) {
                       "  --ari-user          <user>  ARI Basic-auth username (default: asterisk)\n"
                       "  --ari-pass          <pass>  ARI Basic-auth password (default: asterisk)\n"
                       "  --sip-realm         <r>     SIP auth realm           (default: <society-id>.pbx.local)\n"
+                      "  --inner-tls-cert    <path>  Inner-TLS client cert  (PEM, REQUIRED for cloud /agent)\n"
+                      "  --inner-tls-key     <path>  Inner-TLS client key   (PEM, REQUIRED)\n"
+                      "  --inner-tls-ca      <path>  Inner-TLS CA for cloud cert verification (PEM, REQUIRED)\n"
+                      "  --inner-tls-hostname <name> Expected cloud cert CN/SAN (optional but recommended)\n"
                       "  --help                      Show this help\n"),
              prog));
 }
@@ -187,8 +191,9 @@ int main(int argc, char *argv[]) {
   std::string ari_user = "asterisk";
   std::string ari_pass = "asterisk";
   std::string sip_realm;  // defaults to <society-id>.pbx.local after parsing
+  std::string inner_tls_cert, inner_tls_key, inner_tls_ca, inner_tls_hostname;
 
-  ACE_Get_Opt args(argc, argv, ACE_TEXT("H:P:E:K:A:U:S:a:p:n:u:w:r:h"), 1);
+  ACE_Get_Opt args(argc, argv, ACE_TEXT("H:P:E:K:A:U:S:a:p:n:u:w:r:i:j:l:m:h"), 1);
   args.long_option(ACE_TEXT("cloud-host"),     'H', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("cloud-port"),     'P', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("tls-cert"),       'E', ACE_Get_Opt::ARG_REQUIRED);
@@ -202,6 +207,10 @@ int main(int argc, char *argv[]) {
   args.long_option(ACE_TEXT("ari-user"),       'u', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("ari-pass"),       'w', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("sip-realm"),      'r', ACE_Get_Opt::ARG_REQUIRED);
+  args.long_option(ACE_TEXT("inner-tls-cert"), 'i', ACE_Get_Opt::ARG_REQUIRED);
+  args.long_option(ACE_TEXT("inner-tls-key"),  'j', ACE_Get_Opt::ARG_REQUIRED);
+  args.long_option(ACE_TEXT("inner-tls-ca"),   'l', ACE_Get_Opt::ARG_REQUIRED);
+  args.long_option(ACE_TEXT("inner-tls-hostname"), 'm', ACE_Get_Opt::ARG_REQUIRED);
   args.long_option(ACE_TEXT("help"),           'h', ACE_Get_Opt::NO_ARG);
 
   for (int c; (c = args()) != EOF;) {
@@ -219,6 +228,10 @@ int main(int argc, char *argv[]) {
     case 'u': ari_user   = args.opt_arg(); break;
     case 'w': ari_pass   = args.opt_arg(); break;
     case 'r': sip_realm  = args.opt_arg(); break;
+    case 'i': inner_tls_cert     = args.opt_arg(); break;
+    case 'j': inner_tls_key      = args.opt_arg(); break;
+    case 'l': inner_tls_ca       = args.opt_arg(); break;
+    case 'm': inner_tls_hostname = args.opt_arg(); break;
     case 'h': print_usage(argv[0]); return 0;
     case '?': print_usage(argv[0]); return -1;
     default:  break;
@@ -318,6 +331,17 @@ int main(int argc, char *argv[]) {
   CloudConnector *cc_ptr  = nullptr;
   SipFrameDemux  *demux_ptr = nullptr;
 
+  // Inner-TLS over the WS — the real mTLS trust boundary (Heroku
+  // terminates the outer TLS at its router, so `--tls-cert/--tls-key`
+  // are never round-tripped against a verifiable peer). Mirror of the
+  // /ws/db pattern. Empty cert path = inner TLS disabled (test wiring
+  // only — production cloud requires it on every /agent dial).
+  AceSslTransport::InnerTlsConfig agent_inner_tls;
+  agent_inner_tls.cert_path = inner_tls_cert;
+  agent_inner_tls.key_path  = inner_tls_key;
+  agent_inner_tls.ca_path   = inner_tls_ca;
+  agent_inner_tls.hostname  = inner_tls_hostname;
+
   AceSslTransportFactory transport_factory(
       reactor,
       [&](const std::string &bytes) {
@@ -325,7 +349,8 @@ int main(int argc, char *argv[]) {
       },
       [&]() {
         if (cc_ptr) cc_ptr->on_transport_lost();
-      });
+      },
+      agent_inner_tls);
 
   CloudConnector connector(cc_cfg, transport_factory, clock);
   cc_ptr = &connector;

@@ -20,7 +20,7 @@ std::string ssl_error_string()
 // InnerTlsClient
 // ═══════════════════════════════════════════════════════════════════════════════
 
-InnerTlsClient::InnerTlsClient(ITransport &transport)
+InnerTlsClient::InnerTlsClient(IInnerTlsTransport &transport)
   : m_transport(transport),
     m_ctx(SSL_CTX_new(TLS_client_method())),
     m_ssl(SSL_new(m_ctx.get()))
@@ -157,7 +157,7 @@ bool InnerTlsClient::flush_wbio()
 // InnerTlsServer
 // ═══════════════════════════════════════════════════════════════════════════════
 
-InnerTlsServer::InnerTlsServer(ITransport &transport,
+InnerTlsServer::InnerTlsServer(IInnerTlsTransport &transport,
                                const std::string &cert_path,
                                const std::string &key_path,
                                const std::string &ca_path)

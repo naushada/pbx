@@ -1,4 +1,6 @@
 #include "agent_stream.hpp"
+#include "innertls.hpp"
+#include "ws_inner_tls_bridge.hpp"
 #include "wsframe.hpp"
 
 #include "ace/Log_Msg.h"
@@ -33,12 +35,11 @@ inline std::vector<std::uint8_t> string_to_bytes(const std::string &s) {
 
 } // namespace
 
-AgentStream::AgentStream(CloudTunnelEndpoint &endpoint, ACE_HANDLE fd)
+AgentStream::AgentStream(CloudTunnelEndpoint &endpoint, ACE_HANDLE fd,
+                          bool auto_attach)
     : m_endpoint(endpoint), m_handle(fd), m_adapter(nullptr) {
   m_stream.set_handle(fd);
-  auto adapter = std::make_unique<TransportAdapter>(this);
-  m_adapter = adapter.get();
-  m_endpoint.on_agent_connected(std::move(adapter));
+  if (auto_attach) attach();
 }
 
 AgentStream::~AgentStream() {
@@ -50,6 +51,58 @@ AgentStream::~AgentStream() {
     m_stream.close();
     m_handle = ACE_INVALID_HANDLE;
   }
+  // Same reason as `AceSslTransport`: m_inner_tls references m_bridge.
+  m_inner_tls.reset();
+  m_bridge.reset();
+}
+
+bool AgentStream::setup_inner_tls(const std::string &cert_path,
+                                   const std::string &key_path,
+                                   const std::string &ca_path) {
+  if (m_attached) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [AgentStream:%t] %M %N:%l setup_inner_tls "
+                        "called after attach — refusing\n")));
+    return false;
+  }
+  if (m_handle == ACE_INVALID_HANDLE) return false;
+
+  auto recv_raw = [this](void *buf, std::size_t cap) -> long {
+    return static_cast<long>(m_stream.recv(buf, cap));
+  };
+  auto send_raw = [this](const void *buf, std::size_t len) -> long {
+    return static_cast<long>(m_stream.send_n(buf, len));
+  };
+  m_bridge = std::make_unique<WsInnerTlsBridge>(std::move(recv_raw),
+                                                 std::move(send_raw),
+                                                 /*client_mask=*/false);
+  m_inner_tls = std::make_unique<InnerTlsServer>(*m_bridge, cert_path,
+                                                  key_path, ca_path);
+  if (!m_inner_tls->accept()) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [AgentStream:%t] %M %N:%l inner-TLS accept "
+                        "failed\n")));
+    m_inner_tls.reset();
+    m_bridge.reset();
+    return false;
+  }
+  m_bridge->switch_to_buffered();
+  // Carry leftover socket bytes into the steady-state decoder so app
+  // data that arrived in the same TCP segment as the handshake's final
+  // record isn't lost on the next handle_input.
+  m_recv_buf = m_bridge->leftover_socket_bytes();
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [AgentStream:%t] %M %N:%l inner-TLS handshake "
+                      "established\n")));
+  return true;
+}
+
+void AgentStream::attach() {
+  if (m_attached) return;
+  m_attached = true;
+  auto adapter = std::make_unique<TransportAdapter>(this);
+  m_adapter = adapter.get();
+  m_endpoint.on_agent_connected(std::move(adapter));
 }
 
 int AgentStream::register_with_reactor() {
@@ -93,13 +146,32 @@ bool AgentStream::drain_frames() {
     case kOpcodeBinary:
     case kOpcodeText:
     case kOpcodeContinuation:
-      m_endpoint.on_bytes_received(bytes_to_string(frame.payload));
-      // If the endpoint dropped us mid-call (e.g. invalid SipFrame
-      // payload → bridge.on_tunnel_bytes returned false → endpoint
-      // released the transport), our socket has been closed via
-      // close_socket(). Bail out so handle_input returns -1 and the
-      // reactor cleans us up.
-      if (m_handle == ACE_INVALID_HANDLE) return false;
+      if (m_inner_tls) {
+        // Encrypted TLS record arrived. Hand it to the bridge's
+        // buffered queue, then drain plaintext via InnerTls::recv.
+        // SSL_read inside recv() drains every record visible in the
+        // BIO, so one push + one recv loop covers a peer SSL_write
+        // that produced multiple records in this WS frame.
+        m_bridge->push_inbound(frame.payload);
+        for (;;) {
+          std::vector<std::uint8_t> plaintext;
+          if (!m_inner_tls->recv(plaintext)) {
+            notify_disconnect_once();
+            return false;
+          }
+          if (plaintext.empty()) break;  // WANT_READ — fully drained
+          m_endpoint.on_bytes_received(bytes_to_string(plaintext));
+          if (m_handle == ACE_INVALID_HANDLE) return false;
+        }
+      } else {
+        m_endpoint.on_bytes_received(bytes_to_string(frame.payload));
+        // If the endpoint dropped us mid-call (e.g. invalid SipFrame
+        // payload → bridge.on_tunnel_bytes returned false → endpoint
+        // released the transport), our socket has been closed via
+        // close_socket(). Bail out so handle_input returns -1 and the
+        // reactor cleans us up.
+        if (m_handle == ACE_INVALID_HANDLE) return false;
+      }
       break;
 
     case kOpcodePing: {
@@ -167,7 +239,16 @@ int AgentStream::handle_timeout(const ACE_Time_Value & /*tv*/,
 
 bool AgentStream::write_bytes(const std::string &sip_ws_bytes) {
   if (m_handle == ACE_INVALID_HANDLE) return false;
-  // SIP-over-WS uses text frames (RFC 7118 §2). Server side is unmasked.
+
+  // Inner-TLS path: bridge wraps each encrypted record in one unmasked
+  // WS binary frame and writes to the socket.
+  if (m_inner_tls) {
+    return m_inner_tls->send(string_to_bytes(sip_ws_bytes));
+  }
+
+  // Test-only path: raw text WS frame, no encryption. Production wires
+  // the inner-TLS handshake before attach(), so this branch is unused
+  // against a real agent peer.
   const auto framed =
       wsframe::encode(string_to_bytes(sip_ws_bytes), kOpcodeText, /*mask=*/false);
   const ssize_t n =

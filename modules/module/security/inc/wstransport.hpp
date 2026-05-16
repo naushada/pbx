@@ -8,14 +8,14 @@
 #include <vector>
 
 /**
- * @brief Adapts WebSocket frame send/recv functions to the ITransport interface.
+ * @brief Adapts WebSocket frame send/recv functions to the IInnerTlsTransport interface.
  *
  * Used by both wsdbagent and WsDbServer to layer inner TLS over WebSocket
  * binary frames.  Ping/pong handling is transparent — recv() loops until a
  * binary frame arrives (auto-replying to pings), and close frames cause
  * recv() to return false.
  */
-class WebSocketTransport : public ITransport {
+class WebSocketTransport : public IInnerTlsTransport {
 public:
   using SendFn = std::function<bool(const std::vector<std::uint8_t>&, std::uint8_t)>;
   using RecvFn = std::function<bool(std::uint8_t&, std::vector<std::uint8_t>&)>;
