@@ -280,6 +280,16 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "POST" && uri == "/api/v1/society")
     return MicroServicePbx::handle_society_POST(req, dbInst);
 
+  // Exact-match: GET /api/v1/societies (list — `turnSharedSecret` stripped).
+  if (method == "GET" && uri == "/api/v1/societies")
+    return MicroServicePbx::handle_societies_GET(req, dbInst);
+
+  // Prefix-match: GET /api/v1/society/<id> (detail — includes secrets).
+  // Comes after the POST exact-match above (different method, no conflict)
+  // and is distinct from /societies (extra `s`) above.
+  if (method == "GET" && uri.compare(0, 16, "/api/v1/society/") == 0)
+    return MicroServicePbx::handle_society_detail_GET(req, dbInst);
+
   // Prefix-match: GET /api/v1/cdr[?societyId=…]
   if (method == "GET" && uri.compare(0, 11, "/api/v1/cdr") == 0)
     return MicroServicePbx::handle_cdr_GET(req, dbInst);

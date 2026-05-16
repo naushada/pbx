@@ -276,6 +276,52 @@ std::string handle_society_POST(const std::string &req, IMongodbClient &db) {
                         inserted.empty() ? doc.dump() : inserted);
 }
 
+std::string handle_societies_GET(const std::string & /*req*/,
+                                 IMongodbClient &db) {
+  if (!db_available()) return http_response(200, "OK", "[]");
+
+  std::string raw;
+  try {
+    raw = db.get_documents("societies", std::string{"{}"});
+  } catch (...) {
+    return http_response(200, "OK", "[]");
+  }
+  if (raw.empty()) return http_response(200, "OK", "[]");
+
+  // Strip turnSharedSecret from each row — the list view doesn't need
+  // it and a stray /societies fetch shouldn't leak secrets. The
+  // per-society detail endpoint surfaces it for the one row the
+  // operator asked for.
+  json arr;
+  try { arr = json::parse(raw); }
+  catch (...) { return http_response(200, "OK", "[]"); }
+  if (!arr.is_array()) return http_response(200, "OK", "[]");
+  for (auto &row : arr) {
+    if (row.is_object()) row.erase("turnSharedSecret");
+  }
+  return http_response(200, "OK", arr.dump());
+}
+
+std::string handle_society_detail_GET(const std::string &req,
+                                      IMongodbClient &db) {
+  const std::string id = path_suffix(req, "/api/v1/society/");
+  if (id.empty())
+    return response_error(400, "Bad Request",
+                          "Missing society id in path");
+
+  if (!db_available())
+    return response_error(503, "Service Unavailable",
+                          "DB not configured");
+
+  const json query = {{"_id", id}};
+  const std::string doc =
+      db.get_document("societies", query.dump(), "{}");
+  if (doc.empty())
+    return response_error(404, "Not Found", "Unknown society id");
+
+  return http_response(200, "OK", doc);
+}
+
 std::string handle_subscriber_import_POST(const std::string &req,
                                           IMongodbClient &db) {
   Http parsed(req);

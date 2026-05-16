@@ -240,6 +240,98 @@ TEST(MicroServicePbx, SocietyCreate_DuplicateCode_409)
     EXPECT_EQ(0u, db.inserts.size()) << "must not insert when duplicate";
 }
 
+// ── Societies list + detail ──────────────────────────────────────────────────
+
+TEST(MicroServicePbx, Societies_List_200_StripsTurnSecret)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    // get_documents("societies") with empty filter returns the front rule.
+    json arr = json::array({
+        {{"_id", "s1"}, {"code", "SUNSET"}, {"name", "Sunset Towers"},
+         {"sipRealm", "SUNSET.pbx.local"},
+         {"turnSharedSecret", "DO-NOT-LEAK-AT-LIST-LEVEL"}},
+        {{"_id", "s2"}, {"code", "OAKS"}, {"name", "Oaks Society"},
+         {"sipRealm", "OAKS.pbx.local"},
+         {"turnSharedSecret", "ALSO-SECRET"}},
+    });
+    db.getDocs["societies"].push_back({"", arr.dump()});
+
+    const std::string req = make_get("/api/v1/societies");
+    std::string rsp = MicroServicePbx::handle_societies_GET(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(2u, body.size());
+    EXPECT_EQ("SUNSET", body[0]["code"]);
+    EXPECT_EQ("OAKS",   body[1]["code"]);
+    // The list view must not leak turnSharedSecret — drill into detail for it.
+    EXPECT_FALSE(body[0].contains("turnSharedSecret"));
+    EXPECT_FALSE(body[1].contains("turnSharedSecret"));
+    // Other identity fields are still here.
+    EXPECT_EQ("SUNSET.pbx.local", body[0]["sipRealm"]);
+}
+
+TEST(MicroServicePbx, Societies_List_EmptyDb_200_EmptyArray)
+{
+    DbAvailableEnv db_env;
+    TestDb db;  // no societies seeded → empty array
+    const std::string req = make_get("/api/v1/societies");
+    std::string rsp = MicroServicePbx::handle_societies_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("[]"));
+}
+
+TEST(MicroServicePbx, Societies_List_DbUnavailable_200_EmptyArray)
+{
+    // Same H12-guard pattern as the other GETs — short-circuit to []+200
+    // when db_available() is false so the UI gets a stable empty list.
+    TestDb db;
+    const std::string req = make_get("/api/v1/societies");
+    std::string rsp = MicroServicePbx::handle_societies_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("[]"));
+}
+
+TEST(MicroServicePbx, SocietyDetail_200_IncludesTurnSecret)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json doc = {{"_id", "s1"}, {"code", "SUNSET"},
+                {"sipRealm", "SUNSET.pbx.local"},
+                {"turnSharedSecret", "SECRET-VISIBLE-IN-DETAIL"}};
+    db.getDoc["societies"].push_back({R"("_id":"s1")", doc.dump()});
+
+    const std::string req = make_get("/api/v1/society/s1");
+    std::string rsp = MicroServicePbx::handle_society_detail_GET(req, db);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    EXPECT_EQ("s1",                       body["_id"]);
+    EXPECT_EQ("SUNSET.pbx.local",         body["sipRealm"]);
+    EXPECT_EQ("SECRET-VISIBLE-IN-DETAIL", body["turnSharedSecret"])
+        << "detail endpoint surfaces secrets — that's the point";
+}
+
+TEST(MicroServicePbx, SocietyDetail_MissingId_400)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    // /api/v1/society/ (trailing slash, no id) → 400
+    const std::string req = make_get("/api/v1/society/");
+    std::string rsp = MicroServicePbx::handle_society_detail_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 400 Bad Request"));
+}
+
+TEST(MicroServicePbx, SocietyDetail_UnknownId_404)
+{
+    DbAvailableEnv db_env;
+    TestDb db;  // no rule seeded → get_document returns ""
+    const std::string req = make_get("/api/v1/society/ghost");
+    std::string rsp = MicroServicePbx::handle_society_detail_GET(req, db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 404 Not Found"));
+}
+
 // ── Subscriber import ─────────────────────────────────────────────────────────
 
 namespace {
