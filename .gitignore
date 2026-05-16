@@ -47,6 +47,18 @@ certs/turnserver.conf
 certs/asterisk-dtls/
 # Cloud↔agent mTLS leaf + CA pin
 certs/agent-deployed/
+# Wsdbagent inner-TLS certs extracted from the cloud image at deploy
+# time (deploy-heroku.sh cmd_extract_agent_certs). Regenerated per
+# deploy — never commit the .crt/.key files. The .gitkeep below keeps
+# the directory around so docker-compose.agent.yml's mount target exists
+# even on a fresh clone before the first deploy.
+certs/cloud-issued/*
+!certs/cloud-issued/innertls/
+certs/cloud-issued/innertls/*
+!certs/cloud-issued/innertls/.gitkeep
+# Vaadin Maven build artifacts
+onprem/target/
+onprem/frontend/
 !certs/.gitkeep
 !certs/*.template
 
