@@ -98,6 +98,13 @@ public:
   // ── ITransport ─────────────────────────────────────────────────────────
 
   bool send(const std::string &bytes) override;
+
+  /// Send a bare WS PING frame on the outer socket. Mirrors what
+  /// wsdbagent does to keep its /ws/db connection alive past Heroku's
+  /// idle timeout. No inner-TLS involvement — the PING is a WS
+  /// control frame, not app data.
+  bool send_ws_ping() override;
+
   void close() override;
 
   // ── ACE_Event_Handler ──────────────────────────────────────────────────

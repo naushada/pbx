@@ -91,6 +91,14 @@ void CloudConnector::on_transport_lost() {
   if (m_transport) request_disconnect();
 }
 
+void CloudConnector::send_ws_ping() {
+  if (!m_transport || m_disconnect_pending) return;
+  if (!m_transport->send_ws_ping()) {
+    // Same UAF concern as send_frame — defer the actual reset to tick().
+    request_disconnect();
+  }
+}
+
 void CloudConnector::request_disconnect() {
   // Idempotent — multiple producers (handle_input EOF, send-failure,
   // demux-violation) can all set this; tick() processes once.

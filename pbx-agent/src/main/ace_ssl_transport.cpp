@@ -261,6 +261,21 @@ bool AceSslTransport::send(const std::string &bytes) {
   return true;
 }
 
+bool AceSslTransport::send_ws_ping() {
+  if (m_handle == ACE_INVALID_HANDLE) return false;
+  // RFC 6455 §5.5.2: ping payload may be empty. Client→server frames
+  // MUST be masked (§5.2) — mirror what wsframe::ping_frame defaults
+  // to NOT do (server-style unmasked) by re-encoding via the encoder
+  // with mask=true.
+  const auto ping = wsframe::encode({}, kOpcodePing, /*mask=*/true);
+  const ssize_t n = m_stream.send_n(ping.data(), ping.size());
+  if (n != static_cast<ssize_t>(ping.size())) {
+    notify_disconnect_once();
+    return false;
+  }
+  return true;
+}
+
 void AceSslTransport::close() {
   if (m_handle == ACE_INVALID_HANDLE) return;
   // Best-effort WS close frame, then tear down.
