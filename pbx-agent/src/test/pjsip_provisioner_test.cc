@@ -178,3 +178,29 @@ TEST(PjsipProvisioner, ProvisionTwice_IdempotentReplace)
         << "absorbs the duplicate as a no-op).";
     EXPECT_TRUE(rest.deletes.empty());
 }
+
+TEST(PjsipProvisioner, SetSipRealm_AppliesToSubsequentProvisions)
+{
+    FakeAriRest rest;
+    PjsipProvisioner p(rest, "default.pbx.local");
+    EXPECT_EQ("default.pbx.local", p.sip_realm());
+
+    // First provision uses the ctor realm.
+    p.provision("u_alice", "ha1");
+    auto first_auth = parse_fields(rest.puts[0].fields_json);
+    EXPECT_EQ("default.pbx.local", first_auth["realm"]);
+    rest.puts.clear();
+
+    // SOCIETY_BOOTSTRAP arrives — agent calls set_sip_realm() with the
+    // canonical value the cloud read out of the societies doc.
+    p.set_sip_realm("acme.pbx.local");
+    EXPECT_EQ("acme.pbx.local", p.sip_realm());
+
+    // Next provision uses the new realm.
+    p.provision("u_bob", "ha1");
+    auto next_auth = parse_fields(rest.puts[0].fields_json);
+    EXPECT_EQ("acme.pbx.local", next_auth["realm"])
+        << "set_sip_realm must apply to subsequent provisions — otherwise "
+        << "SubscriberWatcher::resync() couldn't correct the realm of "
+        << "already-bootstrap'd subscribers";
+}

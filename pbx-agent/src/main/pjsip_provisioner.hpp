@@ -56,6 +56,17 @@ public:
   /// Already-deleted objects (404) are silent no-ops.
   void deprovision(const std::string &sip_username);
 
+  /// Replace the SIP realm used in every subsequent `provision()`.
+  /// Production driver: the agent's `SOCIETY_BOOTSTRAP` handler calls
+  /// this with the canonical sipRealm the cloud read from the
+  /// `societies` doc, so the `--sip-realm` CLI flag stops being a
+  /// correctness dependency. Already-provisioned subscribers keep
+  /// their old realm until `SubscriberWatcher::resync()` re-PUTs them.
+  void set_sip_realm(const std::string &realm) { m_sip_realm = realm; }
+
+  /// Test/observability: the realm currently in use.
+  const std::string &sip_realm() const { return m_sip_realm; }
+
 private:
   IAriRest   &m_rest;
   std::string m_sip_realm;

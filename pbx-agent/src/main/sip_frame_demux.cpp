@@ -32,6 +32,11 @@ void SipFrameDemux::set_tunnel(TunnelSink *tunnel) {
   m_recv_buffer.clear();
 }
 
+void SipFrameDemux::set_society_bootstrap_handler(
+    SocietyBootstrapHandler h) {
+  m_society_bootstrap_handler = std::move(h);
+}
+
 void SipFrameDemux::set_subscriber_revoked_handler(
     SubscriberRevokedHandler h) {
   m_revoked_handler = std::move(h);
@@ -101,11 +106,18 @@ void SipFrameDemux::dispatch_frame(const SipFrame::Frame &f) {
     // payload to the handler (production: ARI live-call teardown).
     if (m_revoked_handler) m_revoked_handler(f.payload);
     return;
+  case Op::SOCIETY_BOOTSTRAP:
+    // Cloud-originated control op (response to our AGENT_HELLO): the
+    // canonical `sipRealm` for this society. Production: update
+    // PjsipProvisioner + SubscriberWatcher.resync().
+    if (m_society_bootstrap_handler) m_society_bootstrap_handler(f.payload);
+    return;
   case Op::PONG:
   case Op::ERR:
   case Op::PUSH_NOTIFY:    // PUSH_NOTIFY is agent → cloud only; ignore if seen here.
   case Op::CDR_PUSH:       // CDR_PUSH is also agent → cloud only.
   case Op::REGISTER_STATE: // REGISTER_STATE is also agent → cloud only.
+  case Op::AGENT_HELLO:    // AGENT_HELLO is also agent → cloud only; ignore on echo.
     return;
   }
 }

@@ -317,6 +317,61 @@ int main(int argc, char *argv[]) {
           });
     }
 
+    // AGENT_HELLO: agent identified itself by societyId on (re)connect.
+    // Look up the society doc, emit SOCIETY_BOOTSTRAP carrying the
+    // canonical sipRealm. Capture the bridge raw ptr — same reasoning
+    // as the cache above; the unique_ptr below moves ownership into
+    // `inst` but the bridge stays put.
+    {
+      SipBridge      *brg = bridge.get();
+      IMongodbClient *db  = inst.mongodbcInst();
+      brg->set_agent_hello_handler(
+          [brg, db](const std::string &payload) {
+            if (!db) return;
+            std::string society_id;
+            try {
+              const auto j = nlohmann::json::parse(payload);
+              if (!j.contains("societyId") || !j["societyId"].is_string()) return;
+              society_id = j["societyId"].get<std::string>();
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO parse: %s\n"),
+                         e.what()));
+              return;
+            }
+            const std::string doc = db->get_document(
+                "societies",
+                R"({"_id":")" + society_id + R"("})",
+                "{}");
+            if (doc.empty()) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
+                                  "not found in societies collection\n"),
+                         society_id.c_str()));
+              return;
+            }
+            std::string sip_realm;
+            try {
+              sip_realm = nlohmann::json::parse(doc)
+                              .value("sipRealm", std::string{});
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO society doc "
+                                  "parse: %s\n"), e.what()));
+              return;
+            }
+            if (sip_realm.empty()) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
+                                  "doc missing sipRealm — agent will fall "
+                                  "back to CLI default\n"),
+                         society_id.c_str()));
+              return;
+            }
+            brg->bootstrap_society(society_id, sip_realm);
+          });
+    }
+
     // Wire bridge → cloud-side dispatch hooks.
     //
     // If VAPID is configured, instantiate PushSender and route the
@@ -426,6 +481,58 @@ int main(int argc, char *argv[]) {
                          ACE_TEXT("%D [pbx-cloud] register-state handler: %s\n"),
                          e.what()));
             }
+          });
+    }
+
+    // AGENT_HELLO: same as the remote-db block above — look up the
+    // society doc and bootstrap the agent with its sipRealm.
+    {
+      SipBridge      *brg = bridge.get();
+      IMongodbClient *db  = inst.mongodbcInst();
+      brg->set_agent_hello_handler(
+          [brg, db](const std::string &payload) {
+            if (!db) return;
+            std::string society_id;
+            try {
+              const auto j = nlohmann::json::parse(payload);
+              if (!j.contains("societyId") || !j["societyId"].is_string()) return;
+              society_id = j["societyId"].get<std::string>();
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO parse: %s\n"),
+                         e.what()));
+              return;
+            }
+            const std::string doc = db->get_document(
+                "societies",
+                R"({"_id":")" + society_id + R"("})",
+                "{}");
+            if (doc.empty()) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
+                                  "not found in societies collection\n"),
+                         society_id.c_str()));
+              return;
+            }
+            std::string sip_realm;
+            try {
+              sip_realm = nlohmann::json::parse(doc)
+                              .value("sipRealm", std::string{});
+            } catch (const std::exception &e) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO society doc "
+                                  "parse: %s\n"), e.what()));
+              return;
+            }
+            if (sip_realm.empty()) {
+              ACE_ERROR((LM_ERROR,
+                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
+                                  "doc missing sipRealm — agent will fall "
+                                  "back to CLI default\n"),
+                         society_id.c_str()));
+              return;
+            }
+            brg->bootstrap_society(society_id, sip_realm);
           });
     }
 

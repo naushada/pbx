@@ -343,3 +343,47 @@ TEST(SipFrameDemux, SubscriberRevoked_NoHandler_IsSilentlyIgnored)
         SipFrame::Op::SUBSCRIBER_REVOKED, 0, R"({"sipUsername":"u_x"})")))
         << "an un-handled control frame must not be a protocol error";
 }
+
+TEST(SipFrameDemux, SocietyBootstrap_InvokesHandlerWithPayload)
+{
+    FakeTunnel           tun;
+    FakeAsteriskFactory  fac;
+    SipFrameDemux        demux(&tun, fac);
+
+    std::vector<std::string> got;
+    demux.set_society_bootstrap_handler(
+        [&got](const std::string &payload) { got.push_back(payload); });
+
+    const std::string payload =
+        R"({"societyId":"soc1","sipRealm":"acme.pbx.local"})";
+    EXPECT_TRUE(demux.on_tunnel_bytes(
+        SipFrame::encode(SipFrame::Op::SOCIETY_BOOTSTRAP, 0, payload)));
+
+    ASSERT_EQ(1u, got.size());
+    EXPECT_EQ(payload, got[0]);
+    EXPECT_TRUE(tun.sent.empty());
+    EXPECT_EQ(0u, demux.active_streams());
+}
+
+TEST(SipFrameDemux, SocietyBootstrap_NoHandler_IsSilentlyIgnored)
+{
+    FakeTunnel           tun;
+    FakeAsteriskFactory  fac;
+    SipFrameDemux        demux(&tun, fac);  // no handler installed
+
+    EXPECT_TRUE(demux.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::SOCIETY_BOOTSTRAP, 0,
+        R"({"sipRealm":"acme.pbx.local"})")));
+}
+
+TEST(SipFrameDemux, AgentHello_IsIgnoredOnInbound)
+{
+    // AGENT_HELLO is agent→cloud only; if the cloud ever echoes one
+    // back the demux must drop silently (not protocol-error).
+    FakeTunnel           tun;
+    FakeAsteriskFactory  fac;
+    SipFrameDemux        demux(&tun, fac);
+
+    EXPECT_TRUE(demux.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::AGENT_HELLO, 0, R"({"societyId":"soc1"})")));
+}

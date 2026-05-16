@@ -530,6 +530,59 @@ TEST(SubscriberWatcher, Tick_ReopenFailure_BacksOffBeforeRetry)
     EXPECT_EQ(3u, db.watch_calls.size());
 }
 
+TEST(SubscriberWatcher, Resync_ReRunsFullScan_WithCurrentRealm)
+{
+    // Production driver for resync() is the SOCIETY_BOOTSTRAP handler —
+    // PjsipProvisioner.set_sip_realm() is called immediately before
+    // resync() so the re-PUT carries the new realm. Verify the
+    // re-provision happens (sorcery is idempotent on the wire so the
+    // signal is "did the PUTs happen?", not "did the realm change?").
+    FakeDb db;
+    db.bootstrap_json = "[" + subscriber_row("a", "u_alice") + "]";
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "default.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+    const auto puts_after_bootstrap = rest.puts.size();
+    EXPECT_EQ(3u, puts_after_bootstrap);
+
+    // Cloud sends a new realm; production handler sets it on prov first…
+    prov.set_sip_realm("acme.pbx.local");
+    // …then triggers resync. The full-scan runs again; sorcery absorbs
+    // duplicates, so we just verify that all three sorcery objects were
+    // re-PUT (the next 3 entries in rest.puts).
+    w.resync();
+    EXPECT_EQ(puts_after_bootstrap + 3u, rest.puts.size());
+
+    // The second round's auth PUT carries the new realm.
+    auto auth = nlohmann::json::parse(rest.puts[puts_after_bootstrap].fields_json);
+    bool found_realm = false;
+    for (const auto &f : auth["fields"]) {
+        if (f["attribute"] == "realm") {
+            EXPECT_EQ("acme.pbx.local", f["value"].get<std::string>());
+            found_realm = true;
+        }
+    }
+    EXPECT_TRUE(found_realm) << "auth PUT must carry the corrected realm";
+}
+
+TEST(SubscriberWatcher, Resync_DoesNotTouchChangeStreamCursor)
+{
+    FakeDb db;
+    db.bootstrap_json = "[" + subscriber_row("a", "u_alice") + "]";
+    FakeAriRest rest;
+    PjsipProvisioner prov(rest, "default.pbx.local");
+    SubscriberWatcher w(db, "soc1", prov);
+    w.bootstrap();
+    // bootstrap opens cursor #1 (no resume token).
+    ASSERT_EQ(1u, db.watch_calls.size());
+
+    w.resync();
+    EXPECT_EQ(1u, db.watch_calls.size())
+        << "resync must NOT call watch_collection() — the change-stream "
+        << "cursor + resume token stay alive across realm corrections";
+}
+
 TEST(SubscriberWatcher, Tick_StandaloneMongo_StillReopenAttempts)
 {
     // mongod is standalone → bootstrap can't open a cursor, but the

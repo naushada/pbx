@@ -249,7 +249,13 @@ int main(int argc, char *argv[]) {
   // Default the SIP realm to the cloud-side convention (see
   // microservice_pbx.cpp handle_society_POST: `code + ".pbx.local"`). If a
   // society's code differs from its id the operator should pass the
-  // explicit realm via --sip-realm.
+  // explicit realm via --sip-realm. The agent ALSO sends AGENT_HELLO on
+  // every cloud (re)connect — the cloud responds with SOCIETY_BOOTSTRAP
+  // carrying the canonical sipRealm; when no `--sip-realm` was passed
+  // we adopt the cloud value and re-PUT every endpoint so SIP REGISTER
+  // digests match. With `--sip-realm` passed, the CLI wins and the
+  // SOCIETY_BOOTSTRAP realm is ignored (operator override).
+  const bool sip_realm_from_cli = !sip_realm.empty();
   if (sip_realm.empty()) sip_realm = society_id + ".pbx.local";
 
   ACE_DEBUG((LM_INFO,
@@ -404,16 +410,48 @@ int main(int argc, char *argv[]) {
         connector.send_frame(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
       });
 
-  // After every (re)connect to the cloud, snapshot the agent's view of
-  // every PJSIP endpoint into the cloud's presence cache.
-  // `EndpointStateChange` only fires on transitions, so a tunnel drop
-  // can leave the cache stale until the next register flip — which on
-  // a quiet society might not happen for hours. The snapshot is the
-  // resync that makes the directory's `online` flags accurate after a
-  // reconnect.
+  // After every (re)connect to the cloud:
+  //   1. Send AGENT_HELLO {societyId} so the cloud knows which society
+  //      this connection represents. Cloud responds with SOCIETY_BOOTSTRAP
+  //      (handled below) carrying the canonical sipRealm.
+  //   2. Snapshot the agent's view of every PJSIP endpoint into the cloud's
+  //      presence cache. `EndpointStateChange` only fires on transitions,
+  //      so without this resync a tunnel drop can leave the cache stale
+  //      until the next register flip (PR #20).
   connector.set_on_connected([&]() {
+    const nlohmann::json hello = {{"societyId", society_id}};
+    connector.send_frame(SipFrame::Op::AGENT_HELLO, 0, hello.dump());
     ari_client.publish_register_snapshot();
   });
+
+  // Cloud responded to our AGENT_HELLO with SOCIETY_BOOTSTRAP carrying
+  // the canonical sipRealm. If the operator passed `--sip-realm` on the
+  // CLI we treat that as an override and ignore the cloud value;
+  // otherwise we adopt it + re-PUT every already-provisioned subscriber
+  // so their auth objects' `realm` field matches (SIP REGISTER digests
+  // depend on it). Same payload shape ignored if the realm hasn't
+  // actually changed.
+  demux.set_society_bootstrap_handler(
+      [&](const std::string &payload) {
+        if (sip_realm_from_cli) return;
+        std::string cloud_realm;
+        try {
+          const auto j = nlohmann::json::parse(payload);
+          cloud_realm = j.value("sipRealm", std::string{});
+        } catch (...) {
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [pbx-agent] bad SOCIETY_BOOTSTRAP "
+                              "payload; dropped\n")));
+          return;
+        }
+        if (cloud_realm.empty() || cloud_realm == pjsip.sip_realm()) return;
+        ACE_DEBUG((LM_INFO,
+                   ACE_TEXT("%D [pbx-agent] SOCIETY_BOOTSTRAP: sipRealm "
+                            "%s -> %s; re-syncing every subscriber\n"),
+                   pjsip.sip_realm().c_str(), cloud_realm.c_str()));
+        pjsip.set_sip_realm(cloud_realm);
+        watcher.resync();
+      });
 
   AsteriskWsFactory asterisk_factory(reactor, demux, ast_host,
                                        static_cast<std::uint16_t>(ast_port),
