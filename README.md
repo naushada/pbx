@@ -244,7 +244,7 @@ podman-compose -f docker-compose.agent.yml down
 podman-compose -f docker-compose.agent.yml down -v
 ```
 
-Topology — five containers, each with a single responsibility:
+Topology — six containers, each with a single responsibility:
 
 | Container | Image / Build | Network | Role | Why on-prem |
 |---|---|---|---|---|
@@ -253,8 +253,9 @@ Topology — five containers, each with a single responsibility:
 | `pbx-coturn` | `coturn/coturn:4.6` | **host** (not bridge) | TURN relay for off-LAN browsers (1:1 calls where one leg is outside the society LAN). Host networking so STUN replies carry the real public IP, not the bridge's. The society DNATs one public UDP port (`TURN_PUBLIC_PORT`, default 3478) to it. | TURN needs a public UDP path. |
 | `pbx-agent`  | built from `docker/Dockerfile.agent` | `pbx-net` | The control-plane glue. Dials Heroku's `/agent` over outer TLS + InnerTLS (PR #19, mTLS — `CERTS_DIR` provides cert/key/CA for both layers). Runs `SubscriberWatcher` + `PjsipProvisioner` (PR #18, pushes endpoints into Asterisk via ARI dynamic-config), `AriClient` (admission, CDR, presence), `CallRouter` (forked-ring). | Bridges cloud signaling ↔ local Asterisk. |
 | `pbx-wsdbagent` | built from `docker/Dockerfile.wsdbagent` | `pbx-net` | DB tunnel. Dials `wss://${CLOUD_HOST}/ws/db` with InnerTLS so the cloud's `MicroServicePbx` handlers (login, directory, turn-credentials) can read/write the on-prem Mongo when Heroku has `REMOTE_DB=1`. Without it the cloud's login returns **503 "On-prem agent not connected"** instead of stalling. | Mongo stays on-prem; cloud reads via this tunnel. |
+| `pbx-cert-watcher` | `alpine:3.19` + runtime `apk add curl` | host podman socket (no pbx-net) | Polls `./certs/cloud-issued/` every 5 s. When `./deploy-heroku.sh deploy` extracts a fresh cert family (the cloud regenerates its CA per build), the watcher detects the md5 change and POSTs to the host podman socket to restart `pbx-wsdbagent` + `pbx-agent` so they re-read the new certs. Eliminates the manual `podman restart` step after every deploy. | Self-healing CA-rotation; no operator action needed. |
 
-The five share `pbx-net` (except coturn, which is host-net). Compose dependency order: `pbx-mongo` healthy → `pbx-agent` + `pbx-wsdbagent` start; `pbx-asterisk` is independent (agent waits on it via ARI retry, not compose); `pbx-coturn` is fully independent.
+The six share `pbx-net` (except `pbx-coturn` host-net + `pbx-cert-watcher` which only needs the podman socket). Compose dependency order: `pbx-mongo` healthy → `pbx-agent` + `pbx-wsdbagent` start; `pbx-cert-watcher` waits on both peers before arming the poll; `pbx-asterisk` is independent (agent waits on it via ARI retry, not compose); `pbx-coturn` is fully independent.
 
 Asterisk config files (`docker/asterisk/*.conf`) are minimal but functional:
 
