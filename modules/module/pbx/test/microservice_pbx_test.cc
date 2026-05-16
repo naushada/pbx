@@ -445,6 +445,27 @@ TEST(MicroServicePbx, SubscriberImport_Idempotent)
     EXPECT_NE(std::string::npos, out_csv.find("asha@x,,,,skipped"));
 }
 
+TEST(MicroServicePbx, SubscriberImportTemplate_200_HeaderAndDownloadDisposition)
+{
+    TestDb db;  // handler doesn't touch the DB — empty fixture is fine.
+    const std::string req = make_get("/api/v1/subscriber/import/template");
+
+    std::string rsp =
+        MicroServicePbx::handle_subscriber_import_template_GET(req, db);
+
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("Content-Type: text/csv"));
+    EXPECT_NE(std::string::npos,
+              rsp.find("Content-Disposition: attachment; "
+                       "filename=subscribers-template.csv"));
+
+    // Body starts with the canonical header row.
+    const auto body_start = rsp.find("\r\n\r\n");
+    ASSERT_NE(std::string::npos, body_start);
+    const std::string body = rsp.substr(body_start + 4);
+    EXPECT_EQ(0u, body.find("flat_number,name,email,phone,role\r\n"));
+}
+
 // ── CDR list ──────────────────────────────────────────────────────────────────
 
 TEST(MicroServicePbx, CdrList_FiltersBySociety)
@@ -1481,6 +1502,39 @@ TEST(MicroServiceRouting, RoutesSubscriberImportPost)
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_NE(std::string::npos, rsp.find("Content-Type: text/csv"));
+}
+
+TEST(MicroServiceRouting, RoutesSubscriberImportTemplateGET)
+{
+    // The exact-match for /import/template must beat the /import POST
+    // prefix-match — confirm both halves of that split route correctly.
+    TestDb db;
+    MicroService e;
+
+    // GET → template handler.
+    {
+        const std::string req =
+            make_get("/api/v1/subscriber/import/template");
+        std::string rsp =
+            e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+        EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+        EXPECT_NE(std::string::npos,
+                  rsp.find("Content-Disposition: attachment; "
+                           "filename=subscribers-template.csv"));
+        EXPECT_NE(std::string::npos,
+                  rsp.find("flat_number,name,email,phone,role"));
+    }
+
+    // POST on the same /import prefix must still reach the import handler.
+    seed_society_and_flats(db);
+    const std::string csv =
+        "flat_number,name,email,phone,role\r\n"
+        "A-101,Asha,asha@x,9999,resident\r\n";
+    const std::string req = make_post(
+        "/api/v1/subscriber/import?societyId=s1", csv, "text/csv");
+    std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
+    EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+    EXPECT_NE(std::string::npos, rsp.find("X-Import-Created: 1"));
 }
 
 TEST(MicroServiceRouting, RoutesCdrGet)

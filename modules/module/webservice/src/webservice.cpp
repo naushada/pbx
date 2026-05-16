@@ -245,6 +245,14 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "POST" && uri == "/api/v1/subscriber/login")
     return MicroServicePbx::handle_subscriber_login_POST(req, dbInst);
 
+  // Exact-match: GET /api/v1/subscriber/import/template
+  // Comes BEFORE the /import prefix-match below so the prefix doesn't
+  // swallow the more specific path. Public (no admin gate) — the
+  // template itself is canonical and the operator needs it to compose
+  // the import CSV before they have a session.
+  if (method == "GET" && uri == "/api/v1/subscriber/import/template")
+    return MicroServicePbx::handle_subscriber_import_template_GET(req, dbInst);
+
   // Prefix-match: POST /api/v1/subscriber/import[?societyId=…]  (admin-only)
   if (method == "POST" && uri.compare(0, 25, "/api/v1/subscriber/import") == 0) {
     auto check = MicroServicePbx::resolve_admin_session(req, dbInst);

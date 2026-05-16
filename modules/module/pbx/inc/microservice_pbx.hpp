@@ -67,6 +67,18 @@ std::string handle_society_detail_GET(const std::string &req,
 std::string handle_subscriber_import_POST(const std::string &req,
                                           IMongodbClient &db);
 
+/// GET /api/v1/subscriber/import/template
+/// Returns the canonical bulk-import CSV header — `flat_number,name,
+/// email,phone,role` followed by an empty CRLF line — as `text/csv`
+/// with a `Content-Disposition: attachment; filename=subscribers-template.csv`
+/// header so the admin UI's "Download template" button triggers a
+/// browser save instead of rendering the CSV inline. Does not touch
+/// the DB; the @p db argument is present only to keep the free-function
+/// shape uniform with the rest of the dispatch table.
+/// 200 OK always.
+std::string handle_subscriber_import_template_GET(const std::string &req,
+                                                   IMongodbClient &db);
+
 /// GET /api/v1/cdr?societyId=<id>
 /// Returns the CDR rows for that society as a JSON array. 400 if
 /// `societyId` query param is missing.
