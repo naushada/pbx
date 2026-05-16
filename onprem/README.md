@@ -66,8 +66,13 @@ the README at the repo root for the full version):
    ```sh
    heroku config:set PBX_AUTH_STRICT=1 --app pabx
    ```
-4. Refresh `http://localhost:8081/login` and log in with the
-   credentials from step 2.
+4. Refresh `http://localhost:8081/login` and log in:
+
+   | Field         | What to type                                                  |
+   |---------------|---------------------------------------------------------------|
+   | `societyCode` | the `--society-code` from step 2 (e.g. `SUNSET`)              |
+   | `flatNumber`  | `ADMIN` (bootstrap seeds the first admin with this flatNumber)|
+   | `password`    | the `--admin-password` from step 2                            |
 
 ## Direct `mvn` (no script)
 
