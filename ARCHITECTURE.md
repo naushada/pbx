@@ -498,7 +498,7 @@ Heroku-side env vars to set with `heroku config:set --app pabx`:
 |-----|-----|
 | `DB_URI` | If `REMOTE_DB` is unset, this is the cloud Mongo (Atlas or Heroku add-on). |
 | `REMOTE_DB=1` | D4 — flip this only after `pbx-wsdbagent` is verified connected. |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY_PATH` / `VAPID_SUBJECT` | For Web Push. Generate with `web-push generate-vapid-keys` and mount the private key. |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY_B64` / `VAPID_SUBJECT` | For Web Push. The cloud entrypoint decodes `VAPID_PRIVATE_KEY_B64` to `/tmp/vapid.pem` at startup. **Lifecycle, rotation, recovery → [`docs/design/operations/vapid-keys.md`](docs/design/operations/vapid-keys.md).** |
 | `TURN_URL` / `TURN_SHARED_SECRET` | Match the on-prem coturn's `realm` + `static-auth-secret`. |
 | `PBX_AUTH_STRICT=1` | Once subscribers are seeded — otherwise login is dev-permissive (returns any non-empty triple). |
 
