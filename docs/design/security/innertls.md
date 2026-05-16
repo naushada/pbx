@@ -231,3 +231,39 @@ steady state:
 The two layers stay independent of each other and of the
 WS-level keep-alive ping (`AgentStream`'s 25 s `0x9` ping vs the
 SipFrame `0x04` `PING`/`PONG` at 15 s) — see `DESIGN.md` §7.
+
+## Peer cert CN exposure (PR #25)
+
+`InnerTlsServer::peer_subject_cn()` returns the verified agent cert's
+Subject CN via `SSL_get_peer_certificate` + `X509_NAME_get_text_by_NID(NID_commonName)`.
+The cloud's `AgentStream::setup_inner_tls()` captures it into
+`m_peer_cn` post-handshake and logs `(peer CN=…)` so multi-tenant
+deployments can see which agent attached. Reserved for future
+cross-checks against `AGENT_HELLO`'s claimed `societyId` — if the
+cert CN doesn't match, the cloud could refuse `bootstrap_society()`
+rather than trust the agent's self-declared id.
+
+Returns empty when the client presented no cert (the
+`SSL_VERIFY_PEER` without `FAIL_IF_NO_PEER_CERT` permitted-anonymous
+path). The cloud treats empty as "unknown agent" and falls back to
+the AGENT_HELLO payload.
+
+### Latent bug fixed by PR #25
+
+`InnerTlsClient::set_cert` originally called `SSL_CTX_use_certificate_file`
++ `SSL_CTX_use_PrivateKey_file`. Those load the cert into the **CTX**, which
+only seeds the cert for SSL objects created **after** the call. `m_ssl` was
+already built in the ctor (`SSL_new(m_ctx.get())`) BEFORE `set_cert` runs,
+so the SSL object inherited an empty default cert at `SSL_new` time and
+never picked up what `set_cert` loaded.
+
+Net effect: **every existing `/ws/db` + `/agent` deployment was running
+anonymous-client mTLS — the server saw no cert and `peer_subject_cn()`
+would have returned empty even when operator passed `--tls-cert` /
+`--inner-tls-cert`**. The handshake still succeeded because
+`SSL_VERIFY_PEER` accepts anonymous; the cert just never got presented.
+
+Fix: switch to per-SSL `SSL_use_certificate_file` / `SSL_use_PrivateKey_file`
+/ `SSL_check_private_key`. After the fix, the new
+`PeerSubjectCn_ReadableAfterMtlsHandshake` test exercises the actual mTLS
+path and confirms the server reads the client cert's CN.
