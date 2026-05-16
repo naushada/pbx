@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# scripts/lama.sh — drive the Lima-VM dry test for pbx-agent.
+# scripts/lima.sh — drive the Lima-VM dry test for pbx-agent.
 #
 # Usage:
-#   lama start   provision Lima VM, build pbx-agent natively, run
+#   lima start   provision Lima VM, build pbx-agent natively, run
 #                against the deployed Heroku cloud, capture logs +
 #                any coredump. Idempotent; re-runs skip already-done
 #                steps via sentinel files.
-#   lama stop    tear the VM down + reclaim its ~30 GB disk image.
+#   lima stop    tear the VM down + reclaim its ~30 GB disk image.
 #
 # Provisions a Lima VM (Apple Virtualization framework, native arm64
 # on Apple Silicon — no QEMU), follows xpmile/docker/Dockerfile's
@@ -31,7 +31,7 @@ HEROKU_HOST="${HEROKU_HOST:-pabx-5fbf3550f938.herokuapp.com}"
 HEROKU_PORT="${HEROKU_PORT:-443}"
 SOCIETY_ID="${SOCIETY_ID:-demo-society}"
 RUN_BUDGET_SECS="${RUN_BUDGET_SECS:-90}"
-LOG=/tmp/lama.sh.log
+LOG=/tmp/lima.sh.log
 
 usage() {
   cat <<EOF
@@ -47,13 +47,13 @@ cmd="${1:-}"
 case "$cmd" in
   start) ;;
   stop)
-    printf '\n\033[1;34m[lama] stopping + deleting Lima VM %s\033[0m\n' "$VM"
+    printf '\n\033[1;34m[lima] stopping + deleting Lima VM %s\033[0m\n' "$VM"
     if limactl list -q 2>/dev/null | grep -qx "$VM"; then
       limactl stop -f "$VM" 2>&1 | grep -v "^time=" || true
       limactl delete -f "$VM" 2>&1 | grep -v "^time=" || true
-      echo "[lama] done — VM and its disk image are gone."
+      echo "[lima] done — VM and its disk image are gone."
     else
-      echo "[lama] no VM named '$VM' — already stopped."
+      echo "[lima] no VM named '$VM' — already stopped."
     fi
     exit 0
     ;;
@@ -64,7 +64,7 @@ esac
 # log file for post-mortem.
 exec > >(tee "$LOG") 2>&1
 
-step() { printf '\n\033[1;34m[lama] %s\033[0m\n' "$*"; }
+step() { printf '\n\033[1;34m[lima] %s\033[0m\n' "$*"; }
 SH()   { limactl shell "$VM" -- bash -c "$1"; }
 
 # Sentinel files (inside the VM) for skip-already-done.
