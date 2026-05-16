@@ -50,7 +50,12 @@ export class SipService {
         }
 
         const wsUrl = this.makeWsUrl(token);
-        const uri   = `sip:${sub.sipUser}@pbx.${sub.societyId}`;
+        // Fixed host: nothing in the system routes on it (transport is the
+        // WS URL, cloud auths by bearer token, PJSIP matches on username).
+        // Keeping a literal avoids RFC-3986 host-label failures when a
+        // societyId happens to contain underscores. See
+        // docs/design/sip-uri-host.md.
+        const uri   = `sip:${sub.sipUser}@pbx.local`;
 
         this.stopping = false;
         this.pubsub.emit_callState({ kind: 'registering' });
@@ -138,7 +143,7 @@ export class SipService {
         const sub = this.auth.getSubscriber();
         if (!sub) return;
 
-        const targetUri = `sip:${sipUser}@pbx.${sub.societyId}`;
+        const targetUri = `sip:${sipUser}@pbx.local`;
         const callId    = newCallId();
 
         let callHandle: SipCallHandle;

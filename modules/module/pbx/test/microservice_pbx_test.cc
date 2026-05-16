@@ -781,7 +781,7 @@ TEST(MicroServicePbx, Directory_ProjectsToDirectoryEntryShape)
     // The four DirectoryEntry fields, all populated.
     EXPECT_EQ("A-101",                row["flatNumber"]);
     EXPECT_EQ("Asha",                 row["displayName"]);  // <- `name` aliased
-    EXPECT_EQ("sip:A-101@pbx.s1",     row["sipUri"]);
+    EXPECT_EQ("sip:A-101@pbx.local",     row["sipUri"]);
     EXPECT_EQ(false,                  row["online"]);
 
     // Persisted-doc field names the UI doesn't speak must NOT bleed through.

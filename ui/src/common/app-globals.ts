@@ -28,7 +28,7 @@ export interface LoginResponse {
 export interface DirectoryEntry {
     flatNumber:  string;
     displayName: string;
-    sipUri:      string;      // "sip:A-204@pbx.<societyId>"
+    sipUri:      string;      // "sip:A-204@pbx.local" (fixed host — see SipService)
     online:      boolean;     // last-known REGISTER status from the agent
 }
 

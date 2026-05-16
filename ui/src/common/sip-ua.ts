@@ -26,7 +26,7 @@ export interface SipUaStateChange {
 }
 
 export interface SipUaOpts {
-    /** Full SIP URI for this UA (e.g. "sip:A-204@pbx.<societyId>"). */
+    /** Full SIP URI for this UA (e.g. "sip:A-204@pbx.local"). */
     uri: string;
 
     /**

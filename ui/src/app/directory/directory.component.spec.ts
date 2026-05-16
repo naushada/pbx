@@ -45,9 +45,9 @@ describe('DirectoryComponent', () => {
     const directoryUrl = UriMap.get('from_web_directory') as string;
 
     const rows: DirectoryEntry[] = [
-        { flatNumber: 'A-204', displayName: 'Alice', sipUri: 'sip:A-204@pbx.s1', online: true  },
-        { flatNumber: 'A-205', displayName: 'Bob',   sipUri: 'sip:A-205@pbx.s1', online: false },
-        { flatNumber: 'A-206', displayName: 'Carol', sipUri: 'sip:A-206@pbx.s1', online: true  },
+        { flatNumber: 'A-204', displayName: 'Alice', sipUri: 'sip:A-204@pbx.local', online: true  },
+        { flatNumber: 'A-205', displayName: 'Bob',   sipUri: 'sip:A-205@pbx.local', online: false },
+        { flatNumber: 'A-206', displayName: 'Carol', sipUri: 'sip:A-206@pbx.local', online: true  },
     ];
 
     beforeEach(async () => {

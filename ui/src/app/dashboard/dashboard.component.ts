@@ -6,7 +6,7 @@ import { SipService } from 'src/common/sip.service';
 import { Subscriber } from 'src/common/app-globals';
 
 // Dashboard: SIP registration state + connect/disconnect; one-click
-// society conference (joins sip:conf@pbx.<society>). Push toggle and
+// society conference (joins sip:conf@pbx.local). Push toggle and
 // device pickers moved to /main/settings in slice 5.
 @Component({
     selector: 'app-dashboard',
