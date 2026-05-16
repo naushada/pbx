@@ -402,6 +402,44 @@ TEST(MicroServicePbx, AdminSubscribers_FullRowKeepsAdminFields_StripsSecrets)
     EXPECT_EQ("ADMIN", arr[1]["flatNumber"]);
 }
 
+// ── Admin connectivity probe ─────────────────────────────────────────────────
+
+TEST(MicroServicePbx, AdminConnectivity_BothUp)
+{
+    TestDb db;                          // remote_down=false → wsdb connected
+    const std::string req = make_get("/api/v1/admin/connectivity");
+    std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
+        req, db, /*agent_connected=*/true);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    EXPECT_EQ(true, body["agent"]["connected"]);
+    EXPECT_EQ(true, body["wsdbagent"]["connected"]);
+}
+
+TEST(MicroServicePbx, AdminConnectivity_AgentDown_WsdbUp)
+{
+    TestDb db;
+    const std::string req = make_get("/api/v1/admin/connectivity");
+    std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
+        req, db, /*agent_connected=*/false);
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    EXPECT_EQ(false, body["agent"]["connected"]);
+    EXPECT_EQ(true,  body["wsdbagent"]["connected"]);
+}
+
+TEST(MicroServicePbx, AdminConnectivity_WsdbDown_AgentUp)
+{
+    TestDb db;
+    db.remote_down = true;              // flips is_remote_disconnected → true
+    const std::string req = make_get("/api/v1/admin/connectivity");
+    std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
+        req, db, /*agent_connected=*/true);
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    EXPECT_EQ(true,  body["agent"]["connected"]);
+    EXPECT_EQ(false, body["wsdbagent"]["connected"]);
+}
+
 // ── Subscriber import ─────────────────────────────────────────────────────────
 
 namespace {

@@ -326,6 +326,23 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
     return MicroServicePbx::handle_admin_subscribers_GET(req, dbInst);
   }
 
+  // Exact-match: GET /api/v1/admin/connectivity
+  // Cloud-side liveness of the two on-prem peers. Pulls
+  // `agent.connected` from the running CloudTunnelEndpoint when one
+  // is wired (production); when null (routing tests with no owning
+  // WebServer), defaults to false so the UI renders the safer
+  // "disconnected" state.
+  if (method == "GET" && uri == "/api/v1/admin/connectivity") {
+    auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
+    if (!check.error.empty()) return check.error;
+    const bool agent_connected = m_parent
+        ? (webServer().cloudTunnelEndpoint() &&
+           webServer().cloudTunnelEndpoint()->has_agent())
+        : false;
+    return MicroServicePbx::handle_admin_connectivity_GET(req, dbInst,
+                                                           agent_connected);
+  }
+
   // Prefix-match: GET /api/v1/cdr[?societyId=…]
   if (method == "GET" && uri.compare(0, 11, "/api/v1/cdr") == 0)
     return MicroServicePbx::handle_cdr_GET(req, dbInst);

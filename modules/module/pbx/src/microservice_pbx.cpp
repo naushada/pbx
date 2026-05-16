@@ -357,6 +357,16 @@ std::string handle_admin_subscribers_GET(const std::string &req,
   return http_response(200, "OK", arr.dump());
 }
 
+std::string handle_admin_connectivity_GET(const std::string & /*req*/,
+                                          IMongodbClient &db,
+                                          bool agent_connected) {
+  const json body = {
+      {"agent",     {{"connected", agent_connected}}},
+      {"wsdbagent", {{"connected", !db.is_remote_disconnected()}}},
+  };
+  return http_response(200, "OK", body.dump());
+}
+
 std::string handle_subscriber_import_POST(const std::string &req,
                                           IMongodbClient &db) {
   Http parsed(req);

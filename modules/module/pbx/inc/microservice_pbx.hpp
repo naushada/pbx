@@ -64,6 +64,25 @@ std::string handle_society_detail_GET(const std::string &req,
 std::string handle_admin_subscribers_GET(const std::string &req,
                                          IMongodbClient &db);
 
+/// GET /api/v1/admin/connectivity
+/// Live cloud-side view of the on-prem peers' transport health.
+/// Backs the Vaadin admin UI's connectivity sub-navbar.
+///
+/// Response: `{"agent":{"connected":bool},"wsdbagent":{"connected":bool}}`
+///
+/// - `agent.connected` ← @p agent_connected, plumbed by the dispatcher
+///   from `CloudTunnelEndpoint::has_agent()`. True while an
+///   InnerTLS-handshaken /agent transport is attached.
+/// - `wsdbagent.connected` ← `!IMongodbClient::is_remote_disconnected()`.
+///   True while a /ws/db agent is attached AND the dispatcher reports
+///   it alive. For local-Mongo deploys this is always true (the pool
+///   is in-process).
+///
+/// Both flags are point-in-time; the UI polls every few seconds.
+std::string handle_admin_connectivity_GET(const std::string &req,
+                                          IMongodbClient &db,
+                                          bool agent_connected);
+
 /// POST /api/v1/subscriber/import
 /// Body: a CSV (Content-Type: text/csv) with header row
 ///   `flat_number,name,email,phone,role`
