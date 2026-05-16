@@ -1,6 +1,8 @@
 #include "innertls.hpp"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -198,7 +200,26 @@ InnerTlsServer::InnerTlsServer(IInnerTlsTransport &transport,
         // We don't use SSL_VERIFY_FAIL_IF_NO_PEER_CERT — the agent's
         // identity is already authenticated by the outer Heroku TLS +
         // WebSocket upgrade; inner TLS provides encryption + server auth.
-        SSL_CTX_set_verify(m_ctx.get(), SSL_VERIFY_PEER, nullptr);
+        //
+        // Escape hatch: PBX_AGENT_TLS_VERIFY=0 turns OFF client cert
+        // verification so the inner TLS still encrypts but accepts ANY
+        // peer cert (or none). Workaround for the open
+        // project_agent_inner_tls_cert_reject bug — lets SIP calls flow
+        // end-to-end while the real cert-presentation bug is being
+        // diagnosed. Default unchanged (verify on); flip to "0" on the
+        // cloud (`heroku config:set PBX_AGENT_TLS_VERIFY=0 -a pabx`)
+        // for the unlock, back to anything else to re-engage verify.
+        const char *verify_env = std::getenv("PBX_AGENT_TLS_VERIFY");
+        const bool verify_off = (verify_env && std::strcmp(verify_env, "0") == 0);
+        if (verify_off) {
+            std::fprintf(stderr,
+                         "[InnerTlsServer] PBX_AGENT_TLS_VERIFY=0 — "
+                         "client cert verify DISABLED (encryption only). "
+                         "Re-enable for production.\n");
+            SSL_CTX_set_verify(m_ctx.get(), SSL_VERIFY_NONE, nullptr);
+        } else {
+            SSL_CTX_set_verify(m_ctx.get(), SSL_VERIFY_PEER, nullptr);
+        }
     }
 
     m_ssl.reset(SSL_new(m_ctx.get()));
