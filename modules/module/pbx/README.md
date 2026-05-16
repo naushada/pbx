@@ -550,11 +550,14 @@ Tests use `socketpair()` so reads come from a real fd; `handle_input` (and `hand
 Mirrors the `/sip-ws` swap: on detected `/agent` WS upgrade:
 1. Send `101 Switching Protocols` + `Sec-WebSocket-Accept`.
 2. xpmile-mechanic hand-off (`remove_handler → m_handle=INVALID`).
-3. Construct an `AgentStream` on the raw fd (which immediately calls `endpoint.on_agent_connected`).
-4. `as->reactor(reactor()) + as->register_with_reactor()` (READ_MASK + keep-alive ping timer).
-5. `connectionPool().erase(raw)`.
+3. Read `CloudTunnelEndpoint::inner_tls_config()` — if a cert is configured (production), construct `AgentStream(endpoint, fd, /*auto_attach=*/false)`. Otherwise the legacy `auto_attach=true` ctor attaches immediately (test path; raw WS frames, no InnerTLS).
+4. If InnerTLS is configured: `as->setup_inner_tls(cert, key, ca)` — runs the synchronous `InnerTlsServer::accept` handshake over the WS frames via `WsInnerTlsBridge` (in blocking mode for the handshake, then switched to a buffered queue for steady state). On handshake failure: `delete as; return`. On success: `as->attach()` publishes the `TransportAdapter` to `CloudTunnelEndpoint::on_agent_connected`.
+5. `as->reactor(reactor()) + as->register_with_reactor()` (READ_MASK + keep-alive ping timer).
+6. `connectionPool().erase(raw)`.
 
-The previous Layer 2 "info log only" stub is now retired — `has_agent()` flips true the moment the agent's WS upgrade completes.
+The split between construction and `attach()` (PR #19) is load-bearing: the endpoint must not see a live transport before InnerTLS is up, because any buffered outbound frames from a prior disconnect would otherwise hit the wire plaintext before the handshake completes. With `auto_attach=false` the adapter is created only after `setup_inner_tls()` returns true.
+
+The previous Layer 2 "info log only" stub is now retired — `has_agent()` flips true the moment `attach()` runs (or, for the legacy `auto_attach=true` ctor, the moment the agent's WS upgrade completes).
 
 ---
 

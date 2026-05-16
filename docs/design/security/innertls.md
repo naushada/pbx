@@ -114,3 +114,120 @@ backoff (5s → 10s → 20s → 40s), the most common causes are:
 Rotation is **all-or-nothing**: agents on the old CA can't talk to a
 new-CA cloud, and vice versa. Stagger the cloud + agent updates inside
 one maintenance window.
+
+---
+
+## InnerTLS on the `/agent` SIP tunnel (PR #19)
+
+The same pattern documented above for `/ws/db` is now also applied to
+the `/agent` SIP tunnel. Same shared CA, same trust boundary, same
+`certs/innertls/` material.
+
+| Side | Cert role | Provenance | CLI flag(s) |
+|------|-----------|------------|-------------|
+| Cloud | server | `Dockerfile.cloud` signs `server.crt` at build time against the repo CA, key regenerated per build | `--tls-cert` / `--tls-key` / `--tls-ca` (reused from `/ws/db`) |
+| Agent | client | operator mounts `CERTS_DIR` at runtime (`agent.crt` / `agent.key` / `cloud-ca.pem`) | `--inner-tls-cert` / `--inner-tls-key` / `--inner-tls-ca` / `--inner-tls-hostname` |
+
+The shared core is **`WsInnerTlsBridge`** in `modules/module/security/`.
+It implements `IInnerTlsTransport` (the renamed `innertls.hpp` interface)
+and has two modes:
+
+- **Blocking** — used during the initial handshake. `recv()` does a
+  synchronous socket read + WS-deframe + auto-pong; `send()` encodes
+  one WS binary frame and writes.
+- **Buffered** — switched to after the handshake. The reactor's
+  `handle_input` deframes WS itself, calls `push_inbound(payload)`
+  for each binary frame, then calls `InnerTls::recv()` to drain
+  plaintext. An empty queue returns true with empty data (not a
+  close) so `InnerTls::recv` hits `WANT_READ` and exits cleanly.
+
+The handshake therefore blocks one reactor thread briefly (typically
+<50 ms over a real Heroku tunnel). v1 architecture is
+one-agent-per-cloud-dyno so the stall is acceptable.
+
+### `AgentStream` lifecycle (cloud side)
+
+`WebConnection`'s `/agent` upgrade handler reads
+`CloudTunnelEndpoint::inner_tls_config()`; if a cert is configured it
+takes the production path:
+
+1. `AgentStream(endpoint, fd, /*auto_attach=*/false)` — wraps the fd
+   but does NOT call `endpoint.on_agent_connected` yet.
+2. `as->setup_inner_tls(cert, key, ca)` — runs `InnerTlsServer::accept`
+   synchronously over the WS frames. Returns false on handshake
+   failure; caller `delete`s and returns 500.
+3. `as->attach()` — publishes the `TransportAdapter` to
+   `CloudTunnelEndpoint::on_agent_connected`, which flushes any
+   outbound frames buffered while disconnected.
+4. `as->register_with_reactor()` — READ_MASK + 25 s WS-ping timer.
+
+The split between (1)–(2) and (3) is **load-bearing**: if the endpoint
+got the adapter before the handshake completed, a buffered outbound
+frame from a prior disconnect would write to the WS plaintext and the
+agent (now expecting encrypted bytes) would refuse the frame. The
+existing `auto_attach=true` ctor remains for tests that drive
+`handle_input` directly with raw frames.
+
+### `AceSslTransport` lifecycle (agent side)
+
+`AceSslTransport::connect_and_handshake()` runs the outer mTLS dial,
+sends the WS upgrade request, validates the `101` response, then —
+when `--inner-tls-cert` is set — layers the inner TLS:
+
+1. Builds `WsInnerTlsBridge` in blocking mode (`client_mask=true`).
+2. Builds `InnerTlsClient` over the bridge.
+3. `set_ca` + `set_cert` from the CLI flags.
+4. `handshake()` — synchronous loop. Drains the socket via the
+   bridge's blocking `recv`.
+5. `verify_hostname()` if `--inner-tls-hostname` is set.
+6. `switch_to_buffered()` on the bridge.
+7. Seeds `m_recv_buf` with any leftover socket bytes the handshake
+   pulled past the final `Finished` record (so app data that arrived
+   in the same TCP segment isn't lost on the first `handle_input`).
+
+After step 7, `handle_input` deframes WS, pushes binary payloads into
+the bridge, and calls `InnerTls::recv` to drain plaintext into the
+existing `m_on_bytes` callback. The plaintext shape is unchanged
+SipFrame bytes, so `SipFrameDemux` upstream needs no changes.
+
+### Sequence
+
+```
+Agent                                           Cloud
+─────                                           ─────
+ACE_SSL_SOCK_Connector::connect                ─►  TCP + outer TLS
+                                                   handshake (Heroku
+                                                   router terminates)
+GET /agent  Upgrade: websocket                 ─►  WebConnection
+                                                   sees `/agent`,
+                                                   constructs AgentStream
+                                                   with auto_attach=false
+WsInnerTlsBridge (blocking, client_mask=true)  ◄═►  WsInnerTlsBridge (blocking, server_mask=false)
+InnerTlsClient.handshake()                     ◄═►  InnerTlsServer.accept()
+                                                       │
+                                                       ▼ success
+WsInnerTlsBridge.switch_to_buffered()             WsInnerTlsBridge.switch_to_buffered()
+m_recv_buf = leftover                              m_recv_buf = leftover
+                                                   AgentStream.attach()
+                                                       │
+                                                       ▼
+                                                   endpoint.on_agent_connected
+                                                   (flushes buffered frames)
+                                                       │
+                                                       ▼
+register_with_reactor()                            register_with_reactor()
+                                                   timer: 25 s WS-ping
+
+steady state:
+  AceSslTransport.send(plaintext)
+  → InnerTls.send → SSL_write
+  → m_send_raw → outer WS binary frame
+                                                ─►  handle_input
+                                                   → bridge.push_inbound(payload)
+                                                   → InnerTls.recv → plaintext
+                                                   → endpoint.on_bytes_received
+```
+
+The two layers stay independent of each other and of the
+WS-level keep-alive ping (`AgentStream`'s 25 s `0x9` ping vs the
+SipFrame `0x04` `PING`/`PONG` at 15 s) — see `DESIGN.md` §7.
