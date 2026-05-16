@@ -57,9 +57,17 @@ cmd_login() {
 # ── cloud ─────────────────────────────────────────────────────────────
 
 cmd_build() {
-  log "building $CLOUD_TAG"
-  HEROKU_APP="$HEROKU_APP" HEROKU_APP_CLOUD="$HEROKU_APP" \
-    podman-compose -f "$COMPOSE_FILE" build pbx-cloud
+  log "building $CLOUD_TAG (--platform linux/amd64; Heroku Common Runtime is amd64-only)"
+  # Direct `podman build` rather than `podman-compose build` — compose
+  # tries to pull `localhost/pbx-cpp-builder:bootstrap` from a registry
+  # (no `--pull-policy missing` knob in compose), which always fails
+  # because that image only exists locally. `podman build` is happy to
+  # use the local image straight off.
+  podman build \
+    --platform linux/amd64 \
+    -f docker/Dockerfile.cloud \
+    -t "$CLOUD_TAG" \
+    .
 }
 
 cmd_push() {
@@ -72,7 +80,36 @@ cmd_release() {
   heroku container:release "$PROCESS" --app "$HEROKU_APP"
 }
 
-cmd_deploy() { cmd_build; cmd_push; cmd_release; }
+# Extract the wsdbagent client cert family from the just-built image
+# into ./certs/cloud-issued/innertls/. Dockerfile.cloud regenerates a
+# fresh CA + server + client every build; this step pulls the matching
+# client.{crt,key} + ca.crt out so pbx-wsdbagent can present them on
+# the next handshake.
+#
+# Without this, the cloud would have a fresh CA in the image but the
+# on-prem agent would still present the previous build's (now untrusted)
+# client cert — exactly the "tls_process_client_certificate verify
+# failed" we hit on 2026-05-16 when v22 was deployed.
+cmd_extract_agent_certs() {
+  local dest="$(pwd)/certs/cloud-issued/innertls"
+  log "extracting wsdbagent certs from $CLOUD_TAG → $dest"
+  mkdir -p "$dest"
+  local cid
+  cid=$(podman create "$CLOUD_TAG") || die "podman create failed — was the image built?"
+  podman cp "$cid:/opt/pbx-cloud/agent-certs/." "$dest/" \
+    && podman rm -f "$cid" >/dev/null \
+    || { podman rm -f "$cid" >/dev/null 2>&1; die "podman cp failed"; }
+  chmod 600 "$dest"/client.key "$dest"/ca.key 2>/dev/null || true
+  log "  wrote $(ls "$dest" | tr '\n' ' ')"
+  log "  pbx-wsdbagent picks these up on next compose-up (or container restart)"
+}
+
+cmd_deploy() {
+  cmd_build
+  cmd_extract_agent_certs
+  cmd_push
+  cmd_release
+}
 
 cmd_logs() { heroku logs --tail --app "$HEROKU_APP"; }
 cmd_open() { heroku open --app "$HEROKU_APP_UI"; }
