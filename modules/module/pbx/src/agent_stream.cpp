@@ -295,14 +295,21 @@ void AgentStream::notify_disconnect_once() {
   if (m_close_notified) return;
   m_close_notified = true;
 
+  // m_adapter==null means we were already REPLACED by a newer
+  // connection: on_agent_connected → mark_disconnected → close_socket
+  // already nulled us out. Calling on_agent_disconnected here would
+  // wrongly tear down the NEW transport (endpoint's m_transport now
+  // points to a different AgentStream's adapter, and the endpoint
+  // can't distinguish "old's death notice" from "current's death
+  // notice"). Skip — the new owner is in charge.
+  if (!m_adapter) return;
+
   // Detach the adapter BEFORE telling the endpoint to release, so that
   // any re-entrant close routed through the adapter sees a stale m_s
   // and is a no-op. The adapter will be destroyed inside
   // on_agent_disconnected() (endpoint resets its unique_ptr); after this
   // line m_adapter is conceptually dangling and we don't touch it again.
-  if (m_adapter) {
-    m_adapter->m_s = nullptr;
-    m_adapter = nullptr;
-  }
+  m_adapter->m_s = nullptr;
+  m_adapter = nullptr;
   m_endpoint.on_agent_disconnected();
 }

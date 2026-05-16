@@ -337,37 +337,45 @@ int main(int argc, char *argv[]) {
               ACE_ERROR((LM_ERROR,
                          ACE_TEXT("%D [pbx-cloud] AGENT_HELLO parse: %s\n"),
                          e.what()));
+              brg->bootstrap_society("", "");  // ACK silently with empty payload
               return;
             }
+
+            // Look up by `code` — handle_society_POST writes societies
+            // with an auto-generated ObjectId _id, so _id-based queries
+            // never match the operator-supplied society label.
             const std::string doc = db->get_document(
                 "societies",
-                R"({"_id":")" + society_id + R"("})",
+                R"({"code":")" + society_id + R"("})",
                 "{}");
-            if (doc.empty()) {
-              ACE_ERROR((LM_ERROR,
-                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
-                                  "not found in societies collection\n"),
-                         society_id.c_str()));
-              return;
-            }
             std::string sip_realm;
-            try {
-              sip_realm = nlohmann::json::parse(doc)
-                              .value("sipRealm", std::string{});
-            } catch (const std::exception &e) {
-              ACE_ERROR((LM_ERROR,
-                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO society doc "
-                                  "parse: %s\n"), e.what()));
-              return;
-            }
-            if (sip_realm.empty()) {
+            if (!doc.empty()) {
+              try {
+                sip_realm = nlohmann::json::parse(doc)
+                                .value("sipRealm", std::string{});
+              } catch (const std::exception &e) {
+                ACE_ERROR((LM_ERROR,
+                           ACE_TEXT("%D [pbx-cloud] AGENT_HELLO society doc "
+                                    "parse: %s\n"), e.what()));
+              }
+            } else {
               ACE_ERROR((LM_ERROR,
                          ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
-                                  "doc missing sipRealm — agent will fall "
-                                  "back to CLI default\n"),
+                                  "not found — sending ACK with empty "
+                                  "sipRealm (agent will fall back to "
+                                  "--sip-realm CLI default)\n"),
                          society_id.c_str()));
-              return;
             }
+
+            // ALWAYS send SOCIETY_BOOTSTRAP back, even on a lookup
+            // miss. Two reasons:
+            //   1. Heroku's router appears to close /agent connections
+            //      that have no server→client traffic (suspected; see
+            //      project_agent_heroku_3s_disconnect memory).
+            //   2. Agent gets an "I was acknowledged" signal separate
+            //      from the raw inner-TLS handshake.
+            // The agent's existing handler treats empty sipRealm as
+            // "use your --sip-realm CLI fallback".
             brg->bootstrap_society(society_id, sip_realm);
           });
     }
@@ -501,37 +509,45 @@ int main(int argc, char *argv[]) {
               ACE_ERROR((LM_ERROR,
                          ACE_TEXT("%D [pbx-cloud] AGENT_HELLO parse: %s\n"),
                          e.what()));
+              brg->bootstrap_society("", "");  // ACK silently with empty payload
               return;
             }
+
+            // Look up by `code` — handle_society_POST writes societies
+            // with an auto-generated ObjectId _id, so _id-based queries
+            // never match the operator-supplied society label.
             const std::string doc = db->get_document(
                 "societies",
-                R"({"_id":")" + society_id + R"("})",
+                R"({"code":")" + society_id + R"("})",
                 "{}");
-            if (doc.empty()) {
-              ACE_ERROR((LM_ERROR,
-                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
-                                  "not found in societies collection\n"),
-                         society_id.c_str()));
-              return;
-            }
             std::string sip_realm;
-            try {
-              sip_realm = nlohmann::json::parse(doc)
-                              .value("sipRealm", std::string{});
-            } catch (const std::exception &e) {
-              ACE_ERROR((LM_ERROR,
-                         ACE_TEXT("%D [pbx-cloud] AGENT_HELLO society doc "
-                                  "parse: %s\n"), e.what()));
-              return;
-            }
-            if (sip_realm.empty()) {
+            if (!doc.empty()) {
+              try {
+                sip_realm = nlohmann::json::parse(doc)
+                                .value("sipRealm", std::string{});
+              } catch (const std::exception &e) {
+                ACE_ERROR((LM_ERROR,
+                           ACE_TEXT("%D [pbx-cloud] AGENT_HELLO society doc "
+                                    "parse: %s\n"), e.what()));
+              }
+            } else {
               ACE_ERROR((LM_ERROR,
                          ACE_TEXT("%D [pbx-cloud] AGENT_HELLO societyId=%s "
-                                  "doc missing sipRealm — agent will fall "
-                                  "back to CLI default\n"),
+                                  "not found — sending ACK with empty "
+                                  "sipRealm (agent will fall back to "
+                                  "--sip-realm CLI default)\n"),
                          society_id.c_str()));
-              return;
             }
+
+            // ALWAYS send SOCIETY_BOOTSTRAP back, even on a lookup
+            // miss. Two reasons:
+            //   1. Heroku's router appears to close /agent connections
+            //      that have no server→client traffic (suspected; see
+            //      project_agent_heroku_3s_disconnect memory).
+            //   2. Agent gets an "I was acknowledged" signal separate
+            //      from the raw inner-TLS handshake.
+            // The agent's existing handler treats empty sipRealm as
+            // "use your --sip-realm CLI fallback".
             brg->bootstrap_society(society_id, sip_realm);
           });
     }
