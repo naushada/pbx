@@ -41,19 +41,23 @@ See:
 | 4   | Presence reconciliation — `AriClient::publish_register_snapshot()` calls `GET /ari/endpoints/PJSIP` and emits one `REGISTER_STATE` SipFrame per endpoint; `CloudConnector::set_on_connected()` fires it on every (re)connect. Closes the cache-staleness gap from PR #16. | ✅ PR #20 (merged) |
 | 4   | Change-stream resume — `IMongodbClient::watch_collection(coll, resume_token_json)` overload + `mongocxx::options::change_stream::resume_after()`; `SubscriberWatcher` captures every event's `_id` token and reopens on `try_next` exception with a 5-tick backoff (~1s at 200ms cadence). | ✅ PR #21 (merged) |
 | 4   | Pjsip drift-check test — parses `[endpoint-resident-template]` from `docker/asterisk/pjsip.conf`, runs `PjsipProvisioner` against a FakeAriRest, asserts every template field is present in the emitted endpoint PUT. Prevents silent divergence between dev-fixture endpoints and runtime-provisioned subscribers. | ✅ PR #22 (merged) |
+| 4   | Realm-from-society-doc — agent sends `AGENT_HELLO {societyId}` after every (re)connect; cloud's `SipBridge` looks up `societies/{_id}` and emits `SOCIETY_BOOTSTRAP {societyId, sipRealm}`; agent's `PjsipProvisioner.set_sip_realm()` + `SubscriberWatcher.resync()` re-PUTs every endpoint with the canonical realm. CLI `--sip-realm` still overrides. | ✅ PR #24 (merged) |
+| 4   | InnerTLS peer-cert CN exposure + latent-bug fix — `InnerTlsServer::peer_subject_cn()` extracts the agent's verified CN for log labels + future cross-checks; the underlying `SSL_CTX_use_certificate_file`-after-`SSL_new` bug (silently presented no cert) replaced with the per-SSL `SSL_use_certificate_file` API. | ✅ PR #25 (merged) |
+| 4   | `scripts/start.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following xpmile's recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 
-### Test totals: **502 / 505** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
+### Test totals: **516 / 519** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
 
 | Layer | Suites | Tests |
 |-------|--------|------:|
 | 0     | HttpParser 20 + MessageParserBase 8 + SipParser 17 + SipFrame 10 | **55** |
 | 1     | SipBridge 14 + MicroServicePbx 23 + MicroServiceRouting 9 + PushSender 8 | **54** |
-| 2     | SipFrameDemux 16 + CloudConnector 19 + AriClient 16 + CloudTunnelEndpoint 12 + CallRouter 17 + PjsipProvisioner 7 + SubscriberWatcher 15 | **102** |
-| 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 + WsInnerTlsBridge 11 + PjsipTemplateDrift 1 | **71** |
+| 2     | SipFrameDemux 19 + CloudConnector 19 + AriClient 16 + CloudTunnelEndpoint 12 + CallRouter 17 + PjsipProvisioner 8 + SubscriberWatcher 17 | **108** |
+| 3     | TunnelE2E 8 + BrowserStream 9 + AgentStream 10 + AceSslTransport 10 + AriWsClient 14 + HandoffOrdering 8 + WsInnerTlsBridge 11 + PjsipTemplateDrift 1 + InnerTLS peer-cn 2 | **73** |
 | 4     | AsteriskWsFactory 13 + AriRestClient 16 + AceHttpsClient 13 | **42** |
+| 4+    | SipBridge AGENT_HELLO/BOOTSTRAP 4 + SipFrame round-trip 2 (new ops) | **6** |
 | regression | inherited xpmile suites (verbatim copy) | **115** |
-| **Total** | **42 suites** | **502** |
+| **Total** | **44 suites** | **516** |
 
 Counts will drift over time — `podman-compose -f docker-compose.test.yml run --rm offtarget` prints the authoritative number on every run.
 
@@ -272,17 +276,31 @@ DELETEs. The cursor uses `resumeAfter` (PR #21) so a Mongo flap doesn't
 drop events — the watcher captures every event's `_id` token and reopens
 from there.
 
-The SIP realm carried on the auth object's `realm` field comes from the
-agent's `--sip-realm` flag (default `<society-id>.pbx.local`); it must
-match the realm the cloud used when computing each subscriber's
-`sipHa1` digest. The cloud writes `sipRealm = "<code>.pbx.local"` onto
-the `societies` doc; if your society's `_id` ≠ `code` you must pass
-`--sip-realm` explicitly.
+The SIP realm carried on the auth object's `realm` field is auto-discovered
+on every (re)connect since PR #24: the agent sends `AGENT_HELLO {societyId}`
+as the first frame after the inner-TLS handshake; the cloud's `SipBridge`
+looks up `societies/{_id}` and replies with
+`SOCIETY_BOOTSTRAP {societyId, sipRealm}`. The agent calls
+`PjsipProvisioner::set_sip_realm()` + `SubscriberWatcher::resync()` to
+re-PUT every endpoint's auth object with the canonical realm. The
+`--sip-realm` CLI flag is now optional and serves as an operator
+override; without it the agent waits for the cloud-supplied value.
 
 The codec / DTLS / WebRTC field set the provisioner emits is asserted to
 match `pjsip.conf`'s `[endpoint-resident-template]` by
 `PjsipTemplateDrift` (PR #22). Edit either side without updating the
 other and the test fails noisily.
+
+### One-shot dry test (`scripts/start.sh`)
+
+`scripts/start.sh` provisions a Lima VM (Apple Virtualization framework,
+native arm64 — no QEMU), builds pbx-agent following
+[`xpmile/docker/Dockerfile`](https://github.com/naushada/xpmile/blob/main/docker/Dockerfile)
+verbatim, then runs the agent for 90 s against the deployed Heroku
+cloud and captures the log + any coredump. Useful before deploying to
+a real on-prem host. See
+[`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm)
+for details.
 
 ## Run the softphone UI
 
@@ -430,7 +448,8 @@ The corresponding cloud log line — visible via `heroku logs --tail --app pabx`
 
 | Limitation | Why | Workaround |
 |---|---|---|
-| ~~mTLS for `/agent` is not actually verified.~~ | Resolved by **PR #19 (D3)**. Both the agent and the cloud now run InnerTLS over the `/agent` WS frames — same trust boundary as `/ws/db`. The outer TLS that Heroku's router terminates is no longer load-bearing for authentication. Agent flags: `--inner-tls-{cert,key,ca,hostname}`. Cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. See [`docs/design/security/innertls.md`](./docs/design/security/innertls.md). | ✅ Done. |
+| ~~mTLS for `/agent` is not actually verified.~~ | Resolved by **PR #19 (D3)**. Both the agent and the cloud now run InnerTLS over the `/agent` WS frames — same trust boundary as `/ws/db`. The outer TLS that Heroku's router terminates is no longer load-bearing for authentication. Agent flags: `--inner-tls-{cert,key,ca,hostname}`. Cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. PR #25 adds `InnerTlsServer::peer_subject_cn()` so the cloud can log the verified agent CN; the same PR fixed a latent `SSL_CTX_use_certificate_file`-after-`SSL_new` bug that was silently letting the client present no cert. See [`docs/design/security/innertls.md`](./docs/design/security/innertls.md). | ✅ Done. |
+| **Agent SIGSEGV ~5 s after inner-TLS handshake** (observed 2026-05-16 on native arm64). | Reproducible in Lima VM dry test against the deployed Heroku cloud. Stack too corrupted for gdb to unwind. Suspect: my recent `set_on_connected` callback + SubscriberWatcher reopen loop against unreachable Mongo + SOCIETY_BOOTSTRAP handler. Tracked in `memory:project_open_backlog` as "Agent post-handshake crash". Not seen on amd64 deploys. | ⚠️ Open — needs ASan/Valgrind to localize. |
 | **Cloud doesn't run with `--remote-db` yet.** | The on-prem `pbx-wsdbagent` container exists (D1+D2 committed) but `REMOTE_DB=1` hasn't been flipped on Heroku because it'd block REST handlers until the wsdbagent is live. | D4: `heroku config:set REMOTE_DB=1 --app pabx` **after** `pbx-wsdbagent` is verified connected. |
 | **Login is dev-mode permissive.** | The subscribers collection isn't seeded. `handle_subscriber_login_POST` returns a synthetic session for any non-empty credentials. | Run the CSV-import flow (`POST /api/v1/society/<id>/subscribers/import`) once Mongo is wired, then set `PBX_AUTH_STRICT=1`. |
 

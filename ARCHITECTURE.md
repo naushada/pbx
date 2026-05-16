@@ -142,8 +142,9 @@ The main components inside the binary:
 | `WebServer` | Top-level — owns the listening socket, reactor, ACE config. |
 | `WebConnection` (one per inbound socket) | Routes REST vs upgrade. Three upgrade paths: `/sip-ws` → `BrowserStream`, `/agent` → `AgentStream`, `/ws/db` → `WsDbServer`. |
 | `MicroServicePbx` + dispatcher | REST handlers (login, directory, cdr, push-subscribe, turn-credentials, etc.). Authentication varies by route. |
-| `SipBridge` | Multiplexes every browser's SIP-over-WS stream into the one `/agent` tunnel, prepending a per-stream id. Drives PUSH_NOTIFY + CDR_PUSH out-of-band ops. |
+| `SipBridge` | Multiplexes every browser's SIP-over-WS stream into the one `/agent` tunnel, prepending a per-stream id. Drives PUSH_NOTIFY + CDR_PUSH out-of-band ops. Handles incoming `AGENT_HELLO` via `set_agent_hello_handler` (PR #24) — looks up the society doc, emits `SOCIETY_BOOTSTRAP` with the canonical `sipRealm`. |
 | `CloudTunnelEndpoint` | Accept-side of the cloud↔agent tunnel. Holds the one `IAgentTransport` (an `AgentStream::TransportAdapter`), buffers outbound frames while disconnected, drives a SipFrame-level heartbeat. Carries the InnerTLS config (PR #19) used by every newly-attached `AgentStream`. |
+| `AgentStream` | Per-tunnel ACE event handler. `setup_inner_tls()` (PR #19) drives `InnerTlsServer::accept` over the WS frames before `attach()`. `peer_cn()` (PR #25) exposes the verified client cert CN for log labels + future cross-checks against `AGENT_HELLO`'s claimed `societyId`. |
 | `IPresenceCache` (`InMemoryPresenceCache`) | Per-`(societyId, sipUsername)` `online` flag. Fed by `REGISTER_STATE` frames from the agent. Read by `handle_directory_GET` to project the `online` column. |
 | `PushSender` | VAPID JWT + Web Push encryption (RFC 8291/8292). Driven by `SipBridge::set_push_notify_handler`. |
 | `IRevocationSink` (`SipBridge`) | When an admin disables/removes a subscriber, ships a `SUBSCRIBER_REVOKED` SipFrame down to the agent so live calls get hung up. |
@@ -165,8 +166,9 @@ society. Components:
 | `CallRouter` | Forked-ring driver. Dialed extension → list of `sipUsername` targets (`"0"` → guards via the `subscribers(societyId, role)` index, else flat's active subscribers via the denormalised `flatNumber`). Fans out an `originate` per target; first-answer-wins bridges + tears down losers. |
 | `MongodbClient` | Reuse of xpmile's. Now also exposes `watch_collection(coll, resume_token_json)` (PR #21) backed by `mongocxx::options::change_stream::resume_after()`. |
 | `SubscriberWatcher` | Bootstrap full-scan of `subscribers` for the society + change-stream tail at 200 ms cadence. Captures every event's `_id` as the resume token; reopens with `resume_after` on `try_next` exceptions (5-tick backoff after a failed reopen). |
-| `PjsipProvisioner` | Materialises a subscriber row as three Asterisk sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`, `endpoint/<user>`) via ARI dynamic-config PUTs. Idempotent. Drift-checked against `docker/asterisk/pjsip.conf`'s `[endpoint-resident-template]` by PR #22's `PjsipTemplateDrift` test. |
-| `CloudConnector::OnConnectedHandler` (PR #20) | Glue: wired to `ari_client.publish_register_snapshot()` in `main.cpp` so every reconnect re-syncs the cloud's presence cache. |
+| `PjsipProvisioner` | Materialises a subscriber row as three Asterisk sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`, `endpoint/<user>`) via ARI dynamic-config PUTs. Idempotent. Drift-checked against `docker/asterisk/pjsip.conf`'s `[endpoint-resident-template]` by PR #22's `PjsipTemplateDrift` test. `set_sip_realm()` (PR #24) swaps the realm on the fly when SOCIETY_BOOTSTRAP arrives. |
+| `CloudConnector::OnConnectedHandler` (PR #20) | Glue: wired in `main.cpp` to (1) send `AGENT_HELLO` (PR #24) for realm bootstrap, then (2) call `ari_client.publish_register_snapshot()` so every reconnect re-syncs the cloud's presence cache. |
+| `SipFrameDemux::SocietyBootstrapHandler` (PR #24) | Glue: wired to a closure in `main.cpp` that, when CLI `--sip-realm` was not passed, calls `pjsip.set_sip_realm(received)` then `watcher.resync()` so the realm correction is applied to every already-provisioned subscriber's auth object. |
 | `ReconnectSupervisor`, `SubscriberWatcherTimer` | Reactor timers (1 s + 200 ms). |
 
 ### 2.4 Asterisk (`pbx-asterisk`)
@@ -234,7 +236,76 @@ restart).
 
 ## 3. Trace one full call
 
-### 3.1 Subscriber register
+### 3.1 Agent attach + realm bootstrap (one-time per tunnel)
+
+Before any browser-side activity, the agent has to bring its `/agent`
+tunnel up and learn the canonical `sipRealm` for its society. This
+runs on every agent (re)connect:
+
+```
+Agent                                           Cloud
+─────                                           ─────
+
+CloudConnector.attempt_connect
+   │
+   ▼ AceSslTransport.connect_and_handshake
+   │   · ACE_SSL_SOCK_Connector.connect       ─► outer TLS via Heroku's
+   │     (mTLS material from --tls-cert etc.,    edge router (router
+   │     not actually verified at the dyno —     terminates outer TLS,
+   │     Heroku terminates outer TLS)            dyno sees plain HTTP/WS)
+   │   · HTTP/1.1 GET /agent Upgrade: websocket ─►  WebConnection sees /agent,
+   │     ── 101 Switching Protocols ◄──────────    constructs AgentStream
+   │                                                with auto_attach=false
+   │   · Build WsInnerTlsBridge (blocking)
+   │   · Build InnerTlsClient over the bridge
+   │   · set_ca + set_cert (SSL_use_certificate_file
+   │     — PR #25 fix; SSL_CTX_use_certificate_file
+   │     would inherit-after-SSL_new and silently
+   │     present no cert)
+   │   · InnerTlsClient.handshake ─────────────►  AgentStream.setup_inner_tls
+   │                                                · Build WsInnerTlsBridge (blocking)
+   │                                                · Build InnerTlsServer (cert/key/ca
+   │                                                  from --tls-cert/-key/-ca,
+   │                                                  same triple reused from /ws/db)
+   │                                                · InnerTlsServer.accept
+   │                                                · Capture peer CN into m_peer_cn
+   │                                                  via peer_subject_cn (PR #25)
+   │     ── inner-TLS established ◄────────────    ── inner-TLS accepted ──
+   │                                                · attach() — TransportAdapter
+   │                                                  published to endpoint
+   │   · bridge.switch_to_buffered
+   │   · m_recv_buf = bridge.leftover_socket_bytes
+   │
+   ▼ CloudConnector.set_on_connected fires
+   │
+   ▼ send_frame(AGENT_HELLO, 0,           ─────►  AgentStream.handle_input
+   │   {"societyId":"<my-society-id>"})            → SipBridge.set_agent_hello_handler
+   │                                                · db.get_document("societies",
+   │                                                  {_id: "<my-society-id>"})
+   │                                                · Parse sipRealm field
+   │                                                · bridge.bootstrap_society(soc, realm)
+   │                                                · send_frame(SOCIETY_BOOTSTRAP, 0,
+   │                                                    {societyId, sipRealm:"<code>.pbx.local"})
+   ▼ AriClient.publish_register_snapshot
+   │   · GET /ari/endpoints/PJSIP
+   │   · for each endpoint → REGISTER_STATE frame (out)
+   │
+   ▼ SipFrameDemux.dispatch_frame      ◄────────  SOCIETY_BOOTSTRAP received
+       op == SOCIETY_BOOTSTRAP
+       → set_society_bootstrap_handler fires
+         (in main.cpp; honours --sip-realm CLI override)
+         · pjsip.set_sip_realm("<code>.pbx.local")
+         · watcher.resync()  ← re-runs full_scan, re-PUTs every
+                               auth/aor/endpoint with the corrected
+                               realm. Cursor + resume token preserved.
+```
+
+After this dance the tunnel is fully operational and the agent's
+pjsip-realm matches what the cloud used to compute `sipHa1`. SIP
+REGISTER digests now line up; the per-browser register flow in §3.2
+(Subscriber register) becomes possible.
+
+### 3.2 Subscriber register
 
 ```
 Browser                       Cloud                     Agent                      Asterisk
@@ -291,7 +362,7 @@ Browser: re-REGISTER with HA1 digest                                          (c
                                                                   → directory's `online: true`
 ```
 
-### 3.2 1:1 call within a flat
+### 3.3 1:1 call within a flat
 
 `Browser A` (`A-101`, two subscribers) dials `A-204`.
 
@@ -346,7 +417,7 @@ finalises with `hangupCause`.
 If `A-204` had a guard role and `--auto-answer` was on, the browser's
 `SipService.onIncoming` would auto-accept (PR #12).
 
-### 3.3 Conference
+### 3.4 Conference
 
 ```
 Browser A dials *FLAT (or sip:conf@…)
@@ -363,7 +434,7 @@ This is the unavoidable property of server-side mixers — see
 **conference audio is encrypted on the wire but visible to the on-prem
 PBX process during mixing.** 1:1 audio is never visible to the PBX.
 
-### 3.4 Inbound call when the tab is closed
+### 3.5 Inbound call when the tab is closed
 
 ```
 Caller dials our subscriber's flat
@@ -474,11 +545,17 @@ podman logs pbx-agent | tail -20
 #   ... AceSslTransport: inner-TLS handshake established      (PR #19)
 #   ... SubscriberWatcher: bootstrap complete (N rows)        (PR #18)
 #   ... AriWsClient: connected to Asterisk ARI
+#   ... SOCIETY_BOOTSTRAP: sipRealm <default> -> <code>.pbx.local; re-syncing every subscriber  (PR #24, fires only when --sip-realm not passed AND cloud has the society doc)
 
 heroku logs --tail --app pabx | grep agent
 #   ... /agent handed off raw fd N -> AgentStream (inner-TLS) (PR #19)
+#   ... inner-TLS handshake established (peer CN=…)          (PR #25)
 #   ... CloudTunnelEndpoint: has_agent=true
 ```
+
+`scripts/start.sh` (see §6.2a) automates a one-shot verification of
+the agent side against the deployed Heroku cloud — useful before a
+real on-prem install.
 
 ### 5.3 Verify presence reconciliation
 
@@ -574,7 +651,7 @@ tests, integration tests, drift checks).
 # Full build + test run (sandboxed in podman).
 podman-compose -f docker-compose.test.yml build --no-cache offtarget
 podman-compose -f docker-compose.test.yml run --rm offtarget
-# → 502/505 tests pass; 3 baseline failures (documented in README.md).
+# → 516/519 tests pass; 3 baseline failures (documented in README.md).
 
 # Run just one suite.
 podman-compose -f docker-compose.test.yml run --rm offtarget \
@@ -584,6 +661,34 @@ podman-compose -f docker-compose.test.yml run --rm offtarget \
 The first build seeds an image cache (`pbx-cpp-builder:bootstrap` —
 ACE/TAO 7.0.0, mongo-cxx-driver, googletest pre-installed); subsequent
 no-cache builds reuse it and complete in ~7 minutes.
+
+### 6.2a End-to-end dry test (Lima VM)
+
+For a real-Linux integration smoke against the deployed Heroku cloud
+(skips the macOS-podman-via-QEMU segfault path we hit early on):
+
+```sh
+bash scripts/start.sh
+```
+
+The script provisions a Lima VM (Apple Virtualization framework,
+native arm64 on Apple Silicon — no QEMU), follows
+`xpmile/docker/Dockerfile`'s build recipe verbatim (apt deps +
+ACE/TAO 7.0.0 with `make install ssl=1 INSTALL_PREFIX=…` +
+mongo-c-driver 1.19.1 + mongo-cxx-driver v3.6 with
+`BSONCXX_POLY_USE_MNMLSTC=1` and `CMAKE_INSTALL_PREFIX=/usr/local`),
+builds pbx-agent natively, then runs it for 90 s against the deployed
+Heroku cloud and captures the log + any coredump.
+
+Idempotent via sentinel files under `/var/lib/dry-test-*`. Tear down
+with `limactl stop -f onprem-pbx-test && limactl delete -f onprem-pbx-test`.
+
+Known caveat as of 2026-05-16: the agent SIGSEGVs ~5 s after the
+inner-TLS handshake completes — exact site lost in a corrupt stack
+that gdb can't unwind. Tracked in `memory:project_open_backlog` as
+"Agent post-handshake crash"; needs an ASan/Valgrind rebuild to
+localize. The script still validates the build + outer TLS + WS
+upgrade + inner-TLS handshake paths.
 
 ### 6.3 Layer model
 
