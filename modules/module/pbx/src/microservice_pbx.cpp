@@ -479,6 +479,24 @@ std::string handle_subscriber_import_POST(const std::string &req,
   return os.str();
 }
 
+std::string handle_subscriber_import_template_GET(const std::string & /*req*/,
+                                                   IMongodbClient & /*db*/) {
+  // Canonical header expected by handle_subscriber_import_POST, followed by
+  // an empty CRLF line so the file opens in Excel as a populated header
+  // row plus one editable blank row.
+  static constexpr const char kBody[] =
+      "flat_number,name,email,phone,role\r\n"
+      "\r\n";
+  // Two non-default headers: the MIME type drives the browser's CSV
+  // application association, and the disposition forces a download
+  // prompt (otherwise Chrome renders the body inline). Filename has no
+  // spaces → no quoting required (RFC 6266 §4.1).
+  const std::string extra =
+      "Content-Disposition: attachment; "
+      "filename=subscribers-template.csv\r\n";
+  return http_response(200, "OK", kBody, "text/csv", extra);
+}
+
 std::string handle_cdr_GET(const std::string &req, IMongodbClient &db) {
   const std::string uri = raw_uri_with_query(req);
   const std::string society_id = query_param(uri, "societyId");
