@@ -7,26 +7,35 @@
 
 /**
  * @file pjsip_provisioner.hpp
- * @brief Push pjsip endpoint+auth+aor sorcery objects into Asterisk.
+ * @brief Push pjsip endpoint+aor sorcery objects into Asterisk.
  *
  * A subscriber row in Mongo
  *   `{societyId, sipUsername, sipHa1, status, ...}`
- * is materialised in Asterisk as **three** sorcery-memory objects via
+ * is materialised in Asterisk as **two** sorcery-memory objects via
  * ARI dynamic-config (DESIGN.md §4):
  *
- *   - `auth     <sipUsername>-auth` — `auth_type=md5`, `username=<sipUsername>`,
- *                                      `md5_cred=<sipHa1>`, `realm=<sipRealm>`.
  *   - `aor      <sipUsername>-aor`  — `max_contacts=5`, `remove_existing=yes`.
  *   - `endpoint <sipUsername>`      — codecs / ICE / DTLS / WebRTC settings,
- *                                      `auth=<sipUsername>-auth`,
- *                                      `aors=<sipUsername>-aor`.
+ *                                      `aors=<sipUsername>-aor`. No `auth` —
+ *                                      SIP digest is intentionally disabled
+ *                                      (the cloud `/sip-ws` bearer-token
+ *                                      gate is the only auth layer; the
+ *                                      browser has no SIP password and the
+ *                                      WS transport can only be opened by
+ *                                      a previously-authenticated session).
+ *
+ * Provision also issues a best-effort DELETE on the legacy
+ * `<sipUsername>-auth` doc so existing Asterisk sorcery state from
+ * pre-fix deployments is pruned on the first re-provision pass.
  *
  * Each object is created via PUT (sorcery treats it as create-or-replace,
  * so re-provisioning the same subscriber is idempotent — handy for the
  * agent's bootstrap full-scan and for change-stream replay).
  *
  * deprovision() does the reverse — three DELETEs in safe order
- * (endpoint first, so an in-flight INVITE finds no peer; then auth + aor).
+ * (endpoint first, so an in-flight INVITE finds no peer; then auth + aor;
+ * the auth delete is a no-op on freshly-provisioned subscribers, kept
+ * for legacy cleanup as above).
  *
  * Pure logic — `IAriRest` is injected. ARI errors are logged-and-dropped
  * (best-effort): a transient ARI failure shouldn't crash the watcher.
