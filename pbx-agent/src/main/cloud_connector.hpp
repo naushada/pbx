@@ -43,6 +43,13 @@ public:
   /// (caller should close + treat as disconnect).
   virtual bool send(const std::string &bytes) = 0;
 
+  /// Send a bare WebSocket-level PING frame (opcode 0x09) on the OUTER
+  /// socket — bypassing inner-TLS. Used as the keep-alive heartbeat
+  /// against Heroku's WebSocket router, which only resets its idle
+  /// timer on WS control frames (not on inner-TLS-encrypted BINARY
+  /// frames). Default no-op implementation lets test fakes ignore it.
+  virtual bool send_ws_ping() { return true; }
+
   /// Close the underlying socket. Idempotent.
   virtual void close() = 0;
 };
@@ -135,6 +142,12 @@ public:
   /// is buffered and flushed on the next successful connect.
   void send_frame(SipFrame::Op op, std::uint32_t stream_id,
                   const std::string &payload) override;
+
+  /// Bypass SipFrame entirely and ask the underlying transport to send
+  /// a WS-level PING (opcode 0x09). Used by `AgentHelloKeepalive` (now
+  /// the WS-PING keepalive). No-op when disconnected. A send failure
+  /// requests a deferred disconnect via the same path as send_frame.
+  void send_ws_ping();
 
   // ── State machine driver ──────────────────────────────────────────────
 

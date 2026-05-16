@@ -128,6 +128,37 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WsPingKeepalive — sends a bare WS PING (opcode 0x09) on the outer
+// socket every 2 s while the tunnel is up. Workaround for Heroku's
+// WebSocket router closing the connection after ~3 s of WS-control-
+// frame silence. Inner-TLS encrypted BINARY frames (which carry our
+// AGENT_HELLO / REGISTER_STATE / PING SipFrames) do NOT reset Heroku's
+// idle timer — wsdbagent's /ws/db tunnel survives because it sends
+// these bare WS PINGs every 30 s. Mirror that here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class WsPingKeepalive : public ACE_Event_Handler {
+public:
+  WsPingKeepalive(CloudConnector &cc, ACE_Reactor *reactor) : m_cc(cc) {
+    this->reactor(reactor);
+  }
+
+  int schedule_first_tick() {
+    return reactor()->schedule_timer(this, nullptr,
+                                      ACE_Time_Value(2, 0),  // first fire
+                                      ACE_Time_Value(2, 0)); // repeat every 2s
+  }
+
+  int handle_timeout(const ACE_Time_Value &, const void *) override {
+    if (m_cc.connected()) m_cc.send_ws_ping();
+    return 0;
+  }
+
+private:
+  CloudConnector &m_cc;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Signal handler — terminates the reactor loop cleanly.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -479,6 +510,20 @@ int main(int argc, char *argv[]) {
   if (watcher_timer.schedule_first_tick() == -1) {
     ACE_ERROR((LM_ERROR,
                ACE_TEXT("%D [pbx-agent] SubscriberWatcher schedule_timer "
+                        "failed\n")));
+    return -1;
+  }
+
+  // ── WS PING keepalive (2 s) ────────────────────────────────────────────
+  // Heroku's WebSocket router only resets its ~3 s idle timer on WS
+  // control frames (PING/PONG), NOT on the BINARY frames that carry
+  // our inner-TLS records. Emit a bare WS PING every 2 s. This mirrors
+  // what wsdbagent does for /ws/db — that tunnel survives 30 s+ on the
+  // same Heroku platform with no special treatment beyond WS pings.
+  WsPingKeepalive ws_ping_keepalive(connector, reactor);
+  if (ws_ping_keepalive.schedule_first_tick() == -1) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] WsPingKeepalive schedule_timer "
                         "failed\n")));
     return -1;
   }
