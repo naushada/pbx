@@ -172,10 +172,19 @@ ENV PORT="8080" \
     TLS_KEY="/opt/pbx-cloud/certs/server.key" \
     TLS_CA="/opt/pbx-cloud/certs/ca.crt" \
     VAPID_KEY_PATH="" \
+    VAPID_PRIVATE_KEY_B64="" \
     VAPID_SUBJECT=""
 
+# Heroku has no persistent FS, so the VAPID private PEM is shipped as a
+# base64-encoded config var and materialised to /tmp at startup. If
+# VAPID_PRIVATE_KEY_B64 is set it wins over any inherited VAPID_KEY_PATH.
 ENTRYPOINT ["tini", "--"]
 CMD ["/bin/sh", "-c", "\
+  if [ -n \"$VAPID_PRIVATE_KEY_B64\" ]; then \
+    printf '%s' \"$VAPID_PRIVATE_KEY_B64\" | base64 -d > /tmp/vapid.pem && \
+    chmod 600 /tmp/vapid.pem && \
+    VAPID_KEY_PATH=/tmp/vapid.pem; \
+  fi; \
   /opt/pbx-cloud/pbx-cloud \
     --server-port ${PORT} \
     --server-worker ${SERVER_WORKER} \

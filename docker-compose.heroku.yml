@@ -48,8 +48,9 @@ services:
       TLS_CERT:       ${TLS_CERT:-}
       TLS_KEY:        ${TLS_KEY:-}
       TLS_CA:         ${TLS_CA:-}
-      VAPID_KEY_PATH: ${VAPID_KEY_PATH:-}
-      VAPID_SUBJECT:  ${VAPID_SUBJECT:-}
+      VAPID_KEY_PATH:        ${VAPID_KEY_PATH:-}
+      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      VAPID_SUBJECT:         ${VAPID_SUBJECT:-}
 
   pbx-ui:
     pull_policy: never
