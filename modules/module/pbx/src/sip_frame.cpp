@@ -53,7 +53,10 @@ DecodeResult decode(const std::string &buf) {
   const auto stream_id = read_u32_be(&buf[2]);
   const auto plen      = read_u32_be(&buf[6]);
 
-  // Op-code whitelist
+  // Op-code whitelist — every value defined in sip_frame.hpp's Op enum
+  // must appear here, or decode() rejects the frame as Invalid. Easy to
+  // forget when adding a new op; consider relaxing this to an enum
+  // range check in a future cleanup.
   switch (static_cast<Op>(op_raw)) {
     case Op::OPEN: case Op::DATA: case Op::CLOSE:
     case Op::PING: case Op::PONG: case Op::ERR:
@@ -62,6 +65,7 @@ DecodeResult decode(const std::string &buf) {
     case Op::REGISTER_STATE:
     case Op::AGENT_HELLO:
     case Op::SOCIETY_BOOTSTRAP:
+    case Op::ASTERISK_STATUS:
       break;
     default:
       r.status = Status::Invalid;
