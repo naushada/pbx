@@ -57,6 +57,16 @@ on:
       - '.github/workflows/publish-images.yml'
   workflow_dispatch:
 
+# Latest-push-wins: a newer push to main auto-cancels any earlier
+# in-flight run of THIS workflow for THIS ref. Saves CI minutes and
+# avoids the "v40 published from PR #93 while v41 is being built from
+# PR #95" race we'd otherwise hit on a busy day. `cancel-in-progress: true`
+# is what does the work; the `group:` key just scopes "what counts as
+# the same queue". Same {workflow, ref} pair = same group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: docker.io
   ORG:      naushada
