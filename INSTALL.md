@@ -136,6 +136,10 @@ has been redeployed:
 | `Can't find the cert tarball`                          | Mistyped path. Use tab-completion in the prompt.                                                |
 | pbx-agent doesn't show `inner-TLS handshake`           | Cert tarball is wrong society OR is stale. Get a fresh one from the dev team.                   |
 | `podman-compose pull failed` in step 8                 | Internet to Docker Hub is blocked. Check `curl -I https://docker.io` then retry the installer.  |
+| Browser softphone hangs at "Connecting…", no error in dev console | Agent's WS to cloud was idle-killed by Heroku and the cloud forgot the binding. Self-heals on the next agent reconnect (1-30 s). If it persists, `sudo podman restart pbx-agent`. (Tracked as `[[project_tunnel_reliability_status]]` in the dev memory — a cloud-side WS keepalive will fully fix this; see the repo for the PR.) |
+| `pjsip show contacts` is empty after several REGISTER attempts | (a) sorcery.conf isn't mounted into pbx-asterisk — `sudo podman exec pbx-asterisk grep res_pjsip /etc/asterisk/sorcery.conf` should print `endpoint = astdb,…`. If you see `[test_sorcery_section]` instead, your repo is older than PR #101 (2026-05-17). `git pull` + `sudo systemctl restart onprem-pbx`. (b) Subscribers' `sipUsername` is empty in Mongo — re-import the subscriber CSV. |
+| `agent log: PjsipProvisioner::provision skipped` for every subscriber | Repo is older than PR #100 (2026-05-17). `git pull` + `podman-compose pull` to pull the latest agent image, then `sudo systemctl restart onprem-pbx`. |
+| `agent log: aor PUT returned 403 "Cannot create sorcery objects"` | Same as the "empty contacts" row above — sorcery.conf isn't taking effect. Fix the mount, then `sudo podman restart pbx-asterisk pbx-agent`. |
 
 If something else goes wrong, run this and email the output to your
 dev team:
@@ -143,5 +147,8 @@ dev team:
 ```sh
 sudo podman logs --tail 100 pbx-agent     > /tmp/pbx-agent.log
 sudo podman logs --tail 100 pbx-wsdbagent > /tmp/pbx-wsdbagent.log
+sudo podman logs --tail 100 pbx-asterisk  > /tmp/pbx-asterisk.log
+sudo podman exec pbx-asterisk asterisk -rx "pjsip show endpoints" > /tmp/pjsip-endpoints.txt
+sudo podman exec pbx-asterisk asterisk -rx "pjsip show contacts"  > /tmp/pjsip-contacts.txt
 sudo systemctl status onprem-pbx          > /tmp/pbx-systemd.log
 ```
