@@ -113,6 +113,37 @@ TEST(CloudTunnelEndpoint, OnAgentDisconnected_TellsBridge)
     EXPECT_GT(new_sid, sid);
 }
 
+TEST(CloudTunnelEndpoint, OnAgentConnected_RearmsBridgeTunnel_AfterReconnect)
+{
+    // Regression for PR #102. mark_disconnected() nulls out
+    // SipBridge.m_tunnel via on_tunnel_disconnect(). on_agent_connected()
+    // used to forget to re-arm it, so every browser OPEN after the first
+    // disconnect-reconnect cycle was silently dropped — surfacing live
+    // as tunnel_attached=0 in on_browser_upgrade even though the
+    // endpoint had a fresh transport, which broke SIP REGISTER on
+    // every Heroku 55s idle WS drop.
+    AgentTransportFactory fac;
+    CloudTunnelEndpoint cte;
+    SipBridge bridge(&cte);
+    cte.attach_bridge(&bridge);
+
+    cte.on_agent_connected(fac.make());
+    cte.on_agent_disconnected();         // bridge.m_tunnel := nullptr
+
+    cte.on_agent_connected(fac.make());  // must re-arm bridge.m_tunnel
+
+    FakeBrowser b;
+    const auto sid = bridge.on_browser_upgrade(&b, R"({"sip":"a101"})");
+    EXPECT_GT(sid, 0u);
+
+    // OPEN must reach the NEW transport. Without the re-arm, ts.sent
+    // stayed empty and the browser hung at "Connecting…".
+    auto &ts = fac.last();
+    ASSERT_EQ(1u, ts.sent.size())
+        << "OPEN frame must be sent through the re-attached transport";
+    EXPECT_EQ(SipFrame::Op::OPEN, SipFrame::decode(ts.sent[0]).frame.op);
+}
+
 // ── TunnelSink semantics: connected ──────────────────────────────────────────
 
 TEST(CloudTunnelEndpoint, SendFrameWhenConnected_WritesEncodedBytes)

@@ -30,6 +30,13 @@ void CloudTunnelEndpoint::on_agent_connected(
   // Reset heartbeat: the next PING is due `heartbeat_interval_sec` from now.
   m_pings_outstanding = 0;
   if (m_clock) m_last_heartbeat_unix = m_clock->now_unix();
+  // Re-arm the bridge's TunnelSink pointer. mark_disconnected() nulled it
+  // out via on_tunnel_disconnect() during the previous agent's teardown;
+  // without this re-arm the bridge silently drops every browser OPEN
+  // after the first disconnect-reconnect cycle, surfacing as
+  // tunnel_attached=0 in SipBridge::on_browser_upgrade even though the
+  // endpoint has a fresh transport. Caught live 2026-05-17 (PR #102).
+  if (m_bridge) m_bridge->set_tunnel(this);
   ACE_DEBUG((LM_INFO,
              ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l agent attached "
                       "(buffered_frames=%u — flushing)\n"),
