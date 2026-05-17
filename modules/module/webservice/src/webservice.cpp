@@ -2238,11 +2238,24 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
           !ws_http.get_element("sec-websocket-key").empty();
 
       if (is_sip_ws_upgrade) {
+        // Diagnostic: surface every /sip-ws upgrade attempt with its outcome,
+        // so failures (401/503) can be told apart from the silent "OPEN
+        // buffered, no agent" path. Without this the cloud's access log is
+        // the only trace and it doesn't carry the upgrade reason.
+        ACE_DEBUG((LM_INFO,
+                   ACE_TEXT("%D [WebConnection:%t] %M %N:%l /sip-ws upgrade "
+                            "received (uri-has-token=%d, has-cookie=%d)\n"),
+                   request.find("token=") != std::string::npos ? 1 : 0,
+                   ws_http.get_element("Cookie").empty() ? 0 : 1));
+
         // Resolve the browser's portal session against Mongo — this both
         // gates the upgrade and yields the subscriber identity carried in
         // the bridge's OPEN frame.
         IMongodbClient *db = parent().mongodbcInst();
         if (!db) {
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l /sip-ws -> 503 "
+                              "(mongo client unavailable)\n")));
           const std::string stub =
               "HTTP/1.1 503 Service Unavailable\r\n"
               "Content-Length: 0\r\n"
@@ -2254,6 +2267,16 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
         const MicroServicePbx::SipWsUpgrade upgrade =
             MicroServicePbx::handle_sipws_upgrade(request, *db);
         if (!upgrade.error.empty()) {
+          // upgrade.error is a full HTTP response; first line carries the
+          // status that went back to the browser (e.g. "HTTP/1.1 401 ...").
+          const std::size_t eol = upgrade.error.find("\r\n");
+          const std::string status_line =
+              upgrade.error.substr(0, eol == std::string::npos
+                                          ? upgrade.error.size() : eol);
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l /sip-ws upgrade "
+                              "rejected: %s\n"),
+                     status_line.c_str()));
           m_stream.send_n(upgrade.error.data(), upgrade.error.size());
           return -1;
         }
@@ -2268,6 +2291,11 @@ ACE_INT32 WebConnection::handle_input(ACE_HANDLE handle) {
               agent_up
                   ? "SipBridge not wired"
                   : "no agent connected yet";
+          ACE_ERROR((LM_ERROR,
+                     ACE_TEXT("%D [WebConnection:%t] %M %N:%l /sip-ws -> 503 "
+                              "(cte=%d bridge=%d agent_up=%d hint=%s)\n"),
+                     cte ? 1 : 0, bridge ? 1 : 0, agent_up ? 1 : 0,
+                     hint.c_str()));
           const std::string stub =
               "HTTP/1.1 503 Service Unavailable\r\n"
               "Content-Length: 0\r\n"

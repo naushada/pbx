@@ -2,6 +2,8 @@
 
 #include "json.hpp"
 
+#include "ace/Log_Msg.h"
+
 using json = nlohmann::json;
 
 SipBridge::SipBridge(TunnelSink *tunnel)
@@ -11,6 +13,14 @@ std::uint32_t SipBridge::on_browser_upgrade(BrowserSink *browser,
                                             const std::string &open_meta) {
   const std::uint32_t sid = m_next_stream_id++;
   m_browsers.emplace(sid, browser);
+  // Diagnostic: surface whether the OPEN frame is going out NOW or being
+  // buffered against a missing tunnel. The "no tunnel" path is the silent
+  // failure mode — the browser sees a successful WS upgrade but its first
+  // SIP REGISTER never produces a response.
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [SipBridge:%t] %M %N:%l on_browser_upgrade sid=%u "
+                      "tunnel_attached=%d open_meta=%s\n"),
+             sid, m_tunnel ? 1 : 0, open_meta.c_str()));
   if (m_tunnel)
     m_tunnel->send_frame(SipFrame::Op::OPEN, sid, open_meta);
   return sid;
