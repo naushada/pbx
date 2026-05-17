@@ -683,7 +683,8 @@ For a real-Linux integration smoke against the deployed Heroku cloud
 ```sh
 lima start    # or: bash scripts/lima.sh start
 # … run the dry test …
-lima stop     # tear the VM down
+lima stop     # pause (containers + VM halted, data preserved)
+lima del      # tear the VM down (drops volumes; ~30 GB reclaimed)
 ```
 
 The script provisions a Lima VM (Apple Virtualization framework,
