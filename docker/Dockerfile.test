@@ -5,7 +5,12 @@
 # under /usr/local). This shaves ~30 min off the first build during Layer 0
 # bring-up. A from-scratch Dockerfile mirroring xpmile's full cpp-builder is
 # added in a later layer per DESIGN.md §12.
-FROM localhost/pbx-cpp-builder:bootstrap
+#
+# BUILDER_IMAGE override: see Dockerfile.agent for the three-context
+# rationale. Local dev keeps the localhost/ default; CI overrides to
+# docker.io/naushada/pbx-cpp-builder:bootstrap.
+ARG BUILDER_IMAGE=localhost/pbx-cpp-builder:bootstrap
+FROM ${BUILDER_IMAGE}
 
 WORKDIR /src
 COPY CMakeLists.txt /src/
