@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --society-code) SOCIETY_CODE=$2; shift 2 ;;
     --password)     PASSWORD=$2;     shift 2 ;;
-    -h|--help)      sed -n '2,/^$/p' "$0" | sed 's/^# \?//' ; exit 0 ;;
+    -h|--help|help) sed -n '2,/^$/p' "$0" | sed 's/^# \?//' ; exit 0 ;;
     *) printf 'unknown arg: %s (try --help)\n' "$1" >&2; exit 2 ;;
   esac
 done

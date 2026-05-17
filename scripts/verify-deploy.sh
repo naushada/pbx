@@ -18,6 +18,11 @@
 
 set -uo pipefail
 
+usage() {
+  sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
 MODE="${1:-remote}"
 
 case "$MODE" in
@@ -31,8 +36,11 @@ case "$MODE" in
         #     -e PORT=8080 registry.heroku.com/pabx/web
         BASE_URL="${BASE_URL:-http://localhost:8080}"
         ;;
+    -h|--help|help)
+        usage 0
+        ;;
     *)
-        echo "usage: $0 [remote|local]" >&2
+        echo "usage: $0 [remote|local|help]" >&2
         exit 2
         ;;
 esac

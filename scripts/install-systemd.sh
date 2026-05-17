@@ -14,6 +14,17 @@
 
 set -euo pipefail
 
+usage() {
+  sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+case "${1:-}" in
+  -h|--help|help) usage 0 ;;
+  "") ;;  # no arg — proceed
+  *) echo "unknown arg: $1 (try help)" >&2; exit 2 ;;
+esac
+
 INSTALL_DIR="${INSTALL_DIR:-/opt/onprem-pbx}"
 UNIT_SRC="systemd/onprem-pbx.service"
 UNIT_DST="/etc/systemd/system/onprem-pbx.service"

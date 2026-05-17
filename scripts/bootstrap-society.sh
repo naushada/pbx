@@ -64,7 +64,7 @@ while [ $# -gt 0 ]; do
     --mongo-uri)      MONGO_URI=$2;      shift 2 ;;
     --cloud-host)     CLOUD_HOST=$2;     shift 2 ;;
     --cloud-scheme)   CLOUD_SCHEME=$2;   shift 2 ;;
-    -h|--help)        usage 0 ;;
+    -h|--help|help)   usage 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;
   esac
 done
