@@ -262,8 +262,18 @@ AriWsClient::build_upgrade_request(const std::string &host,
   const std::string key = random_ws_key();
   const std::string basic = base64_encode(username + ":" + password);
 
+  // `subscribeAll=true` is REQUIRED for the app to receive events for
+  // resources it doesn't explicitly own — including EndpointStateChange
+  // (needed for cloud presence cache) and StasisStart for channels that
+  // entered Stasis via the dialplan (needed for call admission +
+  // routing). Without it the WS connects cleanly but stays silent —
+  // Asterisk publishes events into the void and the agent never sees
+  // them. Caught live 2026-05-17: REGISTER worked, INVITE reached
+  // Stasis, but agent's on_event never fired → call hung up at 2s.
+  // Verified via `asterisk -rx "ari show app pbx"` which then reports
+  // `Subscription Model: Global Resource Subscription` (was empty).
   std::ostringstream os;
-  os << "GET /ari/events?app=" << app << " HTTP/1.1\r\n"
+  os << "GET /ari/events?app=" << app << "&subscribeAll=true HTTP/1.1\r\n"
      << "Host: " << host << "\r\n"
      << "Upgrade: websocket\r\n"
      << "Connection: Upgrade\r\n"

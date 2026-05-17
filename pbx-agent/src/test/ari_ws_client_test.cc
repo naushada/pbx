@@ -65,12 +65,16 @@ TEST(AriWsClient, Base64Encode_BasicAuthString)
 
 // ── build_upgrade_request ────────────────────────────────────────────────────
 
-TEST(AriWsClient, BuildUpgradeRequest_IncludesAppParam)
+TEST(AriWsClient, BuildUpgradeRequest_IncludesAppParam_AndSubscribeAll)
 {
     auto [req, key] = AriWsClient::build_upgrade_request(
         "127.0.0.1", "pbx", "asterisk", "asterisk");
     EXPECT_NE(std::string::npos,
-              req.find("GET /ari/events?app=pbx HTTP/1.1\r\n"));
+              req.find("GET /ari/events?app=pbx&subscribeAll=true HTTP/1.1\r\n"))
+        << "subscribeAll=true is REQUIRED for the app to receive events "
+        << "for resources it doesn't explicitly own (endpoint state, "
+        << "dialplan-entered StasisStart). Without it the WS stays "
+        << "silent — Asterisk publishes into the void.";
     EXPECT_NE(std::string::npos, req.find("Host: 127.0.0.1\r\n"));
 }
 
