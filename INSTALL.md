@@ -78,6 +78,48 @@ Run on your dev machine after `./deploy-heroku.sh deploy`:
 # ship it to the society (scp / USB / email), then run install.sh there.
 ```
 
+## Refreshing certs after a cloud redeploy
+
+**Every `./deploy-heroku.sh deploy` on the dev side mints a fresh CA
+and a fresh per-build client cert family.** The cloud trusts only its
+current CA's certs, so a society running yesterday's certs will fail
+the inner-TLS handshake until it picks up the new ones.
+
+Here's how to land fresh certs on a society machine after the cloud
+has been redeployed:
+
+1. **Dev** — re-run the packaging command (it reads from
+   `certs/cloud-issued/`, which `deploy-heroku.sh deploy` just
+   refreshed):
+
+   ```sh
+   ./deploy-heroku.sh package-society-certs SUNSET
+   ```
+
+2. **Ship** the new `/tmp/SUNSET-certs.tar.gz` to the society
+   machine — scp, email, USB stick.
+
+3. **Society** — re-run the installer (it's safe to re-run; only
+   the certs change):
+
+   ```sh
+   sudo CERTS_TARBALL=/path/to/new/SUNSET-certs.tar.gz ./install.sh
+   ```
+
+   The installer unpacks the tarball into
+   `/opt/onprem-pbx/certs/cloud-issued/`. The on-prem
+   **`pbx-cert-watcher`** container detects the file md5 change within
+   5 s and POSTs to the host podman socket to restart `pbx-agent` +
+   `pbx-wsdbagent` automatically — no manual `systemctl restart`.
+
+> ⚠️ **Gap:** today there's no auto-channel between the dev's cloud
+> deploy and the society machine. The cert tarball ride-along is
+> manual. A future enhancement: a society-facing pull endpoint
+> protected by a one-time installer token so the society can fetch
+> its current certs directly from the cloud. Until that lands, plan
+> a quick "ship + reinstall" pass after every cloud deploy that
+> changes the CA.
+
 ## Troubleshooting
 
 | Symptom                                                | Likely cause / fix                                                                              |

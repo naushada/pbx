@@ -245,11 +245,14 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   if (method == "POST" && uri == "/api/v1/subscriber/login")
     return MicroServicePbx::handle_subscriber_login_POST(req, dbInst);
 
-  // Exact-match: GET /api/v1/subscriber/import/template
-  // Comes BEFORE the /import prefix-match below so the prefix doesn't
-  // swallow the more specific path. Public (no admin gate) — the
-  // template itself is canonical and the operator needs it to compose
-  // the import CSV before they have a session.
+  // Exact-match: GET /api/v1/subscriber/import/template[.xlsx]
+  // Both come BEFORE the /import prefix-match below so the prefix
+  // doesn't swallow the more specific path. Public (no admin gate) —
+  // the templates are canonical and the operator needs them before
+  // they have a session. The .xlsx variant has mandatory columns
+  // highlighted in yellow (see handle_subscriber_import_template_xlsx_GET).
+  if (method == "GET" && uri == "/api/v1/subscriber/import/template.xlsx")
+    return MicroServicePbx::handle_subscriber_import_template_xlsx_GET(req, dbInst);
   if (method == "GET" && uri == "/api/v1/subscriber/import/template")
     return MicroServicePbx::handle_subscriber_import_template_GET(req, dbInst);
 

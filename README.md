@@ -427,6 +427,79 @@ variables → Actions):
   (create at https://hub.docker.com/settings/security — do NOT use
   your account password)
 
+## TLS cert rotation
+
+**Every `./deploy-heroku.sh deploy` mints a fresh per-build CA and a
+new client cert family.** `pbx-cert-watcher` lives **on-prem (in the
+Lima VM or on the society machine), NOT in cloud.** It watches the
+local `certs/cloud-issued/` directory and auto-restarts peers when
+the files change.
+
+End-to-end:
+
+```
+Dev's machine                  Cloud (Heroku)              On-prem (Lima / society)
+─────────────                  ──────────────              ───────────────────────
+./deploy-heroku.sh deploy
+  │
+  ├── cmd_build ─────────────► Dockerfile.cloud mints
+  │                            fresh CA + client certs
+  │                            inside the image
+  │
+  ├── cmd_extract_agent_certs
+  │   pulls certs OUT of
+  │   the new image into
+  │   ./certs/cloud-issued/    ← LOCAL files
+  │   (on dev's macOS)            on the dev machine
+  │
+  └── cmd_push + release ────► cloud running new CA
+                                                          pbx-cert-watcher (on-prem)
+                                                          watches certs/cloud-issued/
+                                                          ─────────────────────────
+                                                          • In Lima: certs/ is the
+                                                            same bind-mounted repo
+                                                            as the dev's host →
+                                                            watcher sees the change
+                                                            → restarts pbx-agent +
+                                                            pbx-wsdbagent (~5s).
+                                                          • On society machine:
+                                                            certs/ only updates if
+                                                            install.sh re-unpacks a
+                                                            fresh tarball. Watcher
+                                                            is idle until that.
+```
+
+**Lima dev loop is fully automatic** — the repo bind-mount means the
+new certs are visible inside the VM the moment `cmd_extract_agent_certs`
+finishes, and `pbx-cert-watcher` (a small `alpine:3.19` sidecar that
+polls `/watch` every 5 s) detects the md5 change and POSTs to the host
+podman socket to restart `pbx-agent` + `pbx-wsdbagent`. No manual
+`podman restart`.
+
+**Society machine is NOT fully automatic** — there's no channel today
+from a cloud deploy to a society machine. The operator needs to:
+
+1. On dev: `./deploy-heroku.sh package-society-certs SUNSET` —
+   bundles the freshly-extracted certs into `/tmp/SUNSET-certs.tar.gz`.
+2. Ship the tarball to the society (scp / email / USB).
+3. On society: `sudo CERTS_TARBALL=/path/to/new.tar.gz ./install.sh` —
+   the installer unpacks into `/opt/onprem-pbx/certs/cloud-issued/`,
+   and the on-prem `pbx-cert-watcher` auto-restarts both peers within
+   5 s.
+
+See [`INSTALL.md` — "Refreshing certs after a cloud redeploy"](./INSTALL.md#refreshing-certs-after-a-cloud-redeploy)
+for the operator-facing walkthrough.
+
+> **Future gap:** a society-facing pull endpoint protected by a
+> one-time installer token would let the society machine fetch its
+> current certs directly from the cloud, eliminating the manual
+> tarball ride-along. Not built yet.
+
+The cert-watcher container itself: `docker-compose.agent.yml`
+service `pbx-cert-watcher` — `alpine:3.19` + an inline shell script
+that md5-polls the directory and calls the podman REST socket. No
+custom Dockerfile, no published image.
+
 ### First-time admin bootstrap
 
 The admin UI's login is gated on a real `subscribers` row with

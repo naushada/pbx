@@ -157,6 +157,12 @@ COPY --from=cpp-builder /src/sip-agent-certs/ /opt/pbx-cloud/sip-agent-certs/
 # verbatim from xpmile so it stays in sync between projects.
 COPY --from=ui-builder /ui/dist/pbxui/ /opt/webgui/webui/
 
+# Operator-facing static assets the cloud streams via REST handlers
+# (currently just the XLSX subscriber-import template). Lives at
+# /opt/docs/ so a `../docs/...` lookup from WORKDIR=/opt/pbx-cloud
+# resolves correctly — same pattern as ../webgui/webui above.
+COPY docs/ /opt/docs/
+
 WORKDIR /opt/pbx-cloud
 
 # Heroku injects $PORT at runtime; we default to 8080 for local dev.

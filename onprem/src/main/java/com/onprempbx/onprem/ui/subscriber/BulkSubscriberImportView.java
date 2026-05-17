@@ -94,27 +94,39 @@ public class BulkSubscriberImportView extends VerticalLayout {
         final Div section = new Div();
         section.add(new H3("1. Download template"));
         section.add(new Paragraph(
-                "Start by downloading the CSV template, then fill in one row per subscriber."));
+                "Start by downloading a template. The Excel version highlights "
+                + "mandatory columns (flat_number, name, email) in YELLOW so you "
+                + "can't miss them; the CSV version is the plain header only."));
 
-        // StreamResource + Anchor is the canonical Vaadin pattern for a
-        // server-side-generated download: the resource is fetched on
-        // click, and the anchor's `download` attribute (set via
-        // `getElement().setAttribute`) ensures the browser saves rather
-        // than navigates. Wrapping the anchor around a styled Button
-        // gives us the Lumo button look without manual CSS.
-        final StreamResource templateResource = new StreamResource(
+        // XLSX template — primary download. Mandatory columns highlighted
+        // yellow. Source of truth: scripts/generate-subscriber-template.py.
+        final StreamResource xlsxResource = new StreamResource(
+                "subscribers-template.xlsx",
+                () -> new ByteArrayInputStream(safeTemplateXlsx()));
+        xlsxResource.setContentType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        final Anchor xlsxAnchor = new Anchor(xlsxResource, "");
+        xlsxAnchor.getElement().setAttribute("download", true);
+        xlsxAnchor.removeAll();
+        final Button xlsxBtn = new Button("Download Excel template");
+        xlsxBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        xlsxAnchor.add(xlsxBtn);
+
+        // CSV template — secondary download. Kept for operators on plain-
+        // text tools (sed/awk/vim/Notepad) where Excel formatting is
+        // unwanted overhead.
+        final StreamResource csvResource = new StreamResource(
                 "subscribers-template.csv",
                 () -> new ByteArrayInputStream(safeTemplate()));
-        templateResource.setContentType("text/csv");
+        csvResource.setContentType("text/csv");
+        final Anchor csvAnchor = new Anchor(csvResource, "");
+        csvAnchor.getElement().setAttribute("download", true);
+        csvAnchor.removeAll();
+        final Button csvBtn = new Button("Download CSV (header-only)");
+        csvBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        csvAnchor.add(csvBtn);
 
-        final Anchor downloadAnchor = new Anchor(templateResource, "");
-        downloadAnchor.getElement().setAttribute("download", true);
-        downloadAnchor.removeAll();
-        final Button downloadBtn = new Button("Download template");
-        downloadBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
-        downloadAnchor.add(downloadBtn);
-
-        section.add(downloadAnchor);
+        section.add(xlsxAnchor, csvAnchor);
         return section;
     }
 
@@ -124,6 +136,16 @@ public class BulkSubscriberImportView extends VerticalLayout {
             return (b != null) ? b : new byte[0];
         } catch (Exception e) {
             errorNotification("Could not fetch template: " + e.getMessage());
+            return new byte[0];
+        }
+    }
+
+    private byte[] safeTemplateXlsx() {
+        try {
+            final byte[] b = parser.downloadTemplateXlsx();
+            return (b != null) ? b : new byte[0];
+        } catch (Exception e) {
+            errorNotification("Could not fetch XLSX template: " + e.getMessage());
             return new byte[0];
         }
     }
