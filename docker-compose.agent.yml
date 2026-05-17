@@ -86,6 +86,15 @@ services:
       - ./docker/asterisk/http.conf:/etc/asterisk/http.conf:ro
       - ./docker/asterisk/ari.conf:/etc/asterisk/ari.conf:ro
       - ./docker/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      # sorcery.conf maps pjsip.aor/endpoint/auth to the astdb wizard so
+      # the agent's ARI dynamic-config PUTs persist. Without it Asterisk
+      # returns 403 "Cannot create sorcery objects of type 'aor'" and
+      # the SubscriberWatcher provisioning loop silently fails — every
+      # browser REGISTER hits a non-existent endpoint. astdb persists
+      # to /var/lib/asterisk/astdb.sqlite3 inside the container's
+      # writable layer. Re-provisioning is idempotent so a clean
+      # container catches up on first agent bootstrap scan.
+      - ./docker/asterisk/sorcery.conf:/etc/asterisk/sorcery.conf:ro
       - ./docker/asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
       - ./docker/asterisk/confbridge.conf:/etc/asterisk/confbridge.conf:ro
       # DTLS-SRTP cert + key for chan_pjsip's media_encryption=dtls.
