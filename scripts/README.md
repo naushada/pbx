@@ -112,9 +112,10 @@ lima logs -f pbx-asterisk        # watch a live call
 
 ## Already inside the VM
 
-`lima shell` (with no args) prints a cyan **PABX** banner and drops
-you into an interactive bash session. The banner is your cue that
-the next prompt is the VM, not the host.
+`lima shell` (with no args) prints a cyan **PABX** banner, then drops
+you into an interactive bash session. The prompt is
+`<user>@onprem-pabx:~$` — `lima start` renames the VM's hostname so
+you can never confuse the VM shell with your macOS shell.
 
 Once inside, the `lima` shim is gone — you talk to podman directly. The compose stack runs as root,
 so every podman call needs `sudo`:

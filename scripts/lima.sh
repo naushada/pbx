@@ -156,6 +156,7 @@ SH()   { limactl shell "$VM" -- bash -c "$1"; }
 
 # Sentinel files (inside the VM) for skip-already-done.
 SENT_APT=/var/lib/lima-apt-installed
+SENT_HOSTNAME=/var/lib/lima-hostname-set
 
 # ─── 1. Provision / reuse the Lima VM ─────────────────────────────────────
 step "ensure Lima VM '$VM' is up"
@@ -202,6 +203,24 @@ SH "
   echo 'unqualified-search-registries = [\"docker.io\"]' \
     | sudo tee /etc/containers/registries.conf.d/00-docker.conf >/dev/null
   sudo touch $SENT_APT
+"
+
+# ─── 2b. Set VM hostname → onprem-pabx (cosmetic, for prompt) ─────────────
+#
+# Default Lima hostname is 'lima-${VM}'; renaming it to onprem-pabx
+# gives every shell session (interactive or one-shot) a prompt like
+# 'naushada@onprem-pabx:~\$' so the operator can never confuse the VM
+# shell with their macOS shell. /etc/hosts gets the same entry so
+# sudo's reverse-lookup doesn't pause for a few seconds.
+step "set VM hostname → onprem-pabx (cosmetic — for prompt)"
+SH "
+  set -e
+  if [ -f $SENT_HOSTNAME ]; then exit 0; fi
+  sudo hostnamectl set-hostname onprem-pabx
+  if ! grep -q '127.0.1.1 onprem-pabx' /etc/hosts; then
+    echo '127.0.1.1 onprem-pabx' | sudo tee -a /etc/hosts >/dev/null
+  fi
+  sudo touch $SENT_HOSTNAME
 "
 
 # ─── 3. Acquire pbx-cpp-builder:bootstrap image ───────────────────────────
