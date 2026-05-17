@@ -37,9 +37,9 @@ public class ConnectivityBar extends HorizontalLayout {
     private static final int POLL_INTERVAL_SECONDS = 5;
 
     private final StatusService status;
-    private final Span agentChip     = chip("Agent");
-    private final Span wsdbagentChip = chip("DB");
-    private final Span mongoChip     = chip("Mongo");
+    private final Span agentChip     = chip("Pabx Agent");
+    private final Span wsdbagentChip = chip("DB Agent Base");
+    private final Span mongoChip     = chip("Mongo DB");
     private final Span asteriskChip  = chip("Asterisk");
 
     public ConnectivityBar(StatusService status) {
@@ -79,10 +79,10 @@ public class ConnectivityBar extends HorizontalLayout {
     }
 
     private void applyStatus(Connectivity c) {
-        paintChip(agentChip,     "Agent",    c.agent);
-        paintChip(wsdbagentChip, "DB",       c.wsdbagent);
-        paintChip(mongoChip,     "Mongo",    c.mongo);
-        paintChip(asteriskChip,  "Asterisk", c.asterisk);
+        paintChip(agentChip,     "Pabx Agent",    c.agent);
+        paintChip(wsdbagentChip, "DB Agent Base", c.wsdbagent);
+        paintChip(mongoChip,     "Mongo DB",      c.mongo);
+        paintChip(asteriskChip,  "Asterisk",      c.asterisk);
     }
 
     private static Span chip(String label) {
@@ -98,8 +98,9 @@ public class ConnectivityBar extends HorizontalLayout {
     /**
      * Repaint the chip. Three states: connected (green), disconnected
      * (red), pending — the cloud has no live signal for this peer yet
-     * (grey "—"). The asterisk chip uses this until the agent→cloud
-     * STATUS_REPORT plumbing lands.
+     * (grey "—"). All four chips read from real signals today; the
+     * pending path stays as a defensive fallback in case a future peer
+     * lands without a live signal source.
      */
     private static void paintChip(Span chip, String label, Peer peer) {
         final boolean pending = peer != null && "pending".equals(peer.signal);

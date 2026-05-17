@@ -75,18 +75,37 @@ void AriClient::set_register_state_handler(RegisterStateHandler h) {
   m_register_state_handler = std::move(h);
 }
 
+void AriClient::set_asterisk_status_handler(AsteriskStatusHandler h) {
+  m_asterisk_status_handler = std::move(h);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Presence reconciliation — refresh the cloud's cache on (re)connect.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void AriClient::publish_register_snapshot() {
-  if (!m_register_state_handler) return;
+  // Skip the ARI call entirely when neither handler is wired —
+  // preserves the "no handler, no I/O" invariant tests rely on, and
+  // matches the production wiring order (main.cpp installs both
+  // handlers before the on-connected callback ever fires).
+  if (!m_register_state_handler && !m_asterisk_status_handler) return;
 
   const IAriRest::Response r = m_rest.list_endpoints("PJSIP");
-  if (r.status < 200 || r.status >= 300) {
-    // ARI down or returned an error — silently skip. The next
-    // EndpointStateChange will resync any registered endpoint; until
-    // then, the cloud cache stays at whatever it had pre-disconnect.
+  const bool ari_ok = (r.status >= 200 && r.status < 300);
+
+  // Asterisk-status fires FIRST and unconditionally — the chip cares
+  // about reachability even when the body is unparseable / register
+  // handler isn't wired. A 2xx means ARI answered us; any other
+  // outcome (including a network failure surfaced as r.status==0)
+  // means it didn't.
+  if (m_asterisk_status_handler) m_asterisk_status_handler(ari_ok);
+
+  if (!m_register_state_handler) return;
+  if (!ari_ok) {
+    // ARI down or returned an error — silently skip the per-endpoint
+    // publish. The next EndpointStateChange will resync any registered
+    // endpoint; until then, the cloud presence cache stays at whatever
+    // it had pre-disconnect.
     return;
   }
 

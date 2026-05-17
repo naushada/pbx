@@ -35,9 +35,10 @@ public class StatusService {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Peer {
         public boolean connected;
-        /** "pending" when the cloud doesn't yet have a live signal for this peer
-         *  (e.g. asterisk needs an agent→cloud STATUS_REPORT frame, not shipped
-         *  yet). The bar renders these chips as a desaturated "—". */
+        /** "pending" when the cloud doesn't yet have a live signal for this peer.
+         *  All four chips have live signals today (asterisk was the last; it
+         *  now reads from the bridge's ASTERISK_STATUS cache). Kept as a
+         *  defensive fallback for future peers that land without one. */
         public String signal;
     }
 

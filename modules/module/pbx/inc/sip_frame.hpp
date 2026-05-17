@@ -62,6 +62,15 @@ enum class Op : std::uint8_t {
                              // the realm a prior bootstrap used) re-PUTs every
                              // subscriber's auth object via
                              // SubscriberWatcher::resync(). stream-id unused.
+  ASTERISK_STATUS    = 0x16, // agent -> cloud: agent's view of whether
+                             // Asterisk is reachable via ARI. Payload JSON
+                             // {connected: bool}. Emitted from
+                             // AriClient::publish_register_snapshot() after
+                             // every successful/failed ARI list_endpoints
+                             // call — same trigger as REGISTER_STATE so it
+                             // costs zero new periodic work. Cloud caches the
+                             // value on SipBridge; handle_admin_connectivity_GET
+                             // surfaces it as the Asterisk chip. stream-id unused.
 };
 
 struct Frame {

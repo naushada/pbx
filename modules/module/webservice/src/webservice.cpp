@@ -344,8 +344,16 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
         ? (webServer().cloudTunnelEndpoint() &&
            webServer().cloudTunnelEndpoint()->has_agent())
         : false;
+    // Pulled from the bridge's cached flag — updated by every
+    // ASTERISK_STATUS frame the agent sends, cleared on tunnel
+    // disconnect. Null bridge (routing tests) → false, same safe
+    // default as agent-down.
+    const bool asterisk_connected = m_parent && webServer().sipBridge()
+        ? webServer().sipBridge()->asterisk_connected()
+        : false;
     return MicroServicePbx::handle_admin_connectivity_GET(req, dbInst,
-                                                           agent_connected);
+                                                           agent_connected,
+                                                           asterisk_connected);
   }
 
   // Prefix-match: GET /api/v1/cdr[?societyId=…]

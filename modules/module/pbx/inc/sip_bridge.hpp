@@ -132,6 +132,15 @@ public:
   using AgentHelloHandler = std::function<void(const std::string &payload)>;
   void set_agent_hello_handler(AgentHelloHandler h);
 
+  /// Install a handler called when the bridge sees an `ASTERISK_STATUS`
+  /// frame from the agent. Payload is the JSON `{connected: bool}`
+  /// the agent emitted after its last ARI `list_endpoints` probe.
+  /// Production stores into a small flag read by
+  /// `handle_admin_connectivity_GET` so the admin chip reflects the
+  /// real Asterisk reachability; tests substitute a recorder.
+  using AsteriskStatusHandler = std::function<void(const std::string &payload)>;
+  void set_asterisk_status_handler(AsteriskStatusHandler h);
+
   // ── Out-of-band tunnel ops (cloud → agent) ─────────────────────────────
 
   /// Emit a `SOCIETY_BOOTSTRAP` frame (stream-id 0, JSON payload
@@ -161,6 +170,11 @@ public:
   /// Last stream-id allocated by `on_browser_upgrade()`.
   std::uint32_t last_stream_id() const { return m_next_stream_id - 1; }
 
+  /// Agent's most recent view of Asterisk reachability (set by every
+  /// `ASTERISK_STATUS` frame). False until the first frame arrives —
+  /// same safe default the admin chip renders for agent-down.
+  bool asterisk_connected() const { return m_asterisk_connected; }
+
 private:
   void dispatch_frame(const SipFrame::Frame &f);
   void close_stream(std::uint32_t stream_id, const std::string &reason);
@@ -169,10 +183,17 @@ private:
   std::uint32_t m_next_stream_id;
   std::unordered_map<std::uint32_t, BrowserSink *> m_browsers;
   std::string m_recv_buffer; // partial-frame accumulator for tunnel side
-  PushNotifyHandler    m_push_handler;
-  CdrPushHandler       m_cdr_handler;
-  RegisterStateHandler m_register_state_handler;
-  AgentHelloHandler    m_agent_hello_handler;
+  PushNotifyHandler     m_push_handler;
+  CdrPushHandler        m_cdr_handler;
+  RegisterStateHandler  m_register_state_handler;
+  AgentHelloHandler     m_agent_hello_handler;
+  AsteriskStatusHandler m_asterisk_status_handler;
+  // Last known agent-reported Asterisk reachability. Updated by the
+  // dispatch_frame ASTERISK_STATUS branch BEFORE the handler is
+  // invoked, so a webservice-installed handler that pulls
+  // `asterisk_connected()` sees the fresh value. Cleared on
+  // tunnel disconnect so a stale "true" doesn't outlive the agent.
+  bool m_asterisk_connected = false;
 };
 
 #endif // SIP_BRIDGE_HPP

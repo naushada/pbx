@@ -383,6 +383,72 @@ TEST(SipBridge, OnTunnel_AgentHello_FiresHandlerWithPayload)
     EXPECT_EQ(R"({"societyId":"soc1"})", captured);
 }
 
+// ── ASTERISK_STATUS — admin connectivity chip ─────────────────────────────
+
+TEST(SipBridge, OnTunnel_AsteriskStatus_UpdatesCachedFlag)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    // Default is false (cold start).
+    EXPECT_FALSE(bridge.asterisk_connected());
+
+    // Agent reports Asterisk is up.
+    bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::ASTERISK_STATUS, 0, R"({"connected":true})"));
+    EXPECT_TRUE(bridge.asterisk_connected());
+
+    // Agent reports Asterisk went down.
+    bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::ASTERISK_STATUS, 0, R"({"connected":false})"));
+    EXPECT_FALSE(bridge.asterisk_connected());
+}
+
+TEST(SipBridge, OnTunnel_AsteriskStatus_FiresOptionalHandlerWithPayload)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    std::string captured;
+    bridge.set_asterisk_status_handler(
+        [&captured](const std::string &p) { captured = p; });
+
+    bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::ASTERISK_STATUS, 0, R"({"connected":true})"));
+    EXPECT_EQ(R"({"connected":true})", captured);
+}
+
+TEST(SipBridge, OnTunnel_AsteriskStatus_BadJsonLeavesFlagUntouched)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    // Set the flag true via a valid frame …
+    bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::ASTERISK_STATUS, 0, R"({"connected":true})"));
+    ASSERT_TRUE(bridge.asterisk_connected());
+
+    // … then send garbage. The bridge must NOT flip the flag based on
+    // an unparseable payload — last good signal stands.
+    bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::ASTERISK_STATUS, 0, "not-json"));
+    EXPECT_TRUE(bridge.asterisk_connected());
+}
+
+TEST(SipBridge, OnTunnelDisconnect_ClearsAsteriskFlag)
+{
+    FakeTunnel tun;
+    SipBridge  bridge(&tun);
+
+    bridge.on_tunnel_bytes(SipFrame::encode(
+        SipFrame::Op::ASTERISK_STATUS, 0, R"({"connected":true})"));
+    ASSERT_TRUE(bridge.asterisk_connected());
+
+    // Agent disconnects → the cached "true" no longer reflects reality.
+    bridge.on_tunnel_disconnect();
+    EXPECT_FALSE(bridge.asterisk_connected());
+}
+
 TEST(SipBridge, BootstrapSociety_EmitsSocietyBootstrapFrame)
 {
     FakeTunnel tun;

@@ -491,17 +491,29 @@ TEST(MicroServicePbx, AdminConnectivity_AllUp)
                                         // next_awbno_value non-empty → mongo OK
     const std::string req = make_get("/api/v1/admin/connectivity");
     std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
-        req, db, /*agent_connected=*/true);
+        req, db, /*agent_connected=*/true, /*asterisk_connected=*/true);
     ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
 
     json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
-    EXPECT_EQ(true,  body["agent"]["connected"]);
-    EXPECT_EQ(true,  body["wsdbagent"]["connected"]);
-    EXPECT_EQ(true,  body["mongo"]["connected"]);
-    // Asterisk is a placeholder chip pending an agent→cloud
-    // STATUS_REPORT frame — should render as not-connected + "signal":"pending"
-    EXPECT_EQ(false,    body["asterisk"]["connected"]);
-    EXPECT_EQ("pending",body["asterisk"]["signal"]);
+    EXPECT_EQ(true, body["agent"]["connected"]);
+    EXPECT_EQ(true, body["wsdbagent"]["connected"]);
+    EXPECT_EQ(true, body["mongo"]["connected"]);
+    EXPECT_EQ(true, body["asterisk"]["connected"]);
+    // The legacy `signal` field is gone — Asterisk reachability now
+    // lives in `connected` like every other chip.
+    EXPECT_FALSE(body["asterisk"].contains("signal"));
+}
+
+TEST(MicroServicePbx, AdminConnectivity_AsteriskFlagDefault_False)
+{
+    TestDb db;
+    const std::string req = make_get("/api/v1/admin/connectivity");
+    // Two-arg call (no asterisk_connected) defaults to false — the
+    // safe fallback for any caller that hasn't been updated yet.
+    std::string rsp = MicroServicePbx::handle_admin_connectivity_GET(
+        req, db, /*agent_connected=*/true);
+    json body = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    EXPECT_EQ(false, body["asterisk"]["connected"]);
 }
 
 TEST(MicroServicePbx, AdminConnectivity_AgentDown_WsdbUp)
