@@ -31,15 +31,15 @@ PjsipProvisioner::PjsipProvisioner(IAriRest &rest, std::string sip_realm)
     : m_rest(rest), m_sip_realm(std::move(sip_realm)) {}
 
 void PjsipProvisioner::provision(const std::string &sip_username,
-                                  const std::string &sip_ha1) {
-  if (sip_username.empty() || sip_ha1.empty()) {
-    // Silent no-op was masking misshapen subscriber docs. Surface them
-    // so the dry test makes the gap visible.
+                                  const std::string & /* sip_ha1 */) {
+  // PR #77 dropped digest auth; sip_ha1 is no longer used. Param stays
+  // to keep the SubscriberWatcher call sites untouched. Only sip_username
+  // can block provisioning now — an empty one means the subscriber doc
+  // is genuinely malformed.
+  if (sip_username.empty()) {
     ACE_DEBUG((LM_INFO,
                ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision skipped "
-                        "(sip_username='%s' sip_ha1_empty=%d) — missing field "
-                        "in the subscribers doc\n"),
-               sip_username.c_str(), sip_ha1.empty() ? 1 : 0));
+                        "(empty sip_username) — malformed subscriber doc\n")));
     return;
   }
 
@@ -120,7 +120,6 @@ void PjsipProvisioner::provision(const std::string &sip_username,
                ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision sip_user=%s "
                         "endpoint PUT returned %d body=%s\n"),
                sip_username.c_str(), put_endpoint.status, put_endpoint.body.c_str()));
-  (void)sip_ha1;
 }
 
 void PjsipProvisioner::deprovision(const std::string &sip_username) {

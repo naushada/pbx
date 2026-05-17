@@ -118,17 +118,30 @@ TEST(PjsipProvisioner, Provision_EndpointFieldsMatchTemplate_AndCarryNoAuth)
     EXPECT_EQ("pbx",          ep["context"]);
 }
 
-TEST(PjsipProvisioner, Provision_EmptyInputs_AreNoOps)
+TEST(PjsipProvisioner, Provision_EmptySipUsername_IsNoOp)
 {
     FakeAriRest rest;
     PjsipProvisioner p(rest, "soc1.pbx.local");
 
-    p.provision("",         "ha1");
-    p.provision("u_alice",  "");
+    p.provision("", "ha1");
 
     EXPECT_TRUE(rest.puts.empty())    << "must not push partial state";
     EXPECT_TRUE(rest.deletes.empty()) << "must not even attempt the legacy "
-                                         "auth cleanup for empty inputs";
+                                         "auth cleanup for empty sip_username";
+}
+
+TEST(PjsipProvisioner, Provision_EmptySipHa1_StillProvisions)
+{
+    // PR #77 dropped digest auth — `sip_ha1` is ignored. An empty value
+    // must NOT short-circuit provisioning (the regression that broke
+    // SIP REGISTER for every resident on 2026-05-17, hotfixed here).
+    FakeAriRest rest;
+    PjsipProvisioner p(rest, "soc1.pbx.local");
+
+    p.provision("u_alice", "");  // sip_ha1 deliberately empty
+
+    EXPECT_EQ(2u, rest.puts.size())    << "aor + endpoint PUTs must still happen";
+    EXPECT_EQ(1u, rest.deletes.size()) << "legacy auth DELETE still attempted";
 }
 
 TEST(PjsipProvisioner, Deprovision_DeletesEndpointFirst_ThenAuthAndAor)
