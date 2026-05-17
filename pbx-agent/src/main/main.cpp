@@ -449,6 +449,16 @@ int main(int argc, char *argv[]) {
         connector.send_frame(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
       });
 
+  // AriClient's reachability probe (driven by publish_register_snapshot,
+  // which already runs on every tunnel reconnect) → cloud admin
+  // connectivity chip via an ASTERISK_STATUS SipFrame. Costs zero new
+  // periodic work — piggybacks on the existing ARI GET. Stream-id 0.
+  ari_client.set_asterisk_status_handler(
+      [&](bool connected) {
+        const nlohmann::json payload = {{"connected", connected}};
+        connector.send_frame(SipFrame::Op::ASTERISK_STATUS, 0, payload.dump());
+      });
+
   // After every (re)connect to the cloud:
   //   1. Send AGENT_HELLO {societyId} so the cloud knows which society
   //      this connection represents. Cloud responds with SOCIETY_BOOTSTRAP

@@ -756,6 +756,69 @@ TEST(AriClient, PublishRegisterSnapshot_BadJson_NoHandlerCalls)
     EXPECT_EQ(0, hits);
 }
 
+// ── publish_register_snapshot — asterisk-status emission ───────────────────
+
+TEST(AriClient, PublishRegisterSnapshot_FiresAsteriskStatusTrueOn2xx)
+{
+    FakeAriRest rest;
+    rest.list_endpoints_response = {200, pjsip_endpoint_list({})};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    std::vector<bool> status_hits;
+    c.set_asterisk_status_handler(
+        [&status_hits](bool connected) { status_hits.push_back(connected); });
+
+    c.publish_register_snapshot();
+
+    ASSERT_EQ(1u, status_hits.size());
+    EXPECT_TRUE(status_hits[0]);
+}
+
+TEST(AriClient, PublishRegisterSnapshot_FiresAsteriskStatusFalseOnAriError)
+{
+    FakeAriRest rest;
+    rest.list_endpoints_response = {503, "Service Unavailable"};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    std::vector<bool> status_hits;
+    c.set_asterisk_status_handler(
+        [&status_hits](bool connected) { status_hits.push_back(connected); });
+
+    c.publish_register_snapshot();
+
+    ASSERT_EQ(1u, status_hits.size());
+    EXPECT_FALSE(status_hits[0])
+        << "any non-2xx (including 0 for transport failure) is reported "
+        << "as disconnected — same safe default the chip renders for "
+        << "agent-down.";
+}
+
+TEST(AriClient, PublishRegisterSnapshot_AsteriskStatusFiresEvenWithoutRegisterHandler)
+{
+    // The two handlers are independent — operators can wire only the
+    // asterisk-status one (e.g. a future deploy that runs admin chips
+    // without presence) and the ARI probe still happens.
+    FakeAriRest rest;
+    rest.list_endpoints_response = {200, pjsip_endpoint_list({{"u_a", "online"}})};
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    bool fired = false;
+    c.set_asterisk_status_handler(
+        [&fired](bool) { fired = true; });
+    // Deliberately NOT setting the register-state handler.
+
+    c.publish_register_snapshot();
+
+    EXPECT_TRUE(fired);
+    ASSERT_EQ(1u, rest.list_endpoint_techs.size());
+}
+
 TEST(AriClient, PublishRegisterSnapshot_SkipsNonPjsipAndEmptyResource)
 {
     FakeAriRest rest;

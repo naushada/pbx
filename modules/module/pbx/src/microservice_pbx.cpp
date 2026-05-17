@@ -371,7 +371,8 @@ std::string handle_admin_subscribers_GET(const std::string &req,
 
 std::string handle_admin_connectivity_GET(const std::string & /*req*/,
                                           IMongodbClient &db,
-                                          bool agent_connected) {
+                                          bool agent_connected,
+                                          bool asterisk_connected) {
   // Mongo health: if remote-DB mode is on, the only way the cloud
   // sees Mongo is through the wsdbagent tunnel, so Mongo can never
   // be healthier than the tunnel itself. We additionally fire a
@@ -390,13 +391,16 @@ std::string handle_admin_connectivity_GET(const std::string & /*req*/,
     }
   }
 
+  // Asterisk reachability comes from the agent's ARI probe, cached on
+  // the SipBridge from each `ASTERISK_STATUS` frame the agent emits.
+  // The dispatcher passes the latest value in @p asterisk_connected;
+  // when the cache is cold (no frame ever received), the caller passes
+  // false and the chip renders disconnected — same as agent-down.
   const json body = {
       {"agent",     {{"connected", agent_connected}}},
       {"wsdbagent", {{"connected", !db.is_remote_disconnected()}}},
       {"mongo",     {{"connected", mongo_connected}}},
-      // Asterisk needs an agent→cloud STATUS_REPORT frame (separate
-      // PR). Placeholder for the UI; renders as "no signal yet".
-      {"asterisk",  {{"connected", false}, {"signal", "pending"}}},
+      {"asterisk",  {{"connected", asterisk_connected}}},
   };
   return http_response(200, "OK", body.dump());
 }

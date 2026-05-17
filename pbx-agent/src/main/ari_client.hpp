@@ -192,6 +192,16 @@ public:
       const std::string &sip_username, bool online)>;
   void set_register_state_handler(RegisterStateHandler h);
 
+  /// Install a callback fired with the agent's view of whether Asterisk
+  /// is reachable via ARI. Production wires this to a
+  /// `CloudConnector::send_frame` emitting an `ASTERISK_STATUS` SipFrame
+  /// so the cloud's admin connectivity chip can render a real signal
+  /// instead of the hardcoded "pending" placeholder; tests substitute a
+  /// recorder. Driven by the same `list_endpoints` ARI round-trip that
+  /// powers `publish_register_snapshot()` — costs zero new periodic work.
+  using AsteriskStatusHandler = std::function<void(bool connected)>;
+  void set_asterisk_status_handler(AsteriskStatusHandler h);
+
   /// Refresh the cloud's presence cache with the agent's current view
   /// of every PJSIP endpoint. Calls `GET /ari/endpoints/PJSIP`, then
   /// drives `m_register_state_handler` once per endpoint. Idempotent —
@@ -246,7 +256,8 @@ private:
   std::unordered_map<std::string, ChannelCtx> m_channels;
   std::unordered_map<std::string, BridgeCtx>  m_bridges;
 
-  RegisterStateHandler m_register_state_handler;
+  RegisterStateHandler  m_register_state_handler;
+  AsteriskStatusHandler m_asterisk_status_handler;
 };
 
 #endif // ARI_CLIENT_HPP

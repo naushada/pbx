@@ -76,6 +76,13 @@ TEST(SipFrame, SerializeRoundTrip_SocietyBootstrap)
                       R"({"societyId":"soc1","sipRealm":"acme.pbx.local"})");
 }
 
+TEST(SipFrame, SerializeRoundTrip_AsteriskStatus)
+{
+    // agent → cloud asterisk health: stream-id unused (0), JSON payload.
+    expect_round_trip(Op::ASTERISK_STATUS, 0, R"({"connected":true})");
+    expect_round_trip(Op::ASTERISK_STATUS, 0, R"({"connected":false})");
+}
+
 // ── Error paths ───────────────────────────────────────────────────────────────
 
 TEST(SipFrame, RejectsBadVersion)

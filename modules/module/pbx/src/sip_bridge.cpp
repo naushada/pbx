@@ -71,6 +71,10 @@ void SipBridge::on_tunnel_disconnect() {
   m_browsers.clear();
   m_recv_buffer.clear();
   m_tunnel = nullptr;
+  // Drop the agent-reported Asterisk flag — the agent is gone, so its
+  // last "true" no longer reflects reality. Chip renders disconnected
+  // until the next ASTERISK_STATUS arrives from the next agent.
+  m_asterisk_connected = false;
 }
 
 void SipBridge::set_tunnel(TunnelSink *tunnel) {
@@ -130,6 +134,19 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
     // bootstrap_society()), it never receives one. Drop if the agent
     // echoes it back.
     return;
+  case Op::ASTERISK_STATUS: {
+    // Update the cached flag BEFORE invoking the handler, so a
+    // production handler that reads `asterisk_connected()` sees the
+    // fresh value. Bad JSON leaves the flag untouched — the chip
+    // continues to show the last good signal until the next probe.
+    try {
+      const auto j = json::parse(f.payload);
+      if (j.contains("connected") && j["connected"].is_boolean())
+        m_asterisk_connected = j["connected"].get<bool>();
+    } catch (...) { /* swallow */ }
+    if (m_asterisk_status_handler) m_asterisk_status_handler(f.payload);
+    return;
+  }
   }
 }
 
@@ -147,6 +164,10 @@ void SipBridge::set_register_state_handler(RegisterStateHandler h) {
 
 void SipBridge::set_agent_hello_handler(AgentHelloHandler h) {
   m_agent_hello_handler = std::move(h);
+}
+
+void SipBridge::set_asterisk_status_handler(AsteriskStatusHandler h) {
+  m_asterisk_status_handler = std::move(h);
 }
 
 void SipBridge::bootstrap_society(const std::string &society_id,
