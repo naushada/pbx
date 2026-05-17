@@ -8,7 +8,12 @@
 #   ./deploy-heroku.sh login            # authenticate with registry.heroku.com
 #
 #   # Cloud (C++ webservice + SIP bridge) — defaults to HEROKU_APP=pabx
+#   ./deploy-heroku.sh build-bootstrap  # build the amd64 toolchain image
+#                                       # (auto-invoked by `build` when missing;
+#                                       # run standalone to pre-warm the cache,
+#                                       # e.g. after `podman image prune`)
 #   ./deploy-heroku.sh build            # build cloud image only
+#                                       # (auto-invokes build-bootstrap if needed)
 #   ./deploy-heroku.sh push             # push cloud image
 #   ./deploy-heroku.sh release          # release the cloud image
 #   ./deploy-heroku.sh deploy           # build + push + release (cloud)
@@ -38,6 +43,8 @@ COMPOSE_FILE="docker-compose.heroku.yml"
 
 CLOUD_TAG="registry.heroku.com/${HEROKU_APP}/${PROCESS}"
 UI_TAG="registry.heroku.com/${HEROKU_APP_UI}/${PROCESS}"
+BOOTSTRAP_TAG="localhost/pbx-cpp-builder:bootstrap"
+BOOTSTRAP_DOCKERFILE="docker/Dockerfile.bootstrap"
 
 log() { printf '\033[1;34m[deploy-heroku]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[deploy-heroku] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -54,9 +61,47 @@ cmd_login() {
   heroku auth:token | podman login --username=_ --password-stdin registry.heroku.com
 }
 
+# Ensure `localhost/pbx-cpp-builder:bootstrap` exists locally as amd64.
+# Dockerfile.cloud's first stage starts with
+#   FROM localhost/pbx-cpp-builder:bootstrap
+# — if that image is missing OR wrong arch, podman tries to pull from a
+# "localhost" registry and fails with "connection refused". Catching it
+# here turns the silent-30-min-into-a-cryptic-error into a one-shot
+# bootstrap on the first deploy after a prune.
+cmd_build_bootstrap() {
+  local need_build=0 reason=""
+  local existing_arch
+  existing_arch=$(podman image inspect "$BOOTSTRAP_TAG" \
+                    --format '{{.Architecture}}' 2>/dev/null || echo "")
+  if [ -z "$existing_arch" ]; then
+    need_build=1; reason="not present on host"
+  elif [ "$existing_arch" != "amd64" ]; then
+    need_build=1; reason="host bootstrap is $existing_arch but Heroku needs amd64"
+  fi
+
+  if [ "$need_build" = "0" ]; then
+    log "$BOOTSTRAP_TAG already on host (amd64) — skipping bootstrap build"
+    return 0
+  fi
+
+  log "$BOOTSTRAP_TAG missing or wrong arch ($reason) — building (~30 min cold, via QEMU)"
+  [ -f "$BOOTSTRAP_DOCKERFILE" ] \
+    || die "$BOOTSTRAP_DOCKERFILE not found — are you in the repo root?"
+  podman build \
+    --platform linux/amd64 \
+    -f "$BOOTSTRAP_DOCKERFILE" \
+    -t "$BOOTSTRAP_TAG" \
+    .
+  log "$BOOTSTRAP_TAG built — cached for every subsequent cmd_build"
+}
+
 # ── cloud ─────────────────────────────────────────────────────────────
 
 cmd_build() {
+  # Bootstrap first — Dockerfile.cloud's FROM line depends on it.
+  # No-op when already present at the right arch.
+  cmd_build_bootstrap
+
   log "building $CLOUD_TAG (--platform linux/amd64; Heroku Common Runtime is amd64-only)"
   # Direct `podman build` rather than `podman-compose build` — compose
   # tries to pull `localhost/pbx-cpp-builder:bootstrap` from a registry
@@ -150,18 +195,19 @@ cmd_logs_ui() { heroku logs --tail --app "$HEROKU_APP_UI"; }
 cmd_deploy_all() { cmd_deploy; cmd_deploy_ui; }
 
 case "${1:-deploy}" in
-  login)        cmd_login         ;;
-  build)        cmd_build         ;;
-  push)         cmd_push          ;;
-  release)      cmd_release       ;;
-  deploy)       cmd_deploy        ;;
-  build-ui)     cmd_build_ui      ;;
-  push-ui)      cmd_push_ui       ;;
-  release-ui)   cmd_release_ui    ;;
-  deploy-ui)    cmd_deploy_ui     ;;
-  deploy-all)   cmd_deploy_all    ;;
-  logs)         cmd_logs          ;;
-  logs-ui)      cmd_logs_ui       ;;
-  open)         cmd_open          ;;
-  *)            die "unknown command: $1 (try login | build | push | release | deploy | build-ui | push-ui | release-ui | deploy-ui | deploy-all | logs | logs-ui | open)" ;;
+  login)            cmd_login           ;;
+  build-bootstrap)  cmd_build_bootstrap ;;
+  build)            cmd_build           ;;
+  push)             cmd_push            ;;
+  release)          cmd_release         ;;
+  deploy)           cmd_deploy          ;;
+  build-ui)         cmd_build_ui        ;;
+  push-ui)          cmd_push_ui         ;;
+  release-ui)       cmd_release_ui      ;;
+  deploy-ui)        cmd_deploy_ui       ;;
+  deploy-all)       cmd_deploy_all      ;;
+  logs)             cmd_logs            ;;
+  logs-ui)          cmd_logs_ui         ;;
+  open)             cmd_open            ;;
+  *)                die "unknown command: $1 (try login | build-bootstrap | build | push | release | deploy | build-ui | push-ui | release-ui | deploy-ui | deploy-all | logs | logs-ui | open)" ;;
 esac
