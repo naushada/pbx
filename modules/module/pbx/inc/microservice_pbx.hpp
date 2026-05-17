@@ -61,8 +61,16 @@ std::string handle_society_detail_GET(const std::string &req,
 /// `portalPasswordHash`, `sipHa1` — those never leave the server.
 /// 400 if `societyId` missing; same db_available() H12 guard as the
 /// other list GETs (returns `[]` + 200 when no DB is configured).
+///
+/// `online` is grafted onto every row from @p presence (the cloud-side
+/// `IPresenceCache`, populated by the agent's REGISTER_STATE frames).
+/// `nullptr` → no `online` field is emitted (legacy callers / routing
+/// tests). With a cache the field is always present (true or false).
+/// This is what backs the dashboard's "online now" tile without
+/// adding a sibling endpoint.
 std::string handle_admin_subscribers_GET(const std::string &req,
-                                         IMongodbClient &db);
+                                         IMongodbClient &db,
+                                         const IPresenceCache *presence = nullptr);
 
 /// GET /api/v1/admin/connectivity
 /// Live cloud-side view of the on-prem peers' transport health.

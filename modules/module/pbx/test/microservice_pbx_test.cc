@@ -406,6 +406,81 @@ TEST(MicroServicePbx, AdminSubscribers_FullRowKeepsAdminFields_StripsSecrets)
     // Admin row shows up alongside residents.
     EXPECT_EQ("admin", arr[1]["role"]);
     EXPECT_EQ("ADMIN", arr[1]["flatNumber"]);
+
+    // No presence cache passed → no `online` field grafted (the legacy
+    // 2-arg call shape stays byte-identical for callers that don't have
+    // a cache wired).
+    EXPECT_FALSE(arr[0].contains("online"));
+    EXPECT_FALSE(arr[1].contains("online"));
+}
+
+TEST(MicroServicePbx, AdminSubscribers_GraftsOnlineFromPresenceCache)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({
+        {{"_id", "sub_1"}, {"societyId", "s1"},
+         {"flatNumber", "A-101"}, {"name", "Asha"}, {"role", "resident"},
+         {"status", "active"}, {"sipUsername", "u_alice"}},     // online
+        {{"_id", "sub_2"}, {"societyId", "s1"},
+         {"flatNumber", "A-102"}, {"name", "Bea"},  {"role", "resident"},
+         {"status", "active"}, {"sipUsername", "u_bea"}},       // never seen → false
+        {{"_id", "sub_3"}, {"societyId", "s1"},
+         {"flatNumber", "ADMIN"}, {"name", "Admin"}, {"role", "admin"},
+         {"status", "active"}, {"sipUsername", "admin-s1"}},    // explicitly false
+    });
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    InMemoryPresenceCache presence;
+    presence.set("s1", "u_alice",  true);
+    presence.set("s1", "admin-s1", false);
+    // u_bea never seen — must default to offline.
+
+    const std::string req = make_get("/api/v1/admin/subscribers?societyId=s1");
+    std::string rsp = MicroServicePbx::handle_admin_subscribers_GET(
+        req, db, &presence);
+    ASSERT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
+
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(3u, arr.size());
+
+    auto online_for = [&](const std::string &flat) {
+        for (const auto &r : arr)
+            if (r["flatNumber"] == flat) return r["online"].get<bool>();
+        ADD_FAILURE() << "no row for " << flat; return false;
+    };
+    EXPECT_TRUE (online_for("A-101"));
+    EXPECT_FALSE(online_for("A-102"));
+    EXPECT_FALSE(online_for("ADMIN"));
+
+    // Secrets still stripped even with a presence cache wired — the cache
+    // is additive, not a re-projection.
+    EXPECT_FALSE(arr[0].contains("portalPasswordHash"));
+    EXPECT_FALSE(arr[0].contains("sipHa1"));
+}
+
+TEST(MicroServicePbx, AdminSubscribers_OnlineIsScopedBySocietyId)
+{
+    DbAvailableEnv db_env;
+    TestDb db;
+    json rows = json::array({
+        {{"_id", "sub_1"}, {"societyId", "s1"},
+         {"flatNumber", "A-101"}, {"name", "Asha"}, {"role", "resident"},
+         {"status", "active"}, {"sipUsername", "u_alice"}},
+    });
+    db.getDocs["subscribers"].push_back({R"("societyId":"s1")", rows.dump()});
+
+    // Cache has u_alice online under a DIFFERENT society — must NOT
+    // bleed into our s1 lookup.
+    InMemoryPresenceCache presence;
+    presence.set("other-society", "u_alice", true);
+
+    const std::string req = make_get("/api/v1/admin/subscribers?societyId=s1");
+    std::string rsp = MicroServicePbx::handle_admin_subscribers_GET(
+        req, db, &presence);
+    json arr = json::parse(rsp.substr(rsp.find("\r\n\r\n") + 4));
+    ASSERT_EQ(1u, arr.size());
+    EXPECT_FALSE(arr[0]["online"]);
 }
 
 // ── Admin connectivity probe ─────────────────────────────────────────────────
