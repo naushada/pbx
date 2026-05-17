@@ -11,7 +11,15 @@
 # ============================================================
 # Stage 1: build the binary using the cached toolchain.
 # ============================================================
-FROM localhost/pbx-cpp-builder:bootstrap AS cpp-builder
+# BUILDER_IMAGE overrides the FROM tag so the same Dockerfile works
+# in three contexts:
+#   - dev: localhost/pbx-cpp-builder:bootstrap (built by lima.sh)
+#   - CI:  docker.io/naushada/pbx-cpp-builder:bootstrap (multi-arch
+#          image the publish workflow builds first)
+#   - prod society install: same as CI — install.sh pulls the
+#     pre-built image via docker-compose `image:` references.
+ARG BUILDER_IMAGE=localhost/pbx-cpp-builder:bootstrap
+FROM ${BUILDER_IMAGE} AS cpp-builder
 
 WORKDIR /src
 COPY CMakeLists.txt /src/

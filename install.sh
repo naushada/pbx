@@ -24,9 +24,10 @@
 #   6. Generates the Asterisk DTLS cert + coturn config via
 #      scripts/setup-society.sh.
 #   7. Writes /opt/onprem-pbx/.env so podman-compose has the knobs.
-#   8. `podman-compose -f docker-compose.agent.yml up --build -d` —
-#      builds + brings up all six containers. First run is ~30 min
-#      while the C++ toolchain compiles inside the build container.
+#   8. Pulls pre-built images from Docker Hub
+#      (`docker.io/naushada/onprem-pbx-{agent,wsdbagent}:latest` + the
+#      upstream mongo/asterisk/coturn/alpine images), then
+#      `podman-compose up -d`. Total ~3-5 min depending on bandwidth.
 #   9. Installs the systemd unit (scripts/install-systemd.sh) so the
 #      stack restarts on boot.
 #  10. Verifies: container status + a quick agent-log peek for the
@@ -46,11 +47,6 @@
 # Re-running this script is safe — every step is idempotent. The
 # images, the systemd unit, and the on-prem Mongo data all survive
 # a re-run.
-#
-# v2 plan (not in this release): once `docker.io/naushada/onprem-pbx-*`
-# images are published, swap the `up --build` step for `up` against
-# pre-built images. Cuts the first-install time from ~30 min to ~5
-# min. See `reference_image_registry` memory.
 
 set -euo pipefail
 
@@ -237,9 +233,18 @@ chmod 600 "$INSTALL_DIR/.env"
 ok "Wrote $INSTALL_DIR/.env"
 
 # ── 8. Bring the stack up ──────────────────────────────────────────
-step "Building + starting containers (first run is ~30 minutes — this is normal)"
-warn "Don't close this terminal. The C++ toolchain compiles inside one of the build containers."
-podman-compose -f "$COMPOSE_FILE" up --build -d \
+step "Pulling pre-built images from Docker Hub (~3-5 minutes)"
+# Pulls docker.io/naushada/onprem-pbx-{agent,wsdbagent}:latest +
+# upstream mongo/asterisk/coturn/alpine. CI publishes the two on-prem
+# images via .github/workflows/publish-images.yml on every push to
+# main. If the pull fails (network outage, registry maintenance), the
+# next `up -d` won't recreate the containers — operator can retry.
+podman-compose -f "$COMPOSE_FILE" pull \
+  || die "podman-compose pull failed. Check internet, then retry: \`sudo ./install.sh\`."
+ok "Images pulled"
+
+step "Starting containers"
+podman-compose -f "$COMPOSE_FILE" up -d \
   || die "podman-compose up failed. Run \`podman-compose -f $COMPOSE_FILE logs\` to see why."
 ok "Containers started"
 

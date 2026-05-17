@@ -126,7 +126,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.agent
-    image: localhost/onprem-pbx-agent:latest
+    # docker.io tag so install.sh on the society side pulls a pre-built
+    # image. Local dev (lima.sh) still uses `up --build`, which builds
+    # a fresh image and tags it under the same name — both flows
+    # converge on the same image label.
+    image: docker.io/naushada/onprem-pbx-agent:latest
     container_name: pbx-agent
     restart: unless-stopped
     depends_on:
@@ -167,7 +171,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.wsdbagent
-    image: localhost/onprem-pbx-wsdbagent:latest
+    # See pbx-agent above for the local/registry tag-convergence note.
+    image: docker.io/naushada/onprem-pbx-wsdbagent:latest
     container_name: pbx-wsdbagent
     restart: unless-stopped
     depends_on:

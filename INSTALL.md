@@ -32,10 +32,9 @@ probably looking for [`README.md`](README.md) or
      production deployment).
    - **Cert tarball path** — the path to the `.tar.gz` file your dev
      team sent you (e.g. `/tmp/SUNSET-certs.tar.gz`).
-5. Wait. The first run is **~30 minutes** because the installer
-   compiles a C++ toolchain inside one of the containers. Subsequent
-   runs reuse the cache and finish in seconds. **Don't close the
-   terminal.**
+5. Wait. The installer pulls pre-built container images from Docker
+   Hub (~3–5 minutes on a typical connection). Subsequent runs finish
+   in seconds. **Don't close the terminal.**
 6. When the installer prints the green box, the stack is up and will
    restart automatically when the machine reboots.
 
@@ -88,7 +87,7 @@ Run on your dev machine after `./deploy-heroku.sh deploy`:
 | `Couldn't resolve pabx-…herokuapp.com`                 | DNS or internet is broken on this machine. Check `ping 8.8.8.8` then `nslookup`.                |
 | `Can't find the cert tarball`                          | Mistyped path. Use tab-completion in the prompt.                                                |
 | pbx-agent doesn't show `inner-TLS handshake`           | Cert tarball is wrong society OR is stale. Get a fresh one from the dev team.                   |
-| Installer hangs in "Building containers" past 45 min   | First-run compile timed out due to low RAM. Free up RAM or use a beefier machine, then re-run.  |
+| `podman-compose pull failed` in step 8                 | Internet to Docker Hub is blocked. Check `curl -I https://docker.io` then retry the installer.  |
 
 If something else goes wrong, run this and email the output to your
 dev team:
