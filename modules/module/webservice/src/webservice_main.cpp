@@ -143,7 +143,13 @@ void print_usage(const char *prog) {
 
 int main(int argc, char *argv[]) {
   ACE_LOG_MSG->open(argv[0], ACE_LOG_MSG->STDERR | ACE_LOG_MSG->SYSLOG);
-  ACE_LOG_MSG->priority_mask(LM_CRITICAL | LM_ERROR | LM_DEBUG,
+  // ACE log levels are independent bits — you have to OR every one
+  // you want to see. LM_INFO + LM_WARNING were missing for months,
+  // which silently dropped every ACE_DEBUG((LM_INFO, ...)) line —
+  // the entire observability story of PRs #80, #85, #88 was
+  // invisible until this fix. Match pbx-agent's mask shape.
+  ACE_LOG_MSG->priority_mask(LM_CRITICAL | LM_ERROR | LM_WARNING |
+                              LM_DEBUG | LM_INFO,
                              ACE_Log_Msg::PROCESS);
 
   std::array<std::string, N> opt{};

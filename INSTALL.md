@@ -26,12 +26,13 @@ probably looking for [`README.md`](README.md) or
    sudo ./install.sh
    ```
 
-4. Answer three prompts:
-   - **Society code** — e.g. `SUNSET`.
-   - **Cloud hostname** — press Enter to accept the default (the
-     production deployment).
-   - **Cert tarball path** — the path to the `.tar.gz` file your dev
-     team sent you (e.g. `/tmp/SUNSET-certs.tar.gz`).
+4. Answer six prompts:
+   - **Society code** — a short label, e.g. `SUNSET`. Letters/digits/dash/underscore only. Hard to change later — pick once.
+   - **Cloud hostname** — press Enter to accept the default (the production deployment).
+   - **Cert tarball path** — the path to the `.tar.gz` file your dev team sent you (e.g. `/tmp/SUNSET-certs.tar.gz`).
+   - **Society's full name** — for the admin UI label, e.g. `Sunset Towers`.
+   - **Admin email** — for the first ADMIN subscriber, e.g. `admin@sunset.example`.
+   - **Admin password** — typed silently. This becomes the password the operator uses to log into the admin UI.
 5. Wait. The installer pulls pre-built container images from Docker
    Hub (~3–5 minutes on a typical connection). Subsequent runs finish
    in seconds. **Don't close the terminal.**

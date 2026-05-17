@@ -16,9 +16,11 @@
 #   2. Installs podman + podman-compose + openssl + jq via apt
 #      (skipped if already present).
 #   3. Prompts for:
-#        - society code (e.g. SUNSET)
+#        - society code (a short label, e.g. SUNSET)
 #        - cloud hostname (defaults to the production deployment)
 #        - path to the cert tarball your dev team gave you
+#        - society's full name (for the Mongo `societies.name` field)
+#        - first ADMIN email + password (silent input)
 #   4. Copies the repo to /opt/onprem-pbx (the canonical install dir).
 #   5. Unpacks the cert tarball into certs/cloud-issued/.
 #   6. Generates the Asterisk DTLS cert + coturn config via
@@ -28,6 +30,11 @@
 #      (`docker.io/naushada/onprem-pbx-{agent,wsdbagent}:latest` + the
 #      upstream mongo/asterisk/coturn/alpine images), then
 #      `podman-compose up -d`. Total ~3-5 min depending on bandwidth.
+#   9b. Waits for Mongo's replica set to come up, then `podman exec
+#       pbx-mongo mongosh` to upsert the society + ADMIN subscriber.
+#       Without this, cloud login returns 401 for everything (the
+#       cloud's strict-mode lookup finds no rows). The ADMIN password
+#       is PBKDF2-SHA256-hashed locally, never sent over the wire.
 #   9. Installs the systemd unit (scripts/install-systemd.sh) so the
 #      stack restarts on boot.
 #  10. Verifies: container status + a quick agent-log peek for the
@@ -40,6 +47,9 @@
 #
 # Non-interactive (CI / unattended re-runs):
 #   sudo SOCIETY_CODE=SUNSET \
+#        SOCIETY_NAME='Sunset Towers' \
+#        ADMIN_EMAIL=admin@sunset.example \
+#        ADMIN_PASSWORD='choose-something' \
 #        CLOUD_HOST=pabx-5fbf3550f938.herokuapp.com \
 #        CERTS_TARBALL=/tmp/sunset-certs.tar.gz \
 #        ./install.sh
@@ -136,7 +146,7 @@ if [[ -f "$SENT_APT" ]]; then
 else
   DEBIAN_FRONTEND=noninteractive apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    podman podman-compose openssl jq curl ca-certificates rsync \
+    podman podman-compose openssl jq curl ca-certificates rsync python3 \
     || die "apt-get install failed. Check your internet connection and try again."
   # Stock Ubuntu podman ships with `unqualified-search-registries` empty;
   # set it so bare `mongo:7` / `coturn/coturn:4.6` short-name pulls
@@ -171,9 +181,35 @@ fi
 [[ -f "$CERTS_TARBALL" ]] \
   || die "Can't find the cert tarball at: $CERTS_TARBALL"
 
+# Society's full name + first admin credentials — used to seed
+# the on-prem Mongo so login works on first install. Prompts
+# skipped when env vars are set (unattended re-runs).
+if [[ -z "${SOCIETY_NAME:-}" ]]; then
+  ask "Society's full name (e.g. 'Maple Heights'):"
+  read -r SOCIETY_NAME
+fi
+[[ -n "$SOCIETY_NAME" ]] || die "Society name cannot be empty."
+
+if [[ -z "${ADMIN_EMAIL:-}" ]]; then
+  ask "Admin email (for the first ADMIN subscriber):"
+  read -r ADMIN_EMAIL
+fi
+[[ -n "$ADMIN_EMAIL" ]] || die "Admin email cannot be empty."
+
+if [[ -z "${ADMIN_PASSWORD:-}" ]]; then
+  ask "Admin password (typed silently):"
+  stty -echo
+  read -r ADMIN_PASSWORD
+  stty echo
+  printf '\n'
+fi
+[[ -n "$ADMIN_PASSWORD" ]] || die "Admin password cannot be empty."
+
 ok "Society code  = $SOCIETY_CODE"
+ok "Society name  = $SOCIETY_NAME"
 ok "Cloud host    = $CLOUD_HOST"
 ok "Cert tarball  = $CERTS_TARBALL"
+ok "Admin email   = $ADMIN_EMAIL"
 
 # ── 4. Stage repo into INSTALL_DIR ──────────────────────────────────
 step "Installing onprem-pbx into ${INSTALL_DIR}"
@@ -270,6 +306,74 @@ if podman logs pbx-wsdbagent 2>&1 | grep -q "session started"; then
 else
   warn "pbx-wsdbagent doesn't yet show 'session started'. Check: podman logs pbx-wsdbagent | tail -50"
 fi
+
+# ── 9b. Seed society + ADMIN in Mongo ───────────────────────────────
+# Without this the cloud's login returns 401 "Invalid credentials"
+# for everything (because the strict-mode lookup finds no society +
+# subscriber rows). Idempotent — re-running with the same code +
+# email + password just overwrites the same upsert key.
+step "Seeding society + ADMIN row in Mongo"
+
+# Wait for the replica set to be initialised (the compose healthcheck
+# runs `rs.initiate` but it can race with this script). 20 tries × 3 s =
+# 60 s budget. If it never goes ok, the upsert below will fail with a
+# loud Mongo error rather than silently proceed.
+for i in $(seq 1 20); do
+  if podman exec pbx-mongo mongosh --quiet --eval 'rs.status().ok' 2>/dev/null \
+       | grep -q '^1$'; then
+    break
+  fi
+  sleep 3
+done
+
+# PBKDF2-SHA256 with 600 000 iterations — same shape MongodbClient::
+# hash_password emits server-side, so cloud verify_password accepts
+# the resulting hash without any further translation.
+PORTAL_HASH=$(PASSWORD="$ADMIN_PASSWORD" python3 - <<'PY'
+import os, base64, hashlib
+pw   = os.environ['PASSWORD'].encode()
+salt = os.urandom(16)
+key  = hashlib.pbkdf2_hmac('sha256', pw, salt, 600_000, dklen=32)
+print(f"$pbkdf2-sha256$i=600000${base64.b64encode(salt).decode()}${base64.b64encode(key).decode()}")
+PY
+)
+# Escape literal $ so mongosh's heredoc doesn't treat them as JS template
+# interpolation triggers.
+ESC_HASH=$(printf '%s' "$PORTAL_HASH" | sed 's/\$/\\$/g')
+
+podman exec pbx-mongo mongosh --quiet --eval "
+  db = db.getSiblingDB('${DEFAULT_MONGO_DB}');
+  db.societies.replaceOne(
+    { _id: '$SOCIETY_CODE' },
+    {
+      _id:      '$SOCIETY_CODE',
+      code:     '$SOCIETY_CODE',
+      name:     '$SOCIETY_NAME',
+      sipRealm: '$SOCIETY_CODE.pbx.local',
+    },
+    { upsert: true }
+  );
+  db.subscribers.replaceOne(
+    { _id: 'sub-$SOCIETY_CODE-ADMIN' },
+    {
+      _id:                'sub-$SOCIETY_CODE-ADMIN',
+      societyId:          '$SOCIETY_CODE',
+      flatNumber:         'ADMIN',
+      name:               'Society Admin',
+      email:              '$ADMIN_EMAIL',
+      role:               'admin',
+      status:             'active',
+      sipUsername:        'admin-$SOCIETY_CODE',
+      portalPasswordHash: '$ESC_HASH',
+      createdAt:          new Date(),
+    },
+    { upsert: true }
+  );
+  print('societies:',  db.societies.countDocuments({}));
+  print('subscribers:', db.subscribers.countDocuments({}));
+" >/dev/null \
+  || die "Mongo seeding failed. Stack is up but no ADMIN row exists. Check: sudo podman logs pbx-mongo | tail -50"
+ok "Seeded society '$SOCIETY_CODE' + ADMIN ($ADMIN_EMAIL)"
 
 # ── 10. Make it survive reboot ──────────────────────────────────────
 step "Installing systemd unit (so the stack auto-starts on reboot)"
