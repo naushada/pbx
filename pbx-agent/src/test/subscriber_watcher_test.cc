@@ -218,10 +218,13 @@ TEST(SubscriberWatcher, Bootstrap_ProvisionsActive_DeprovisionsDisabled)
 
     // alice active → 2 PUTs (aor + endpoint; auth dropped by PR #77)
     //                + 1 DELETE (legacy auth cleanup).
-    // bob   disabled → 3 DELETEs (endpoint-first, then auth, then aor).
+    // bob   disabled → 4 DELETEs (endpoint, legacy auth, current aor `<user>`,
+    //                  legacy aor `<user>-aor` — the legacy-aor cleanup
+    //                  was added in PR #103 to prune pre-fix astdb rows
+    //                  across upgrades).
     EXPECT_EQ(2u, rest.puts.size());
     EXPECT_EQ("u_alice", rest.puts[1].id);  // endpoint id (was index 2 pre-#77)
-    EXPECT_EQ(4u, rest.deletes.size());
+    EXPECT_EQ(5u, rest.deletes.size());
     // alice's auth-cleanup precedes bob's full deprovision in iteration order.
     EXPECT_EQ("u_alice-auth", rest.deletes[0].id);
     EXPECT_EQ("u_bob",        rest.deletes[1].id);  // bob's endpoint-first delete
@@ -304,7 +307,7 @@ TEST(SubscriberWatcher, Event_Update_Disabled_Deprovisions)
     SubscriberWatcherTestAccess::deliver(w, event("update", doc));
 
     EXPECT_TRUE(rest.puts.empty());
-    EXPECT_EQ(3u, rest.deletes.size());
+    EXPECT_EQ(4u, rest.deletes.size());  // endpoint + auth + aor + legacy aor
     EXPECT_EQ("u_dan", rest.deletes[0].id);
 }
 
@@ -325,7 +328,7 @@ TEST(SubscriberWatcher, Event_Delete_UsesCachedSipUsername)
     del["documentKey"]["_id"] = {{"$oid", "0000000000000000000000e1"}};
     SubscriberWatcherTestAccess::deliver(w, del.dump());
 
-    ASSERT_EQ(3u, rest.deletes.size());
+    ASSERT_EQ(4u, rest.deletes.size());  // endpoint + auth + aor + legacy aor
     EXPECT_EQ("u_eve", rest.deletes[0].id);
     EXPECT_EQ(0u, w.cached_count())
         << "cache entry erased once its subscriber is gone.";
