@@ -30,7 +30,11 @@ void print_usage(const char *prog)
 int main(int argc, char *argv[])
 {
   ACE_LOG_MSG->open(argv[0], ACE_LOG_MSG->STDERR | ACE_LOG_MSG->SYSLOG);
-  ACE_LOG_MSG->priority_mask(LM_CRITICAL | LM_ERROR | LM_DEBUG,
+  // ACE log levels are independent bits — you have to OR every one
+  // you want to see. LM_INFO + LM_WARNING were missing for months,
+  // silently dropping every LM_INFO log line. Match pbx-agent's mask.
+  ACE_LOG_MSG->priority_mask(LM_CRITICAL | LM_ERROR | LM_WARNING |
+                              LM_DEBUG | LM_INFO,
                               ACE_Log_Msg::PROCESS);
 
   std::string server_host;
