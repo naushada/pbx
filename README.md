@@ -377,7 +377,11 @@ PORT=9090 scripts/run-admin-ui.sh
 ## Install on a society machine
 
 For the turnkey operator install (a building / society admin on an
-Ubuntu 22/24 box), see [`INSTALL.md`](./INSTALL.md). One-line summary:
+Ubuntu 22/24 box), see [`INSTALL.md`](./INSTALL.md). For Windows
+hosts (Docker Desktop + WSL2), see [`INSTALL-windows.md`](./INSTALL-windows.md)
+— but Linux is the recommended runtime target for any real
+deployment because WSL2's UDP NAT breaks SIP/RTP audio paths.
+One-line summary:
 
 ```sh
 # On the dev machine, after `./deploy-heroku.sh deploy`:
