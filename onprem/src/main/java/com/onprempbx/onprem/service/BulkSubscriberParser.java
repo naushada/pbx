@@ -69,6 +69,19 @@ public class BulkSubscriberParser {
         return resp.getBody();
     }
 
+    /**
+     * {@code GET /api/v1/subscriber/import/template.xlsx} — pre-formatted
+     * Excel template with the three mandatory columns highlighted in
+     * YELLOW so the operator can't miss them. Source of truth:
+     * {@code scripts/generate-subscriber-template.py} →
+     * {@code docs/subscribers-template.xlsx}, served as-is by the cloud.
+     */
+    public byte[] downloadTemplateXlsx() {
+        final String url = uri("/api/v1/subscriber/import/template.xlsx", Map.of());
+        final ResponseEntity<byte[]> resp = rest.getForEntity(url, byte[].class);
+        return resp.getBody();
+    }
+
     private String uri(String path, Map<String, String> extraQuery) {
         final UriComponentsBuilder b = UriComponentsBuilder
                 .fromHttpUrl(backend.getBackendUrl() + path);

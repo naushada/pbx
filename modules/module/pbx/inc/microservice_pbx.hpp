@@ -127,6 +127,24 @@ std::string handle_subscriber_import_POST(const std::string &req,
 std::string handle_subscriber_import_template_GET(const std::string &req,
                                                    IMongodbClient &db);
 
+/// GET /api/v1/subscriber/import/template.xlsx
+/// Same conceptual purpose as the .csv template above, but ships a
+/// pre-formatted Excel file with the three mandatory columns
+/// (`flat_number`, `name`, `email`) highlighted in YELLOW so the
+/// operator can't miss them while filling. Optional columns
+/// (`phone`, `role`) are grey. A second sheet ("Legend") spells out
+/// what each column means.
+///
+/// The XLSX file is generated once by
+/// `scripts/generate-subscriber-template.py` and committed at
+/// `docs/subscribers-template.xlsx`. The cloud reads it from disk
+/// relative to the running binary and streams it back as
+/// `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+/// with a Content-Disposition that triggers a download prompt.
+/// Returns 404 if the file is missing (build mis-pack).
+std::string handle_subscriber_import_template_xlsx_GET(const std::string &req,
+                                                         IMongodbClient &db);
+
 /// GET /api/v1/cdr?societyId=<id>
 /// Returns the CDR rows for that society as a JSON array. 400 if
 /// `societyId` query param is missing.
