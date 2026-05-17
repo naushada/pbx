@@ -329,8 +329,9 @@ What `lima start` does, in order:
    `pbx-asterisk`.
 
 Override knobs (env): `HEROKU_HOST`, `HEROKU_PORT`, `SOCIETY_ID`,
-`RUN_BUDGET_SECS`. See
-[`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm).
+`RUN_BUDGET_SECS`. Full reference (subcommands, workflows,
+troubleshooting): [`scripts/README.md`](./scripts/README.md). End-to-end
+narrative: [`ARCHITECTURE.md` § 6.2a](./ARCHITECTURE.md#62a-end-to-end-dry-test-lima-vm).
 
 ## Run the softphone UI
 
