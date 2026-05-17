@@ -86,10 +86,18 @@ std::string handle_admin_subscribers_GET(const std::string &req,
 ///   it alive. For local-Mongo deploys this is always true (the pool
 ///   is in-process).
 ///
+/// `asterisk.connected` is supplied by the dispatcher from the bridge's
+/// cached value (set by the most recent ASTERISK_STATUS frame from the
+/// agent). When the cache hasn't been populated yet (cold start, no
+/// agent attached, or older agent that doesn't emit the frame),
+/// callers pass `false` — same safe default as before, chip renders
+/// disconnected.
+///
 /// Both flags are point-in-time; the UI polls every few seconds.
 std::string handle_admin_connectivity_GET(const std::string &req,
                                           IMongodbClient &db,
-                                          bool agent_connected);
+                                          bool agent_connected,
+                                          bool asterisk_connected = false);
 
 /// POST /api/v1/subscriber/import
 /// Body: a CSV (Content-Type: text/csv) with header row
