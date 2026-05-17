@@ -1,5 +1,6 @@
 #include "ace_https_client.hpp"
 #include "cloud_tunnel_endpoint.hpp"
+#include "cloud_tunnel_tick_driver.hpp"
 #include "emailservice.hpp"
 #include "json.hpp"
 #include "presence_cache.hpp"
@@ -33,33 +34,10 @@ public:
   }
 };
 
-// Reactor-driven 1 s tick that drives the CloudTunnelEndpoint's
-// SipFrame-level heartbeat — symmetric to ReconnectSupervisor on the
-// agent (pbx-agent/src/main/main.cpp). Lives for the lifetime of the
-// reactor loop; we keep the timer event handler on the stack and
-// schedule it before WebServer::start() blocks.
-class CloudTunnelHeartbeatTimer : public ACE_Event_Handler {
-public:
-  CloudTunnelHeartbeatTimer(CloudTunnelEndpoint *endpoint,
-                             ACE_Reactor *reactor)
-      : m_endpoint(endpoint) {
-    this->reactor(reactor);
-  }
-
-  int schedule() {
-    return reactor()->schedule_timer(this, nullptr,
-                                      ACE_Time_Value(1, 0),  // first fire
-                                      ACE_Time_Value(1, 0)); // repeat per 1s
-  }
-
-  int handle_timeout(const ACE_Time_Value &, const void *) override {
-    if (m_endpoint) m_endpoint->tick();
-    return 0;
-  }
-
-private:
-  CloudTunnelEndpoint *m_endpoint;
-};
+// The cloud-side SipFrame heartbeat (`CloudTunnelEndpoint::tick`) is
+// driven by `CloudTunnelTickDriver` (modules/module/pbx/inc/
+// cloud_tunnel_tick_driver.hpp), which is unit-tested in isolation
+// and replaces the previously-inline `CloudTunnelHeartbeatTimer`.
 
 std::string read_file_to_string(const std::string &path) {
   std::ifstream f(path);
@@ -442,13 +420,19 @@ int main(int argc, char *argv[]) {
     inst.setSipBridge(std::move(bridge));
     inst.setPresenceCache(std::move(presence));
 
-    // Arm the SipFrame heartbeat tick (DESIGN.md §6.6) — the only
-    // periodic work the cloud side does. Schedule before start() blocks.
-    CloudTunnelHeartbeatTimer cte_timer(inst.cloudTunnelEndpoint(),
-                                          ACE_Reactor::instance());
-    if (cte_timer.schedule() == -1) {
+    // Arm the SipFrame heartbeat tick (DESIGN.md §6.6 +
+    // docs/design/operations/cloud-tunnel-liveness.md) — the only
+    // periodic work the cloud side does. Schedule before start()
+    // blocks. Tick at 5 s matches the heartbeat_interval_sec
+    // default; faster ticks would short-circuit inside maybe_heartbeat
+    // anyway.
+    CloudTunnelTickDriver cte_tick_driver(*inst.cloudTunnelEndpoint(),
+                                            /*interval_sec=*/5);
+    if (cte_tick_driver.register_with_reactor(
+            ACE_Reactor::instance()) == -1) {
       ACE_ERROR((LM_ERROR,
-                 ACE_TEXT("%D [pbx-cloud] heartbeat schedule_timer failed\n")));
+                 ACE_TEXT("%D [pbx-cloud] cloud-tunnel tick driver "
+                          "schedule_timer failed\n")));
     }
 
     inst.start();
@@ -608,13 +592,19 @@ int main(int argc, char *argv[]) {
     inst.setSipBridge(std::move(bridge));
     inst.setPresenceCache(std::move(presence));
 
-    // Arm the SipFrame heartbeat tick (DESIGN.md §6.6) — the only
-    // periodic work the cloud side does. Schedule before start() blocks.
-    CloudTunnelHeartbeatTimer cte_timer(inst.cloudTunnelEndpoint(),
-                                          ACE_Reactor::instance());
-    if (cte_timer.schedule() == -1) {
+    // Arm the SipFrame heartbeat tick (DESIGN.md §6.6 +
+    // docs/design/operations/cloud-tunnel-liveness.md) — the only
+    // periodic work the cloud side does. Schedule before start()
+    // blocks. Tick at 5 s matches the heartbeat_interval_sec
+    // default; faster ticks would short-circuit inside maybe_heartbeat
+    // anyway.
+    CloudTunnelTickDriver cte_tick_driver(*inst.cloudTunnelEndpoint(),
+                                            /*interval_sec=*/5);
+    if (cte_tick_driver.register_with_reactor(
+            ACE_Reactor::instance()) == -1) {
       ACE_ERROR((LM_ERROR,
-                 ACE_TEXT("%D [pbx-cloud] heartbeat schedule_timer failed\n")));
+                 ACE_TEXT("%D [pbx-cloud] cloud-tunnel tick driver "
+                          "schedule_timer failed\n")));
     }
 
     inst.start();
