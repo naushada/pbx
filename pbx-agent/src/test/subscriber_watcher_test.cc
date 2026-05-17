@@ -182,7 +182,6 @@ std::string subscriber_row(const std::string &id, const std::string &sip_user,
   j["_id"]         = {{"$oid", id}};
   j["societyId"]   = society;
   j["sipUsername"] = sip_user;
-  j["sipHa1"]      = "ha1-" + sip_user;
   j["status"]      = status;
   return j.dump();
 }

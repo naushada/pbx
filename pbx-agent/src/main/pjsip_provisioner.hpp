@@ -53,10 +53,11 @@ public:
   ///                  its 401 challenge — see DESIGN.md §5).
   PjsipProvisioner(IAriRest &rest, std::string sip_realm);
 
-  /// Push or refresh the three sorcery objects for one subscriber.
-  /// `sip_username` is the pjsip endpoint's resource id; `sip_ha1` is
-  /// the pre-computed `MD5(username:realm:password)` digest the auth
-  /// object's `md5_cred` field carries. No-op for empty inputs.
+  /// Push or refresh the aor + endpoint sorcery objects for one subscriber.
+  /// `sip_username` is the pjsip endpoint's resource id. `sip_ha1` is
+  /// ignored — PR #77 dropped digest auth so the param stays only to
+  /// keep SubscriberWatcher call sites untouched. No-op for empty
+  /// `sip_username`.
   void provision(const std::string &sip_username,
                  const std::string &sip_ha1);
 
