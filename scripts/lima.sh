@@ -16,8 +16,21 @@
 #                ${RUN_BUDGET_SECS} (default 120s), capture per-
 #                container logs + status. Idempotent — re-runs reuse
 #                the VM, the bootstrap image, and built containers.
-#   lima stop    `podman-compose down -v` inside VM, then stop +
-#                delete the VM (releases its ~30 GB disk image).
+#                Also resumes from a prior `lima stop` (VM restart +
+#                compose up is fast — under a minute).
+#   lima stop    `podman-compose stop` inside VM, then `limactl stop`
+#                the VM itself. NON-DESTRUCTIVE: containers, volumes,
+#                Mongo data, the bootstrap image, and the VM disk all
+#                stay put — `lima start` resumes everything. Frees RAM
+#                while paused. Use this for an "I'll resume tomorrow"
+#                pause; use `lima del` when you actually want a
+#                clean slate.
+#   lima del     Full nuke: `podman-compose down -v` (drops named
+#                volumes — Mongo data goes too), then stop + delete the
+#                VM (releases its ~30 GB disk image AND the bootstrap
+#                image cached in it). Next `lima start` is a cold
+#                bootstrap — ~30 min if the host podman doesn't have a
+#                matching-arch bootstrap to stream in.
 #
 # Why a Lima VM rather than `podman build` on macOS: podman-on-macOS
 # emulates linux/amd64 via QEMU, which segfaults on signals during
@@ -43,11 +56,19 @@ COMPOSE=docker-compose.agent.yml
 
 usage() {
   cat <<EOF
-usage: $(basename "$0") {start|stop|shell [cmd...]|list|logs [-f] <container>|help}
-  start            provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
-                   bring the 6-container on-prem stack up via podman-compose
-                   against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
-  stop             compose down + stop + delete the VM (and any legacy ones).
+usage: $(basename "$0") {start|stop|del|shell [cmd...]|list|logs [-f] <container>|help}
+  start            provision Lima VM '${VM}' OR resume a stopped one, acquire
+                   pbx-cpp-builder:bootstrap, bring the 6-container on-prem
+                   stack up via podman-compose against ${HEROKU_HOST}:${HEROKU_PORT},
+                   watch for ${RUN_BUDGET_SECS}s.
+  stop             pause: \`podman-compose stop\` inside the VM, then \`limactl stop\`
+                   the VM itself. Non-destructive — Mongo data, the bootstrap
+                   image, and the VM disk all stay; \`lima start\` resumes.
+                   Frees RAM while paused.
+  del              nuke: \`podman-compose down -v\` (drops named volumes — Mongo
+                   data goes too), then stop + delete the VM (and any legacy
+                   ones). Releases the ~30 GB VM disk; next \`lima start\` is
+                   a cold bootstrap.
   shell [cmd...]   shell into the VM. With no args, interactive shell.
                    With args, runs them inside the VM and returns:
                      lima shell                          # interactive bash
@@ -68,10 +89,34 @@ case "$cmd" in
   help|-h|--help) usage 0 ;;
   start) ;;
   stop)
+    # Non-destructive pause. Targets only the current VM — legacy VMs
+    # are only cleaned up by `del`, since they shouldn't be running.
+    printf '\n\033[1;34m[lima] pausing compose stack + VM %s\033[0m\n' "$VM"
+    if limactl list -q 2>/dev/null | grep -qx "$VM"; then
+      # `compose stop` keeps the container definitions + volumes around;
+      # next `compose up` resumes them instantly. Best-effort — a
+      # crashed compose still lets the VM stop cleanly below.
+      limactl shell "$VM" -- bash -c \
+        "cd '$REPO_HOST' && sudo podman-compose -f $COMPOSE stop 2>/dev/null" || true
+      # `limactl stop` (no -f) shuts the VM down gracefully and leaves
+      # its disk image intact. Strip the `time=…` noise that lima
+      # emits.
+      limactl stop "$VM" 2>&1 | grep -v "^time=" || true
+      echo "[lima] paused. resume with: lima start"
+      echo "[lima] nuke the VM instead with: lima del"
+    else
+      echo "[lima] no VM named '$VM' — nothing to stop."
+    fi
+    exit 0
+    ;;
+  del|delete)
+    # Destructive nuke. Drops the compose volumes (Mongo data goes
+    # too), then deletes the VM disk. Iterates legacy VMs as well —
+    # historical names that should never linger.
     printf '\n\033[1;34m[lima] tearing down compose stack + VM %s\033[0m\n' "$VM"
     for v in "$VM" "${LEGACY_VMS[@]}"; do
       if limactl list -q 2>/dev/null | grep -qx "$v"; then
-        # Best-effort compose-down inside the VM before deletion.
+        # Best-effort compose-down -v inside the VM before deletion.
         limactl shell "$v" -- bash -c \
           "cd '$REPO_HOST' && sudo podman-compose -f $COMPOSE down -v 2>/dev/null" || true
         limactl stop -f "$v" 2>&1 | grep -v "^time=" || true

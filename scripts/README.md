@@ -51,8 +51,10 @@ Lima's `vz` mode (Apple Virtualization framework) runs a real Linux
 kernel at the host's native arch (arm64 on Apple Silicon). No
 emulation, no QEMU, no signal-handling lottery.
 
-The VM is single-purpose and discarded by `lima stop` — clean slate
-per run, no leftover containers / volumes / DBs from yesterday's test.
+The VM is single-purpose; `lima del` discards it for a clean slate
+per run, with no leftover containers / volumes / DBs from yesterday's
+test. (Use `lima stop` for a non-destructive pause that preserves
+everything.)
 
 ## What `lima start` brings up
 
@@ -75,7 +77,10 @@ Six containers, defined in [`docker-compose.agent.yml`](../docker-compose.agent.
 
 ```
 lima start                     # provision VM, build/pull bootstrap, compose up
-lima stop                      # compose down + delete VM (releases ~30 GB disk)
+                               # — OR resume after a `lima stop`
+lima stop                      # pause: compose stop + VM stop. Non-destructive.
+                               # Mongo data, bootstrap image, VM disk preserved.
+lima del                       # nuke: compose down -v + VM delete (~30 GB freed)
 lima list                      # `limactl list` — what VMs exist on the host
 lima shell                     # interactive bash inside the VM
 lima shell <cmd...>            # one-shot — runs in VM and returns
@@ -83,6 +88,13 @@ lima logs                      # list running pbx-* containers
 lima logs <container>          # last 100 lines from one container
 lima logs -f <container>       # follow
 ```
+
+**`stop` vs `del`** — `stop` is the "I'll resume tomorrow" pause: it
+halts containers and the VM cleanly, frees RAM, and the next
+`lima start` brings everything back in under a minute. `del` is the
+"clean slate" nuke: it drops compose volumes (Mongo data goes too)
+and deletes the VM disk, so the next `lima start` is a cold
+bootstrap (~30 min if no host bootstrap to stream in).
 
 The `lima` shim is added to `$PATH` by your dev setup (otherwise call
 `./scripts/lima.sh <subcommand>`).
@@ -191,13 +203,23 @@ The UI auto-submits on /login and forwards to /dashboard. Default OFF
 validates the credentials, so a bad combo surfaces in the UI (and
 lets you log in manually). Don't enable on a shared dev box.
 
+### Pause for the day
+
+```sh
+lima stop                        # compose stop + VM stop. Non-destructive.
+# … later …
+lima start                       # resume — under a minute
+```
+
+Mongo data + the bootstrap image + the VM disk all survive a `stop`.
+
 ### Tear everything down
 
 ```sh
-lima stop                        # compose down -v, then VM delete
+lima del                         # compose down -v + VM delete
 ```
 
-After `lima stop` the VM disk image (~30 GB) is gone. The next
+After `lima del` the VM disk image (~30 GB) is gone. The next
 `lima start` is a cold provision: ~30 min if the cached
 `pbx-cpp-builder:bootstrap` image isn't on the host either (see below).
 
@@ -270,7 +292,7 @@ written by the VM are visible on the host immediately.
 | Browser SIP REGISTER 408s after upgrade                                            | See `project_sip_ws_observability` memory — cloud-side LM_INFO logs added 2026-05-17 narrow down where the frame is dropped.       |
 | `Exec format error` during build inside VM                                          | Host bootstrap image is wrong arch. Delete it with `podman rmi localhost/pbx-cpp-builder:bootstrap` and re-`lima start` to rebuild. |
 | VM disk full / `podman build` hangs                                                | `lima shell sudo podman image prune -f`. Will evict the bootstrap; next rebuild is ~30 min.                                       |
-| Need to clean up an orphaned legacy VM (`onprem-pbx-test`)                          | `lima stop` already does this. If the VM is still in `limactl list`, run `limactl delete -f onprem-pbx-test`.                     |
+| Need to clean up an orphaned legacy VM (`onprem-pbx-test`)                          | `lima del` already does this. If the VM is still in `limactl list`, run `limactl delete -f onprem-pbx-test`.                      |
 
 ## See also
 

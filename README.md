@@ -308,7 +308,8 @@ lima start                       # alias → scripts/lima.sh start
 lima shell                          # interactive bash inside the VM
 lima shell sudo podman ps           # one-shot command — runs in the VM, returns
 lima shell sudo podman logs pbx-agent
-lima stop                        # podman-compose down -v inside VM, then VM is destroyed
+lima stop                        # pause: compose stop + VM stop. Non-destructive.
+lima del                         # nuke: podman-compose down -v + VM delete (~30 GB freed)
 ```
 
 What `lima start` does, in order:
