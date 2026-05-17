@@ -28,6 +28,7 @@ public class Subscriber {
     private String status;
     private String sipUsername;
     private boolean autoAnswer;
+    private boolean online;
 
     public Subscriber() {
     }
@@ -118,5 +119,19 @@ public class Subscriber {
 
     public void setAutoAnswer(boolean autoAnswer) {
         this.autoAnswer = autoAnswer;
+    }
+
+    /**
+     * Live SIP-registration state. Grafted onto each row by the cloud's
+     * {@code handle_admin_subscribers_GET} when an {@code IPresenceCache}
+     * is wired (production). Defaults to {@code false} when missing
+     * from the response (older cloud, or no cache wired).
+     */
+    public boolean isOnline() {
+        return online;
+    }
+
+    public void setOnline(boolean online) {
+        this.online = online;
     }
 }

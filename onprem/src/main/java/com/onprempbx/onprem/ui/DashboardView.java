@@ -31,13 +31,11 @@ import java.util.Map;
  * (see {@code handle_admin_subscribers_GET} / {@code handle_cdr_GET}),
  * so the empty path renders naturally as {@code 0}.
  *
- * <p>Online-presence gap: the cloud's
- * {@code GET /api/v1/admin/subscribers} projection strips secrets but
- * does not carry the {@code online} bit — presence lives in the
- * agent-side {@code IPresenceCache} and is only surfaced today via the
- * resident-directory endpoint. The middle tile renders {@code —} with
- * a footnote until a later PR teaches the admin endpoint to join the
- * presence cache (or exposes a {@code /api/v1/admin/presence} sibling).
+ * <p>Online count: the cloud's {@code GET /api/v1/admin/subscribers}
+ * grafts an {@code online} bool onto every row (from the cloud-side
+ * {@code IPresenceCache}). The middle tile counts the trues. When the
+ * cloud is older or the cache isn't wired, every row's {@code online}
+ * defaults to {@code false} and the tile renders {@code 0}.
  */
 @Route(value = "dashboard", layout = MainLayout.class)
 @PageTitle("Dashboard — onprem-pbx admin")
@@ -59,13 +57,12 @@ public class DashboardView extends VerticalLayout {
 
         final List<Subscriber> roster   = safeRoster(subscribers, societyId);
         final long activeCount          = countActive(roster);
+        final long onlineCount          = countOnline(roster);
         final long recentCdrCount       = safeRecentCdrCount(cdrs, societyId);
 
         final HorizontalLayout row = new HorizontalLayout(
                 tile(Long.toString(activeCount), "active subscribers", null),
-                tile("—",                        "online now",
-                     "(presence wired in a later PR — backend has IPresenceCache, "
-                     + "admin GET doesn't carry it yet)"),
+                tile(Long.toString(onlineCount), "online now", null),
                 tile(Long.toString(recentCdrCount), "calls last 24h", null));
         row.setSpacing(true);
         row.setWidthFull();
@@ -126,6 +123,12 @@ public class DashboardView extends VerticalLayout {
     private static long countActive(List<Subscriber> roster) {
         return roster.stream()
                 .filter(s -> "active".equalsIgnoreCase(s.getStatus()))
+                .count();
+    }
+
+    private static long countOnline(List<Subscriber> roster) {
+        return roster.stream()
+                .filter(Subscriber::isOnline)
                 .count();
     }
 

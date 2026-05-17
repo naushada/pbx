@@ -323,7 +323,8 @@ std::string handle_society_detail_GET(const std::string &req,
 }
 
 std::string handle_admin_subscribers_GET(const std::string &req,
-                                         IMongodbClient &db) {
+                                         IMongodbClient &db,
+                                         const IPresenceCache *presence) {
   const std::string uri        = raw_uri_with_query(req);
   const std::string society_id = query_param(uri, "societyId");
   if (society_id.empty())
@@ -349,10 +350,21 @@ std::string handle_admin_subscribers_GET(const std::string &req,
   // Strip server-only fields per row. Admin keeps every other field —
   // contrast `handle_directory_GET` which rebuilds a 4-field projection
   // for resident dashboards.
+  //
+  // Graft `online` onto every row from the presence cache when one is
+  // wired (production). Same key as the directory: (societyId,
+  // sipUsername). The dashboard's "online now" tile counts rows where
+  // this is true — no sibling endpoint needed.
   for (auto &row : arr) {
     if (!row.is_object()) continue;
     row.erase("portalPasswordHash");
     row.erase("sipHa1");
+    if (presence) {
+      const std::string sip_user = row.value("sipUsername", std::string{});
+      row["online"] = !sip_user.empty()
+          ? presence->is_online(society_id, sip_user)
+          : false;
+    }
   }
   return http_response(200, "OK", arr.dump());
 }

@@ -320,10 +320,15 @@ std::string MicroService::dispatch_pbx_routes(std::string &req,
   // Admin-scoped subscriber list. Distinct from /subscriber (the
   // strip-projected resident directory above) — admin needs every
   // field for the SubscriberListView + the PUT/DELETE keys. Admin-only.
+  // Same presence-cache plumbing as /api/v1/subscriber above — when
+  // wired (production), grafts an `online` bool onto every row; the
+  // dashboard's "online now" tile counts the trues.
   if (method == "GET" && uri == "/api/v1/admin/subscribers") {
     auto check = MicroServicePbx::resolve_admin_session(req, dbInst);
     if (!check.error.empty()) return check.error;
-    return MicroServicePbx::handle_admin_subscribers_GET(req, dbInst);
+    const IPresenceCache *presence = m_parent ? webServer().presenceCache()
+                                              : nullptr;
+    return MicroServicePbx::handle_admin_subscribers_GET(req, dbInst, presence);
   }
 
   // Exact-match: GET /api/v1/admin/connectivity
