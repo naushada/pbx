@@ -374,6 +374,59 @@ scripts/run-admin-ui.sh --backend-url http://localhost:8080
 PORT=9090 scripts/run-admin-ui.sh
 ```
 
+## Install on a society machine
+
+For the turnkey operator install (a building / society admin on an
+Ubuntu 22/24 box), see [`INSTALL.md`](./INSTALL.md). One-line summary:
+
+```sh
+# On the dev machine, after `./deploy-heroku.sh deploy`:
+./deploy-heroku.sh package-society-certs SUNSET   # → /tmp/SUNSET-certs.tar.gz
+
+# On the society machine, after copying the repo + tarball:
+sudo ./install.sh                                  # 3 prompts, ~3-5 min
+```
+
+`install.sh` is the entry point. It pulls pre-built container images
+from Docker Hub (`docker.io/naushada/onprem-pbx-{agent,wsdbagent}`),
+generates per-society config, and installs a systemd unit so the
+stack auto-restarts on reboot.
+
+## Container image releases (CI)
+
+[`.github/workflows/publish-images.yml`](./.github/workflows/publish-images.yml)
+publishes multi-arch (`linux/amd64` + `linux/arm64`) images to Docker
+Hub on **`main`-branch pushes that touch image-relevant files**.
+
+| Action | Triggers workflow? |
+|---|---|
+| Push commit to a feature branch (no PR yet)                       | No — only `main` is watched |
+| Open a PR against main                                            | No — PRs aren't a `push` event for this watcher |
+| Merge a PR that touches `pbx-agent/**` or `modules/**`            | **Yes** |
+| Merge a PR that touches `docker/Dockerfile.{bootstrap,agent,wsdbagent}` | **Yes** |
+| Merge a PR that's docs-only (`*.md`, `scripts/README.md`, …)      | No — saves ~30 min + 2 GB of Hub bandwidth per non-binary PR |
+| Merge a PR that touches `modules/module/pbx/...`                  | **Yes** |
+| Click "Re-run workflow" in the Actions UI                          | **Yes** (via `workflow_dispatch`) |
+
+Published tags (rolling + immutable):
+
+| Image | Tags |
+|---|---|
+| `docker.io/naushada/pbx-cpp-builder` | `:bootstrap`, `:<sha>` |
+| `docker.io/naushada/onprem-pbx-agent` | `:latest`, `:<sha>` |
+| `docker.io/naushada/onprem-pbx-wsdbagent` | `:latest`, `:<sha>` |
+
+The `:<sha>` tags let a society pin to a known-good build — edit its
+`docker-compose.agent.yml` to swap `:latest` for `:<commit-sha>`.
+
+Required GitHub repo secrets (set once via Settings → Secrets and
+variables → Actions):
+
+- `DOCKERHUB_USERNAME` = `naushada`
+- `DOCKERHUB_TOKEN` = a Docker Hub access token with **write** scope
+  (create at https://hub.docker.com/settings/security — do NOT use
+  your account password)
+
 ### First-time admin bootstrap
 
 The admin UI's login is gated on a real `subscribers` row with
