@@ -1,17 +1,22 @@
-# Publish multi-arch on-prem container images to Docker Hub.
+# Publish container images on every push to main + cloud-deploy to Heroku.
 #
-# Triggered on every push to main + on demand via the Actions UI.
+# Three jobs:
 #
 # Job 1 — pbx-cpp-builder:bootstrap — the shared toolchain layer
 # (ACE/TAO 7.0.0 + mongo-cxx-driver + googletest, on ubuntu:20.04).
-# Slow (~30 min per arch when not cached). Pushed first so Job 2 can
-# `FROM` it via the BUILDER_IMAGE ARG.
+# Slow (~30 min per arch when not cached). Pushed first so Job 2 + 3
+# can `FROM` it via the BUILDER_IMAGE ARG.
 #
 # Job 2 — pbx-agent + pbx-wsdbagent — the on-prem service images.
-# Matrix-built (one runner per service), each multi-arch. Uses the
-# just-published bootstrap as the FROM stage so each per-service build
-# is only the compile + runtime assembly (~5 min/arch after bootstrap
-# is cached).
+# Matrix-built (one runner per service), each multi-arch (amd64+arm64).
+# Published to docker.io/naushada/onprem-pbx-*:latest. Consumed by
+# install.sh on society machines via `podman-compose pull`.
+#
+# Job 3 — pbx-cloud — built amd64-only (Heroku Common Runtime is
+# amd64-only), pushed to registry.heroku.com/pabx/web, then released
+# via `heroku container:release web --app pabx`. Replaces the manual
+# `./deploy-heroku.sh deploy` round-trip from the dev's laptop. The
+# manual script stays available as an escape hatch.
 #
 # Tags published:
 #   docker.io/naushada/pbx-cpp-builder:bootstrap        (rolling)
@@ -30,6 +35,10 @@
 #   DOCKERHUB_TOKEN    = a Docker Hub access token with write scope
 #                        (NOT your account password; create one at
 #                        https://hub.docker.com/settings/security)
+#   HEROKU_API_KEY     = your Heroku account API key
+#                        (NOT your account password; create one at
+#                        https://dashboard.heroku.com/account →
+#                        "Authorizations" → "Create authorization")
 
 name: Publish container images
 
@@ -134,3 +143,60 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.ORG }}/onprem-pbx-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.ORG }}/onprem-pbx-${{ matrix.service }}:buildcache
           cache-to:   type=registry,ref=${{ env.REGISTRY }}/${{ env.ORG }}/onprem-pbx-${{ matrix.service }}:buildcache,mode=max
+
+  publish-cloud:
+    name: Deploy pbx-cloud to Heroku (amd64-only)
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (amd64 emulation if needed)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Heroku Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.heroku.com
+          # Heroku registry auth convention: username is the literal
+          # underscore; password is the account API key (NOT a Docker
+          # Hub password).
+          username: _
+          password: ${{ secrets.HEROKU_API_KEY }}
+
+      - name: Build + push pbx-cloud to Heroku registry
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.cloud
+          # Heroku Common Runtime is amd64-only; no point publishing
+          # arm64 here.
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BUILDER_IMAGE=${{ env.BOOTSTRAP_IMAGE }}:bootstrap
+          tags: |
+            registry.heroku.com/pabx/web:latest
+          # Heroku registry rejects OCI manifests (--format=v2s2 is
+          # what the manual `podman push` uses). Tell Buildx to emit
+          # the legacy docker manifest format AND skip the attestation
+          # files (provenance + sbom) Heroku also rejects.
+          provenance: false
+          outputs: type=image,oci-mediatypes=false
+
+      - name: Install Heroku CLI (one-shot, ~10 s)
+        run: |
+          curl -fsSL https://cli-assets.heroku.com/install.sh | sudo sh
+
+      - name: Release the dyno (heroku container:release web)
+        env:
+          # The CLI honours HEROKU_API_KEY when there's no interactive
+          # login — same secret the registry login above used.
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: |
+          heroku container:release web --app pabx

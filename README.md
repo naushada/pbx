@@ -426,6 +426,16 @@ variables → Actions):
 - `DOCKERHUB_TOKEN` = a Docker Hub access token with **write** scope
   (create at https://hub.docker.com/settings/security — do NOT use
   your account password)
+- `HEROKU_API_KEY` = a Heroku account API key (create at
+  https://dashboard.heroku.com/account → "Authorizations" → "Create
+  authorization" — do NOT use your account password)
+
+The third secret powers a `publish-cloud` job that **also deploys the
+cloud to Heroku** on every same-path push to main: builds
+`pbx-cloud` for `linux/amd64`, pushes to `registry.heroku.com/pabx/web`,
+and runs `heroku container:release web --app pabx`. This replaces the
+manual `./deploy-heroku.sh deploy` round-trip — the script stays as
+an escape hatch for emergency push from a laptop.
 
 ## TLS cert rotation
 
