@@ -22,10 +22,12 @@ instead.
 | Path | Status | UX |
 |---|---|---|
 | **A — WSL2 + Linux installer** | ✅ Works today | Open Ubuntu in WSL2, run `sudo ./install.sh`. Same script as the Linux path. |
-| **B — Cross-platform installer container** | 🚧 Not shipped yet (planned — Task #27) | Single `docker run` from PowerShell. No WSL2 setup required. |
+| **B — Cross-platform installer container** | ✅ Shipped | Single `docker run` from PowerShell. Bakes all scripts into the image; talks to the host's Docker daemon via the mounted socket. |
 
-If you're impatient, use **Path A** (works now). When the installer
-container lands, this doc gets a Path B section.
+Either path produces the same running stack on the host. Path B is
+simpler — no WSL2 install, no Linux distro setup, no bash on the
+host. Use B unless you specifically want a WSL2 dev environment for
+poking the on-prem stack from the shell.
 
 ---
 
@@ -148,24 +150,85 @@ systemd starts the onprem-pbx service.
 
 ---
 
-## Path B — Installer container (planned, not yet shipped)
+## Path B — Installer container (recommended)
 
-Once Task #27 lands, the install reduces to:
+A single `docker run` brings the whole on-prem stack up. The installer
+image bakes the scripts + compose file + per-service config sources
+into a Debian-slim container; it talks to the host's Docker daemon
+via the mounted socket and creates containers on the HOST (not
+nested — this is "Docker-out-of-Docker" / DooD).
+
+### Pre-flight (one-time)
+
+1. Install **Docker Desktop for Windows** from https://www.docker.com/products/docker-desktop. Enable the WSL2 backend during install (Docker Desktop uses it internally even though you won't touch WSL2 yourself for Path B).
+2. Get the **cert tarball** from your dev team (see Path A's section above).
+3. Pick a host directory for the installer to write into, e.g. `C:\Users\<you>\onprem-pbx-data`. Drop the cert tarball into it.
+
+### Run the installer
+
+In PowerShell (NOT WSL2 — straight Windows):
 
 ```powershell
-# In PowerShell — single command, no WSL2 setup needed beyond
-# Docker Desktop:
+# Create the data dir + drop the cert tarball into it first:
+New-Item -ItemType Directory -Force -Path "$HOME\onprem-pbx-data" | Out-Null
+Copy-Item C:\Downloads\SUNSET-certs.tar.gz "$HOME\onprem-pbx-data\"
+
+# Run the installer container:
 docker run --rm -it `
-  -v //./pipe/docker_engine://./pipe/docker_engine `
-  -v ${HOME}\onprem-pbx-data:/data `
-  -e CERTS_TARBALL=/data/SUNSET-certs.tar.gz `
+  -v "//./pipe/docker_engine:/var/run/docker.sock" `
+  -v "${HOME}\onprem-pbx-data:/data" `
+  -e HOST_DATA_DIR="$HOME\onprem-pbx-data" `
   -e SOCIETY_CODE=SUNSET `
+  -e SOCIETY_NAME="Sunset Towers" `
   -e ADMIN_EMAIL=admin@sunset.example `
-  -e ADMIN_PASSWORD='pick-something' `
-  naushada/onprem-pbx-installer:latest
+  -e ADMIN_PASSWORD="choose-something" `
+  -e CERTS_TARBALL=/data/SUNSET-certs.tar.gz `
+  docker.io/naushada/onprem-pbx-installer:latest
 ```
 
-This will be updated when shipped.
+On **Linux** the equivalent (paths use `/`):
+
+```sh
+mkdir -p ~/onprem-pbx-data
+cp ~/Downloads/SUNSET-certs.tar.gz ~/onprem-pbx-data/
+
+docker run --rm -it \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v ~/onprem-pbx-data:/data \
+  -e HOST_DATA_DIR=$HOME/onprem-pbx-data \
+  -e SOCIETY_CODE=SUNSET \
+  -e SOCIETY_NAME="Sunset Towers" \
+  -e ADMIN_EMAIL=admin@sunset.example \
+  -e ADMIN_PASSWORD="choose-something" \
+  -e CERTS_TARBALL=/data/SUNSET-certs.tar.gz \
+  docker.io/naushada/onprem-pbx-installer:latest
+```
+
+On **macOS** with Docker Desktop, the Linux command works as-is (paths just need to be macOS-style, `/Users/<you>/...`).
+
+### What the installer does inside the container
+
+1. Validates env vars.
+2. Pings the host docker daemon (sanity check the socket mount).
+3. Unpacks the cert tarball into `$HOST_DATA_DIR/certs/cloud-issued/`.
+4. Generates Asterisk DTLS + coturn config into `$HOST_DATA_DIR/certs/` and `$HOST_DATA_DIR/turnserver.conf`.
+5. Writes `$HOST_DATA_DIR/.env` with `HOST_DATA_DIR`-prefixed absolute paths for the compose bind-mounts (so the host's docker daemon resolves them correctly).
+6. `docker compose pull` + `docker compose up -d` via the host daemon.
+7. Waits for Mongo's replica set, runs `docker exec pbx-mongo mongosh` to upsert the society + ADMIN subscriber.
+8. Prints a summary with the host-side commands the operator can use later.
+
+### After install
+
+```powershell
+docker ps --filter name=pbx-
+docker logs -f pbx-agent
+```
+
+Auto-restart on host reboot is handled by:
+- The compose's `restart: unless-stopped` policy on every container.
+- Docker Desktop's **"Start Docker Desktop when you log in"** setting (Settings → General → toggle on).
+
+⚠️ The Windows runtime limitations from Path A apply equally to Path B — the installer container can't fix WSL2's UDP NAT for TURN/RTP. See "Known runtime limitations" below.
 
 ---
 

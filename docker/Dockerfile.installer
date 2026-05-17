@@ -1,0 +1,82 @@
+# docker/Dockerfile.installer — Docker-out-of-Docker (DooD) installer image.
+#
+# Operator runs ONE command on Linux / macOS / Windows (the latter via
+# WSL2 — full Windows host without WSL2 still doesn't work for runtime
+# networking, see INSTALL-windows.md):
+#
+#   docker run --rm -it \
+#     -v ~/onprem-pbx-data:/data \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     -e HOST_DATA_DIR=$HOME/onprem-pbx-data \
+#     -e SOCIETY_CODE=SUNSET \
+#     -e SOCIETY_NAME='Sunset Towers' \
+#     -e ADMIN_EMAIL=admin@sunset.example \
+#     -e ADMIN_PASSWORD='choose-something' \
+#     -e CERTS_TARBALL=/data/SUNSET-certs.tar.gz \
+#     docker.io/naushada/onprem-pbx-installer:latest
+#
+# The container's entrypoint (scripts/installer-entrypoint.sh):
+#   1. Validates env, unpacks the cert tarball.
+#   2. Generates per-society Asterisk DTLS + coturn config into /data.
+#   3. Writes /data/.env with HOST_DATA_DIR-prefixed CERTS_DIR /
+#      INNERTLS_DIR / CLOUD_ISSUED_DIR so the on-prem containers'
+#      bind mounts resolve correctly on the HOST.
+#   4. `docker compose -f /data/docker-compose.agent.yml pull && up -d`
+#      (the host's daemon, via the mounted socket).
+#   5. Waits for pbx-mongo's replica set, runs `docker exec pbx-mongo
+#      mongosh` to upsert society + ADMIN subscriber.
+#   6. Prints a summary.
+#
+# This DOES NOT install a systemd unit on the host — the host might be
+# macOS / Windows / a non-systemd Linux. Containers' `restart:
+# unless-stopped` policy + Docker Desktop's "start on login" handle
+# auto-restart on those platforms.
+#
+# WHY DooD: the host might not have bash / python / openssl / mongosh,
+# but it does have a working `docker` daemon. Mounting the daemon's
+# socket lets the installer container drive container lifecycle on the
+# host without nesting (DooD ≠ DinD — there's no nested daemon here).
+
+FROM debian:bookworm-slim
+
+# ── Runtime deps ────────────────────────────────────────────────────
+# bash:   entrypoint script
+# python3: PBKDF2-SHA256 password hashing (stdlib hashlib)
+# openssl: Asterisk DTLS cert generation (setup-society.sh)
+# curl + ca-certificates: external probes if needed
+# jq:     JSON munging in shell
+# tar + gzip: unpack the cert tarball
+# gettext-base: envsubst, used by setup-society.sh
+# Docker CLI: drives the HOST daemon via mounted socket. Installed
+#             from Docker's official Debian repo so the version matches
+#             Docker Desktop on macOS/Windows hosts.
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        bash python3 openssl curl ca-certificates jq tar gzip \
+        gettext-base \
+        gnupg lsb-release \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update -qq \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Bake the scripts + compose file + per-service config sources ────
+# Everything the installer needs is shipped IN the image. Operator
+# doesn't need to clone the repo on the host.
+WORKDIR /opt/installer
+COPY scripts/                /opt/installer/scripts/
+COPY docker-compose.agent.yml /opt/installer/
+COPY docker/asterisk/        /opt/installer/docker/asterisk/
+COPY docker/coturn/          /opt/installer/docker/coturn/
+
+# Sanity — entrypoint must be executable. COPY preserves mode bits
+# from the source repo, but the chmod is cheap insurance.
+RUN chmod +x /opt/installer/scripts/installer-entrypoint.sh \
+    && chmod +x /opt/installer/scripts/*.sh
+
+ENTRYPOINT ["/opt/installer/scripts/installer-entrypoint.sh"]
