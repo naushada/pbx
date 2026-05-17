@@ -28,6 +28,19 @@ export class DashboardComponent implements OnInit, OnDestroy {
     ngOnInit(): void {
         this.subs.push(this.pubsub.onSubscriber.subscribe(s => this.subscriber = s));
         this.subs.push(this.pubsub.onCallState .subscribe(s => this.callState  = s));
+
+        // Auto-connect on land. Matches consumer-app norm (login =
+        // online); without it the resident has to click CONNECT before
+        // any directory CALL button is enabled, which surprised every
+        // first-time user (caught live 2026-05-17).
+        //
+        // SipService.connect() is idempotent: it early-returns if a UA
+        // handle already exists. So if the user navigates away from
+        // /dashboard and back, this is a no-op. Same for the explicit
+        // CONNECT button — it stays wired for the rare case of a
+        // post-failure manual retry. DISCONNECT remains as the
+        // "go offline" / pause-notifications gesture.
+        void this.sip.connect();
     }
 
     ngOnDestroy(): void {
