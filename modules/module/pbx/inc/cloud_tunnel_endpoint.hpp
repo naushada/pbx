@@ -65,7 +65,12 @@ public:
     /// Symmetric to `CloudConnector::Config::heartbeat_*` on the agent.
     /// `heartbeat_interval_sec <= 0` disables the heartbeat (used by
     /// existing tests that don't drive the clock).
-    int heartbeat_interval_sec = 15;
+    ///
+    /// 5 s × 3 missed = 15 s partition-detection window. Tightened
+    /// from 15 s × 3 = 45 s for kiosk deployments where a security-gate
+    /// intercom needs to be reachable within a few seconds of a network
+    /// blip — see docs/design/operations/cloud-tunnel-liveness.md.
+    int heartbeat_interval_sec = 5;
     int heartbeat_max_missed   = 3;
 
     /// Inner-TLS cert paths driven into every newly-attached

@@ -74,6 +74,7 @@ if(BUILD_BINARIES)
        "modules/module/pbx/src/sip_frame.cpp"
        "modules/module/pbx/src/sip_bridge.cpp"
        "modules/module/pbx/src/cloud_tunnel_endpoint.cpp"
+       "modules/module/pbx/src/cloud_tunnel_tick_driver.cpp"
        "modules/module/pbx/src/browser_stream.cpp"
        "modules/module/pbx/src/agent_stream.cpp"
        "modules/module/pbx/src/microservice_pbx.cpp"
