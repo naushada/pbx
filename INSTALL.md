@@ -1,8 +1,13 @@
 # Installing onprem-pbx on a society machine
 
-This is the lay-operator install guide. If you're a developer, you're
-probably looking for [`README.md`](README.md) or
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+This is the lay-operator install guide for **Linux** hosts (Ubuntu
+22/24 — Raspberry Pi, NUC, mini-PC, generic server). For **Windows
+hosts** (Docker Desktop + WSL2), see [`INSTALL-windows.md`](./INSTALL-windows.md)
+— though Linux is the recommended runtime target for any real PBX
+deployment.
+
+If you're a developer, you're probably looking for
+[`README.md`](README.md) or [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## What you need
 
