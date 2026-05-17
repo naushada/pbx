@@ -1,6 +1,8 @@
 #include "cloud_tunnel_endpoint.hpp"
 #include "sip_bridge.hpp"
 
+#include "ace/Log_Msg.h"
+
 #include <utility>
 
 CloudTunnelEndpoint::CloudTunnelEndpoint() : m_cfg{} {}
@@ -16,12 +18,22 @@ void CloudTunnelEndpoint::on_agent_connected(
 
   // If a previous agent is still hanging on (shouldn't, but be defensive),
   // tear it down first so the bridge sees a clean disconnect.
-  if (m_transport) mark_disconnected();
+  if (m_transport) {
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l on_agent_connected "
+                        "while previous transport still attached — "
+                        "marking previous disconnected first\n")));
+    mark_disconnected();
+  }
 
   m_transport = std::move(transport);
   // Reset heartbeat: the next PING is due `heartbeat_interval_sec` from now.
   m_pings_outstanding = 0;
   if (m_clock) m_last_heartbeat_unix = m_clock->now_unix();
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l agent attached "
+                      "(buffered_frames=%u — flushing)\n"),
+             static_cast<unsigned>(m_outbound.size())));
   flush_outbound();
 }
 
@@ -50,19 +62,45 @@ void CloudTunnelEndpoint::send_frame(SipFrame::Op op, std::uint32_t stream_id,
   if (m_transport && m_transport->send(bytes)) return;
 
   // Either no agent, or mid-flight send failed.
+  const bool had_transport = m_transport != nullptr;
   if (m_transport) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l send_frame "
+                        "mid-flight failure (op=%d sid=%u bytes=%u) — "
+                        "marking agent disconnected\n"),
+               static_cast<int>(op), stream_id,
+               static_cast<unsigned>(bytes.size())));
     mark_disconnected();
   }
 
   if (m_cfg.outbound_buffer_max == 0 ||
       m_outbound.size() < m_cfg.outbound_buffer_max) {
     m_outbound.push_back(bytes);
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l send_frame "
+                        "buffered (no agent%s) op=%d sid=%u bytes=%u "
+                        "queue_depth=%u\n"),
+               had_transport ? "; just disconnected" : "",
+               static_cast<int>(op), stream_id,
+               static_cast<unsigned>(bytes.size()),
+               static_cast<unsigned>(m_outbound.size())));
+  } else {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l send_frame "
+                        "DROPPED — outbound_buffer_max=%u reached "
+                        "(op=%d sid=%u bytes=%u)\n"),
+               static_cast<unsigned>(m_cfg.outbound_buffer_max),
+               static_cast<int>(op), stream_id,
+               static_cast<unsigned>(bytes.size())));
   }
-  // Else: silently drop. v2 may surface an error to the producer.
 }
 
 void CloudTunnelEndpoint::mark_disconnected() {
   if (m_transport) {
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [CloudTunnelEndpoint:%t] %M %N:%l agent detached "
+                        "(buffered_frames=%u retained for next reconnect)\n"),
+               static_cast<unsigned>(m_outbound.size())));
     m_transport->close();
     m_transport.reset();
   }
