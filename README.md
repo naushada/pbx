@@ -37,7 +37,7 @@ See:
 | 4   | Cloud REST handlers — `subscriber/login` (dev-mode), `subscriber` directory, `push-vapid-key`, `turn-credentials`, `push-subscribe`. `db_available()` env-var guard short-circuits DB-touching handlers when Mongo isn't configured (defends against Heroku H12 timeouts) | ✅ Complete |
 | 4   | D1+D2: `wsdbagent` on-prem — verbatim copy of the upstream shared-library standalone DB-tunnel binary (do not modify locally) + new `pbx-wsdbagent` compose service. Dials `wss://${CLOUD_HOST}/ws/db` with ACE InnerTLS on top of the outer WSS (Heroku terminates outer TLS; inner TLS is the real trust boundary). Mongo DB name is `pabx`. | ✅ Verified live in Lima dry-test (PR #35) — `inner TLS established` ↔ `session started` |
 | 4   | D3: InnerTLS over the `/agent` SIP tunnel — shared `WsInnerTlsBridge` (dual-mode `IInnerTlsTransport`); agent `--inner-tls-{cert,key,ca,hostname}`; cloud reuses `--tls-{cert,key,ca}` for both `/ws/db` and `/agent`. `AgentStream` split into `(ctor, auto_attach=false)` + `setup_inner_tls()` + `attach()` so the handshake completes before the endpoint sees a live transport. | ✅ PR #19 (merged) |
-| 4   | Dynamic pjsip provisioning — `PjsipProvisioner` materialises subscriber rows as Asterisk auth/aor/endpoint sorcery objects via ARI dynamic-config PUT/DELETE; `SubscriberWatcher` does a society-scoped bootstrap full-scan + Mongo change-stream tail at 200ms cadence. `pbx-mongo` runs as a 1-node replica set with idempotent `rs.initiate()` healthcheck. Agent `--sip-realm` flag (default `<society-id>.pbx.local`). | ✅ PR #18 (merged) |
+| 4   | Dynamic pjsip provisioning — `PjsipProvisioner` materialises subscriber rows as Asterisk aor + endpoint sorcery objects via ARI dynamic-config PUT/DELETE; `SubscriberWatcher` does a society-scoped bootstrap full-scan + Mongo change-stream tail at 200ms cadence. `pbx-mongo` runs as a 1-node replica set with idempotent `rs.initiate()` healthcheck. Agent `--sip-realm` flag (default `<society-id>.pbx.local`). SIP digest auth dropped (PR #77 — browser carries no SIP password); empty-`sip_ha1` skip gate dropped (PR #100); Asterisk `sorcery.conf` bundle-mount maps the types to `astdb,<family>` (PR #101 — without it ARI PUTs return 403 + provisioning silently fails). | ✅ PRs #18 / #77 / #100 / #101 (all merged) |
 | 4   | Presence reconciliation — `AriClient::publish_register_snapshot()` calls `GET /ari/endpoints/PJSIP` and emits one `REGISTER_STATE` SipFrame per endpoint; `CloudConnector::set_on_connected()` fires it on every (re)connect. Closes the cache-staleness gap from PR #16. | ✅ PR #20 (merged) |
 | 4   | Change-stream resume — `IMongodbClient::watch_collection(coll, resume_token_json)` overload + `mongocxx::options::change_stream::resume_after()`; `SubscriberWatcher` captures every event's `_id` token and reopens on `try_next` exception with a 5-tick backoff (~1s at 200ms cadence). | ✅ PR #21 (merged) |
 | 4   | Pjsip drift-check test — parses `[endpoint-resident-template]` from `docker/asterisk/pjsip.conf`, runs `PjsipProvisioner` against a FakeAriRest, asserts every template field is present in the emitted endpoint PUT. Prevents silent divergence between dev-fixture endpoints and runtime-provisioned subscribers. | ✅ PR #22 (merged) |
@@ -45,6 +45,13 @@ See:
 | 4   | InnerTLS peer-cert CN exposure + latent-bug fix — `InnerTlsServer::peer_subject_cn()` extracts the agent's verified CN for log labels + future cross-checks; the underlying `SSL_CTX_use_certificate_file`-after-`SSL_new` bug (silently presented no cert) replaced with the per-SSL `SSL_use_certificate_file` API. | ✅ PR #25 (merged) |
 | 4   | `scripts/lima.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following the established C++ toolchain recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
+| CI/CD | `publish-images.yml` workflow auto-deploys `pbx-cloud` to Heroku on every same-path push to main: builds amd64 image, pushes to `registry.heroku.com/pabx/web`, calls `heroku container:release`. Replaces the manual `./deploy-heroku.sh deploy` round-trip; the script stays as an escape hatch for emergency push from a laptop. | ✅ PR #95 |
+| CI/CD | `concurrency.cancel-in-progress: true` on the workflow — a newer push auto-cancels older in-flight runs for the same ref. Saves CI minutes; bundles back-to-back merges into one CI cycle (e.g. PR #100 + PR #101 → single run, single deploy). Plus an `offtarget` GTest job as a quality gate before any image publish or Heroku release — catches today's class of bugs (missing-header, missing opcode whitelist, stale provisioner gate, missing bridge re-arm) at CI time instead of at deploy. Plus `LM_INFO`/`LM_WARNING` re-added to the cloud's `priority_mask` so the observability lines from PR #80 + PR #88 actually emit. | ✅ PR #96 |
+| Op   | `install.sh` Mongo seeding — after the compose stack is up, seeds the on-prem Mongo with the society's `societies` row + first ADMIN subscriber (PBKDF2-SHA256 hashed locally, never sent over the wire). Without this the cloud's login returns 401 "Invalid credentials" for everything in strict-auth mode. | ✅ PR #96 |
+| Op   | Windows install path documented + `onprem-pbx-installer` container (DooD pattern) — one `docker run` from PowerShell brings the stack up; talks to the host's Docker daemon via the mounted socket. Bundles `scripts/installer-entrypoint.sh` + all per-society compose + cert tooling. Linux operators can also use it as an alternative to `install.sh`. | ✅ PR #97 (docs + container) |
+| Op   | Docker Hub repo descriptions auto-synced from [`docker/dockerhub-descriptions/*.md`](./docker/dockerhub-descriptions/) on every image publish — Hub "Overview" tab for each image always reflects current behaviour. Marks `pbx-cpp-builder` as INTERNAL so operators don't accidentally pull it. | ✅ PR #99 |
+| Op   | XLSX subscriber import template with YELLOW-highlighted mandatory column headers — operator-friendly first-import experience. Lives at `docs/subscribers-template.xlsx`; generator at `scripts/generate-subscriber-template.py`. | ✅ PR #94 |
+| Op   | `PjsipProvisioner` empty-`sip_ha1` skip gate removed (silently dropped every resident since PR #77's import flow legitimately leaves `sipHa1` empty); `CloudTunnelEndpoint::on_agent_connected` re-arms `SipBridge.m_tunnel` after every reconnect (without this, ONE Heroku-idle WS drop on `/agent` permanently broke SIP for the cloud's lifetime); `docker/asterisk/sorcery.conf` maps PJSIP types to `astdb,<family>` so ARI dynamic-config PUTs persist (without it Asterisk returns 403 and the provisioner silently writes nothing). All three are required for REGISTER to reach Asterisk — caught live 2026-05-17. | ✅ PR #100 + PR #101 |
 
 ### Test totals: **518 / 521** C++ + UI karma 61 + UI Playwright 12 (3 baseline failures — see [Skipped tests](#skipped-tests))
 
@@ -266,31 +273,53 @@ Asterisk config files (`docker/asterisk/*.conf`) are minimal but functional:
 
 coturn (`docker/coturn/turnserver.conf`) uses `use-auth-secret` so the cloud's `GET /api/v1/turn-credentials` endpoint can mint time-limited credentials with a shared HMAC-SHA1 secret (RFC 5766 §5). The bundled `static-auth-secret` is dev-only — overwrite before production.
 
-### Dynamic pjsip provisioning (PR #18)
+### Dynamic pjsip provisioning (PR #18; PRs #77/#100/#101 finished the story)
 
 The agent doesn't pre-list endpoints in `pjsip.conf`. On boot
 `SubscriberWatcher::bootstrap()` does a society-scoped full-scan of the
-`subscribers` collection and pushes each active row into Asterisk as three
-sorcery objects (`auth/<user>-auth`, `aor/<user>-aor`,
-`endpoint/<user>`) via ARI dynamic-config PUTs. After the bootstrap the
-watcher tails the Mongo change stream at 200 ms cadence; `insert` /
-`update` with `status="active"` re-PUTs, `status!="active"` or `delete`
-DELETEs. The cursor uses `resumeAfter` (PR #21) so a Mongo flap doesn't
-drop events — the watcher captures every event's `_id` token and reopens
-from there.
+`subscribers` collection and pushes each active row into Asterisk as
+**two** sorcery objects (`aor/<user>-aor`, `endpoint/<user>`) via ARI
+dynamic-config PUTs, plus a best-effort `DELETE auth/<user>-auth` to
+prune any legacy `auth` row left over from pre-PR-#77 builds. **SIP
+digest auth is intentionally not provisioned** — the browser has no
+SIP password (see `ui/src/common/sip-ua-sipjs.ts:18`), the cloud's
+`/sip-ws` upgrade is the only auth layer, and a second digest layer
+would put Asterisk into an unanswerable 401 loop. After the bootstrap
+the watcher tails the Mongo change stream at 200 ms cadence; `insert`
+/ `update` with `status="active"` re-PUTs, `status!="active"` or
+`delete` DELETEs. The cursor uses `resumeAfter` (PR #21) so a Mongo
+flap doesn't drop events — the watcher captures every event's `_id`
+token and reopens from there.
 
-The SIP realm carried on the auth object's `realm` field is auto-discovered
-on every (re)connect since PR #24: the agent sends `AGENT_HELLO {societyId}`
-as the first frame after the inner-TLS handshake; the cloud's `SipBridge`
-looks up `societies/{_id}` and replies with
-`SOCIETY_BOOTSTRAP {societyId, sipRealm}`. The agent calls
-`PjsipProvisioner::set_sip_realm()` + `SubscriberWatcher::resync()` to
-re-PUT every endpoint's auth object with the canonical realm. The
-`--sip-realm` CLI flag is now optional and serves as an operator
-override; without it the agent waits for the cloud-supplied value.
+**Asterisk needs `sorcery.conf` for these PUTs to land.** Default
+Asterisk maps `pjsip.aor/endpoint/auth` to the read-only `config`
+wizard, which makes every dynamic-config PUT return
+`403 "Cannot create sorcery objects of type 'aor'"`. PR #101 ships
+[`docker/asterisk/sorcery.conf`](./docker/asterisk/sorcery.conf)
+which maps the types to `astdb,<family>` (the `<family>` is
+mandatory — an empty data field makes `res_pjsip` decline to load
+entirely). It's bundle-mounted into the container by
+[`docker-compose.agent.yml`](./docker-compose.agent.yml) so operators
+get this transparently. Persistence lives in
+`/var/lib/asterisk/astdb.sqlite3` inside the container's writable
+layer; re-provisioning is idempotent so a fresh container catches up
+on first agent bootstrap.
 
-The codec / DTLS / WebRTC field set the provisioner emits is asserted to
-match `pjsip.conf`'s `[endpoint-resident-template]` by
+PR #100 fixed a separate provisioner-side regression: the
+empty-`sip_ha1` guard at the top of `PjsipProvisioner::provision`
+was a leftover from the pre-PR-#77 digest-auth era. Because the new
+import flow legitimately leaves `sipHa1` empty, this guard silently
+dropped every resident from the bootstrap scan. Removed; the
+remaining guard is `if (sip_username.empty())` only.
+
+The SIP realm carried on the auth object's `realm` field was
+auto-discovered on every (re)connect via PR #24's `AGENT_HELLO` →
+`SOCIETY_BOOTSTRAP` round-trip. The realm plumbing remains in place
+(observability hook, future-use), but no provisioned object
+references it anymore. A future PR will remove the dead realm code.
+
+The codec / DTLS / WebRTC field set the provisioner emits is asserted
+to match `pjsip.conf`'s `[endpoint-resident-template]` by
 `PjsipTemplateDrift` (PR #22). Edit either side without updating the
 other and the test fails noisily.
 
@@ -409,47 +438,102 @@ six accept env-var overrides for unattended re-runs — see
 ## Container image releases (CI)
 
 [`.github/workflows/publish-images.yml`](./.github/workflows/publish-images.yml)
-publishes multi-arch (`linux/amd64` + `linux/arm64`) images to Docker
-Hub on **`main`-branch pushes that touch image-relevant files**.
+is the single workflow that, on every `main`-branch push touching
+image-relevant files, builds + tests + publishes container images +
+deploys `pbx-cloud` to Heroku. End-to-end: ~15 min on a warm cache,
+~30-90 min cold.
+
+### What the workflow does (job graph)
+
+```
+bootstrap ──┬─► test ──┬─► services (agent + wsdbagent matrix)  →  Docker Hub
+            │          ├─► publish-cloud  →  Heroku registry + container:release
+            │          └─► (any new image jobs gated here)
+            └─► installer  →  Docker Hub
+```
+
+| Job | What | Arch | Cache | Notes |
+|---|---|---|---|---|
+| `bootstrap` | Build `pbx-cpp-builder:bootstrap` (ACE/TAO 7.0.0 + mongo-cxx-driver + googletest on ubuntu:20.04) | amd64 + arm64 | registry buildcache (`mode=max`) | Slow cold (~30 min/arch); cached re-runs in seconds. Every other job `FROM`s this via `BUILDER_IMAGE` ARG. |
+| `test` | Build `docker/Dockerfile.test` against the just-published bootstrap, run `offtarget` GTest suite | amd64 only | none (one-shot) | **Quality gate: a failed test or compile error stops services + publish-cloud.** Catches the class of bug that used to surface only at Heroku deploy (PR #85 missing-header, PR #99 missing opcode whitelist, PR #100 stale provisioner gate, PR #101 missing bridge re-arm). Added in PR #96. |
+| `services` | Build + push `onprem-pbx-agent` + `onprem-pbx-wsdbagent` (matrix) | amd64 + arm64 (QEMU) | registry buildcache per image | Pulled by `install.sh` via `docker-compose pull`. |
+| `publish-cloud` | Build `pbx-cloud`, push to `registry.heroku.com/pabx/web`, `heroku container:release web --app pabx` | amd64 only | (Heroku Common Runtime is amd64) | Replaces the manual `./deploy-heroku.sh deploy` round-trip (PR #95). The script stays as an escape hatch for emergency push from a laptop. Heroku registry rejects OCI manifests + attestations, so `provenance: false` + `oci-mediatypes=false` are set. |
+| `installer` | Build + push `onprem-pbx-installer` (DooD pattern — runs the install scripts against the host's Docker daemon) | amd64 + arm64 (QEMU) | registry buildcache | Cross-platform install: one `docker run` from macOS/Windows/Linux brings the stack up. Bundles `scripts/installer-entrypoint.sh` + the per-society compose + cert tooling. Added in PR #97. |
+
+Each image-publishing job also runs `peter-evans/dockerhub-description@v4`
+to keep the Docker Hub "Overview" tab in sync with
+[`docker/dockerhub-descriptions/*.md`](./docker/dockerhub-descriptions/)
+— so the public Hub page for each image always reflects current
+behaviour without a manual click (PR #99).
+
+### Latest-push-wins (no overlapping runs)
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+A newer push to `main` auto-cancels any earlier in-flight run for
+the same ref. Saves CI minutes + avoids the "v40 published from PR
+#93 while v41 is being built from PR #95" race (PR #96). Practical
+consequence: when you back-to-back-merge two PRs (#100 + #101 today),
+only **one** workflow runs, against the second commit, and it builds
++ tests + deploys both fixes together.
+
+### What triggers the workflow
 
 | Action | Triggers workflow? |
 |---|---|
 | Push commit to a feature branch (no PR yet)                       | No — only `main` is watched |
-| Open a PR against main                                            | No — PRs aren't a `push` event for this watcher |
+| Open a PR against main                                            | No — PRs aren't a `push` event for this watcher. Run tests locally instead (see [Local pre-PR test](#local-pre-pr-test-loop)) |
 | Merge a PR that touches `pbx-agent/**` or `modules/**`            | **Yes** |
 | Merge a PR that touches `docker/Dockerfile.{bootstrap,agent,wsdbagent}` | **Yes** |
+| Merge a PR that touches `CMakeLists.txt`                          | **Yes** |
+| Merge a PR that touches the workflow itself                       | **Yes** |
 | Merge a PR that's docs-only (`*.md`, `scripts/README.md`, …)      | No — saves ~30 min + 2 GB of Hub bandwidth per non-binary PR |
-| Merge a PR that touches `modules/module/pbx/...`                  | **Yes** |
 | Click "Re-run workflow" in the Actions UI                          | **Yes** (via `workflow_dispatch`) |
 
-Published tags (rolling + immutable):
+### Published images
 
-| Image | Tags |
-|---|---|
-| `docker.io/naushada/pbx-cpp-builder` | `:bootstrap`, `:<sha>` |
-| `docker.io/naushada/onprem-pbx-agent` | `:latest`, `:<sha>` |
-| `docker.io/naushada/onprem-pbx-wsdbagent` | `:latest`, `:<sha>` |
+| Image | Tags | Consumed by |
+|---|---|---|
+| `docker.io/naushada/pbx-cpp-builder` | `:bootstrap`, `:<sha>` | INTERNAL — base layer for every other build. Operators never pull this. |
+| `docker.io/naushada/onprem-pbx-agent` | `:latest`, `:<sha>` | `install.sh` on society machine via `podman-compose pull` |
+| `docker.io/naushada/onprem-pbx-wsdbagent` | `:latest`, `:<sha>` | same |
+| `docker.io/naushada/onprem-pbx-installer` | `:latest`, `:<sha>` | Operators on macOS/Windows: `docker run naushada/onprem-pbx-installer …` (see [`INSTALL-windows.md`](./INSTALL-windows.md)) |
+| `registry.heroku.com/pabx/web` | `:latest` | Heroku `pabx` app — released to web dyno automatically |
 
 The `:<sha>` tags let a society pin to a known-good build — edit its
 `docker-compose.agent.yml` to swap `:latest` for `:<commit-sha>`.
 
-Required GitHub repo secrets (set once via Settings → Secrets and
-variables → Actions):
+### Required GitHub repo secrets
 
-- `DOCKERHUB_USERNAME` = `naushada`
-- `DOCKERHUB_TOKEN` = a Docker Hub access token with **write** scope
-  (create at https://hub.docker.com/settings/security — do NOT use
-  your account password)
-- `HEROKU_API_KEY` = a Heroku account API key (create at
-  https://dashboard.heroku.com/account → "Authorizations" → "Create
-  authorization" — do NOT use your account password)
+Set once via *Settings → Secrets and variables → Actions* (repository
+secrets, NOT environment secrets):
 
-The third secret powers a `publish-cloud` job that **also deploys the
-cloud to Heroku** on every same-path push to main: builds
-`pbx-cloud` for `linux/amd64`, pushes to `registry.heroku.com/pabx/web`,
-and runs `heroku container:release web --app pabx`. This replaces the
-manual `./deploy-heroku.sh deploy` round-trip — the script stays as
-an escape hatch for emergency push from a laptop.
+| Secret | Value | Notes |
+|---|---|---|
+| `DOCKERHUB_USERNAME` | `naushada` | The Docker Hub account that owns the published repos |
+| `DOCKERHUB_TOKEN`    | a Docker Hub access token with **write** scope | Create at https://hub.docker.com/settings/security — do NOT use your account password. Never paste in chat; use `gh secret set` or the web UI. |
+| `HEROKU_API_KEY`     | a long-lived Heroku authorization | Create at https://dashboard.heroku.com/account → "Authorizations" → "Create authorization". Do NOT use `heroku auth:token` — those expire and break the workflow mid-CI. |
+
+### Local pre-PR test loop
+
+The CI test gate is a safety net, not a substitute for running the
+suite before pushing. The same image CI builds is reproducible locally
+via Lima (macOS) or any Linux box with podman:
+
+```sh
+# from the repo root
+podman build -f docker/Dockerfile.test -t onprem-pbx-test:dev .
+podman run --rm onprem-pbx-test:dev
+```
+
+Expected: **556 PASSED, 10 SKIPPED** (the skips are baseline — see
+[Skipped tests](#skipped-tests)). A new test failure means CI will
+block the PR from publishing images / deploying cloud; fix locally
+first.
 
 ## TLS cert rotation
 
