@@ -30,6 +30,10 @@ SubscriberWatcher::SubscriberWatcher(IMongodbClient &db,
       m_provisioner(provisioner) {}
 
 void SubscriberWatcher::bootstrap() {
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-agent] SubscriberWatcher::bootstrap "
+                      "(society=%s) — full scan then open change stream\n"),
+             m_society_id.c_str()));
   run_full_scan();
 
   // Open the change stream after the bootstrap so we don't double-apply
@@ -39,6 +43,11 @@ void SubscriberWatcher::bootstrap() {
 }
 
 void SubscriberWatcher::resync() {
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-agent] SubscriberWatcher::resync "
+                      "(society=%s) — full scan, change stream cursor "
+                      "left intact\n"),
+             m_society_id.c_str()));
   // Re-run the full-scan + provision step but DON'T touch the change
   // stream — keep the existing cursor + resume token alive so we don't
   // lose live events queued while resync is in flight. The driver is
@@ -64,7 +73,19 @@ void SubscriberWatcher::run_full_scan() {
     return;
   }
 
-  if (raw.empty()) return;
+  if (raw.empty()) {
+    // Used to be silent — this is the most common cause of "bootstrap
+    // ran but nothing happened". Could mean: no subscribers for this
+    // society, OR Mongo's get_documents swallowed an error and gave
+    // back "".
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [pbx-agent] SubscriberWatcher::run_full_scan: "
+                        "get_documents returned empty for society=%s "
+                        "(no subscribers OR Mongo unreachable — "
+                        "MongodbClient::get_documents swallows errors)\n"),
+               m_society_id.c_str()));
+    return;
+  }
 
   json arr;
   try { arr = json::parse(raw); }
@@ -74,26 +95,50 @@ void SubscriberWatcher::run_full_scan() {
                         "JSON parse failed: %s\n"), e.what()));
     return;
   }
-  if (!arr.is_array()) return;
+  if (!arr.is_array()) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] SubscriberWatcher::run_full_scan: "
+                        "expected JSON array, got %s\n"),
+               arr.type_name()));
+    return;
+  }
+
+  const std::size_t row_count = arr.size();
+  std::size_t provisioned = 0, deprovisioned = 0, skipped_no_sip = 0;
 
   for (const auto &row : arr) {
-    if (!row.is_object()) continue;
+    if (!row.is_object()) { ++skipped_no_sip; continue; }
     const std::string sip_user = row.value("sipUsername", std::string{});
     const std::string sip_ha1  = row.value("sipHa1",      std::string{});
     const std::string status   = row.value("status",      std::string{"active"});
-    if (sip_user.empty()) continue;
+    if (sip_user.empty()) {
+      ++skipped_no_sip;
+      continue;
+    }
 
     if (row.contains("_id"))
       m_id_to_sipuser[oid_str(row["_id"])] = sip_user;
 
     if (status == "active") {
       m_provisioner.provision(sip_user, sip_ha1);
+      ++provisioned;
     } else {
       // Pre-disabled subscribers shouldn't be in Asterisk. A delete is
       // cheap and idempotent.
       m_provisioner.deprovision(sip_user);
+      ++deprovisioned;
     }
   }
+
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-agent] SubscriberWatcher::run_full_scan "
+                      "complete (society=%s rows=%u provisioned=%u "
+                      "deprovisioned=%u skipped_no_sip=%u)\n"),
+             m_society_id.c_str(),
+             static_cast<unsigned>(row_count),
+             static_cast<unsigned>(provisioned),
+             static_cast<unsigned>(deprovisioned),
+             static_cast<unsigned>(skipped_no_sip)));
 }
 
 void SubscriberWatcher::open_stream() {

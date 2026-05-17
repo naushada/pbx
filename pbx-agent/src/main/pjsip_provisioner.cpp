@@ -2,6 +2,8 @@
 
 #include "json.hpp"
 
+#include "ace/Log_Msg.h"
+
 #include <utility>
 
 using json = nlohmann::json;
@@ -30,10 +32,24 @@ PjsipProvisioner::PjsipProvisioner(IAriRest &rest, std::string sip_realm)
 
 void PjsipProvisioner::provision(const std::string &sip_username,
                                   const std::string &sip_ha1) {
-  if (sip_username.empty() || sip_ha1.empty()) return;
+  if (sip_username.empty() || sip_ha1.empty()) {
+    // Silent no-op was masking misshapen subscriber docs. Surface them
+    // so the dry test makes the gap visible.
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision skipped "
+                        "(sip_username='%s' sip_ha1_empty=%d) — missing field "
+                        "in the subscribers doc\n"),
+               sip_username.c_str(), sip_ha1.empty() ? 1 : 0));
+    return;
+  }
 
   const std::string auth_id = sip_username + "-auth";
   const std::string aor_id  = sip_username + "-aor";
+
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision sip_user=%s "
+                      "(realm=%s) — DELETE legacy auth, PUT aor + endpoint\n"),
+             sip_username.c_str(), m_sip_realm.c_str()));
 
   // SIP digest auth is intentionally NOT provisioned. The browser has
   // no password (see ui/src/common/sip-ua-sipjs.ts:18); the cloud
@@ -44,22 +60,32 @@ void PjsipProvisioner::provision(const std::string &sip_username,
   // an existing subscriber drops the stale auth association on its
   // first pass — Asterisk returns 404 for already-gone, which the
   // ARI client treats as a silent no-op.
-  m_rest.delete_dynamic_config(kCfgClass, "auth", auth_id);
+  const auto del_auth = m_rest.delete_dynamic_config(kCfgClass, "auth", auth_id);
+  if (del_auth.status != 0 && del_auth.status != 204 && del_auth.status != 404)
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision sip_user=%s "
+                        "auth DELETE returned %d body=%s\n"),
+               sip_username.c_str(), del_auth.status, del_auth.body.c_str()));
 
-  m_rest.create_dynamic_config(
+  const auto put_aor = m_rest.create_dynamic_config(
       kCfgClass, "aor", aor_id,
       make_fields_body({
           {"type",            "aor"},
           {"max_contacts",    "5"},
           {"remove_existing", "yes"},
       }));
+  if (put_aor.status < 200 || put_aor.status >= 300)
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision sip_user=%s "
+                        "aor PUT returned %d body=%s\n"),
+               sip_username.c_str(), put_aor.status, put_aor.body.c_str()));
 
   // The endpoint inlines everything `endpoint-resident-template` carries
   // in pjsip.conf — sorcery dynamic objects don't inherit (!)-marked
   // templates from the config file, so the codecs / ICE / DTLS / WebRTC
   // settings have to be repeated here. Keep these in sync with
   // docker/asterisk/pjsip.conf when that file changes.
-  m_rest.create_dynamic_config(
+  const auto put_endpoint = m_rest.create_dynamic_config(
       kCfgClass, "endpoint", sip_username,
       make_fields_body({
           {"type",                          "endpoint"},
@@ -89,11 +115,21 @@ void PjsipProvisioner::provision(const std::string &sip_username,
           // is cleaned up too).
           {"aors",                          aor_id},
       }));
+  if (put_endpoint.status < 200 || put_endpoint.status >= 300)
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision sip_user=%s "
+                        "endpoint PUT returned %d body=%s\n"),
+               sip_username.c_str(), put_endpoint.status, put_endpoint.body.c_str()));
   (void)sip_ha1;
 }
 
 void PjsipProvisioner::deprovision(const std::string &sip_username) {
   if (sip_username.empty()) return;
+
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-agent] PjsipProvisioner::deprovision sip_user=%s "
+                      "— DELETE endpoint + auth + aor\n"),
+             sip_username.c_str()));
 
   // Endpoint first: an in-flight INVITE racing the delete should find no
   // peer rather than an endpoint that briefly references a deleted
