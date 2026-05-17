@@ -306,62 +306,13 @@ else
   else
     echo "[lima] bootstrap not on host either — building inside VM (~30 min)"
   fi
-  # Heredoc the Dockerfile through `tee` to the virtiofs-mounted repo
-  # so podman build can pick it up. Build context is empty — every
-  # source is pulled from upstream inside the Dockerfile.
-  SH "mkdir -p $REPO_HOST/build-lima && cat > $REPO_HOST/build-lima/Dockerfile.bootstrap" <<'DOCKEREOF'
-FROM ubuntu:20.04
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates cmake build-essential libboost-all-dev \
-        libssl-dev libzstd-dev libsasl2-dev zlib1g-dev \
-        wget git pkg-config && rm -rf /var/lib/apt/lists/*
-
-# ACE/TAO 7.0.0. ssl=1 on the install line is load-bearing — without
-# it the link step fails with `cannot find -lACE_SSL`.
-ENV ACE_PREFIX=/usr/local/ACE_TAO-7.0.0
-RUN cd /root && \
-    wget -q https://github.com/DOCGroup/ACE_TAO/releases/download/ACE%2BTAO-7_0_0/ACE+TAO-7.0.0.tar.gz && \
-    tar -xzf ACE+TAO-7.0.0.tar.gz && rm ACE+TAO-7.0.0.tar.gz && \
-    cd ACE_wrappers && \
-    echo '#include "ace/config-linux.h"' > ace/config.h && \
-    printf 'include $(ACE_ROOT)/include/makeinclude/platform_linux.GNU\n' \
-        > include/makeinclude/platform_macros.GNU && \
-    make install ssl=1 INSTALL_PREFIX=$ACE_PREFIX ACE_ROOT=$(pwd) \
-        SSL_ROOT=/usr/include/openssl -j$(nproc) && \
-    echo $ACE_PREFIX/lib > /etc/ld.so.conf.d/ace.conf && ldconfig
-
-# mongo-c-driver 1.19.1 — install prefix must be /usr/local to match
-# what mongo-cxx-driver's pkg-config probe expects.
-RUN cd /root && \
-    git clone -b 1.19.1 --depth 1 https://github.com/mongodb/mongo-c-driver.git && \
-    cd mongo-c-driver && mkdir -p build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release \
-             -DCMAKE_INSTALL_PREFIX=/usr/local \
-             -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF && \
-    make -j$(nproc) && make install && ldconfig
-
-# mongo-cxx-driver v3.6 — BSONCXX_POLY_USE_MNMLSTC=1 to avoid the
-# boost variant linkage that v3.6 defaults to.
-RUN cd /root && \
-    git clone -b releases/v3.6 --depth 1 https://github.com/mongodb/mongo-cxx-driver.git && \
-    cd mongo-cxx-driver && mkdir -p build && cd build && \
-    cmake .. -DBSONCXX_POLY_USE_MNMLSTC=1 \
-             -DCMAKE_BUILD_TYPE=Release \
-             -DCMAKE_INSTALL_PREFIX=/usr/local \
-             -DBUILD_TESTING=OFF \
-             -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=TRUE && \
-    make -j2 mongocxx_shared bsoncxx_shared && make install && ldconfig
-
-# googletest 1.12.1 — offtarget's link target. Matches xpmile.
-RUN cd /root && \
-    git clone -b release-1.12.1 --depth 1 https://github.com/google/googletest.git && \
-    cd googletest && mkdir -p build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    make -j$(nproc) && make install && ldconfig
-DOCKEREOF
-  SH "cd $REPO_HOST/build-lima && sudo podman build \
-        -t localhost/pbx-cpp-builder:bootstrap -f Dockerfile.bootstrap ."
+  # Build from docker/Dockerfile.bootstrap (the same file
+  # deploy-heroku.sh's `cmd_build_bootstrap` uses for the amd64 host
+  # build). One source, both build contexts. The repo is bind-mounted
+  # into the VM at $REPO_HOST so podman build inside the VM sees it.
+  SH "cd $REPO_HOST && sudo podman build \
+        -t localhost/pbx-cpp-builder:bootstrap \
+        -f docker/Dockerfile.bootstrap ."
 fi
 
 # ─── 4. Per-society config (Asterisk DTLS cert + turnserver.conf) ─────────
