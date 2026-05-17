@@ -60,18 +60,23 @@ everything.)
 
 Six containers, defined in [`docker-compose.agent.yml`](../docker-compose.agent.yml):
 
-| Container          | Image                                                       | Role                                                                         |
-|--------------------|-------------------------------------------------------------|------------------------------------------------------------------------------|
-| `pbx-mongo`        | `mongo:7` (1-node replica set, healthcheck does `rs.initiate`) | On-prem subscriber/CDR DB. Provisioner reads it via change-streams.       |
-| `pbx-asterisk`     | local build `pbx-asterisk:latest` (Asterisk 20)             | SIP/RTP. Driven via ARI dynamic-config by `pbx-agent`.                       |
-| `pbx-coturn`       | `coturn/coturn:4.6`                                         | TURN/STUN for WebRTC NAT traversal.                                          |
-| `pbx-agent`        | local build `onprem-pbx-agent:latest`                       | The on-prem control-plane daemon. Dials `/agent` on the Heroku cloud.        |
-| `pbx-wsdbagent`    | local build `pbx-wsdbagent:latest`                          | Bridges Heroku → on-prem Mongo over `/ws/db`. Cloud reads/writes via it.     |
-| `pbx-cert-watcher` | local build `pbx-cert-watcher:latest`                       | Sidecar that watches the cloud-issued cert dir and HUPs containers on rotation. |
+| Container          | Built by `lima start`? | Image                                                          | Role                                                                            |
+|--------------------|------------------------|----------------------------------------------------------------|---------------------------------------------------------------------------------|
+| `pbx-mongo`        | No (pulled)            | `mongo:7` (1-node replica set, healthcheck does `rs.initiate`) | On-prem subscriber/CDR DB. Provisioner reads it via change-streams.             |
+| `pbx-asterisk`     | **Yes**                | local build `pbx-asterisk:latest` (Asterisk 20)                | SIP/RTP. Driven via ARI dynamic-config by `pbx-agent`.                          |
+| `pbx-coturn`       | No (pulled)            | `coturn/coturn:4.6`                                            | TURN/STUN for WebRTC NAT traversal.                                             |
+| `pbx-agent`        | **Yes**                | local build `onprem-pbx-agent:latest`                          | The on-prem control-plane daemon. Dials `/agent` on the Heroku cloud.           |
+| `pbx-wsdbagent`    | **Yes**                | local build `onprem-pbx-wsdbagent:latest`                      | Bridges Heroku → on-prem Mongo over `/ws/db`. Cloud reads/writes via it.        |
+| `pbx-cert-watcher` | **Yes**                | local build `pbx-cert-watcher:latest`                          | Sidecar that watches the cloud-issued cert dir and HUPs containers on rotation. |
 
-`pbx-agent` and `pbx-wsdbagent` both reach the cloud at
-`${HEROKU_HOST}:${HEROKU_PORT}` (default
-`pabx-5fbf3550f938.herokuapp.com:443`).
+**Heads-up — `pbx-cloud` is NOT in this stack.** It's defined only in
+[`docker-compose.heroku.yml`](../docker-compose.heroku.yml) (the
+deploy spec) and runs as a Heroku dyno, not inside Lima. `pbx-agent`
+and `pbx-wsdbagent` reach the cloud at `${HEROKU_HOST}:${HEROKU_PORT}`
+(default `pabx-5fbf3550f938.herokuapp.com:443`). To test cloud-side
+changes locally you either deploy to Heroku (`amd64` build required —
+see PR #80/#85 deploy notes) or run pbx-cloud as a 7th container under
+an opt-in compose profile (separate workflow).
 
 ## Subcommands
 
