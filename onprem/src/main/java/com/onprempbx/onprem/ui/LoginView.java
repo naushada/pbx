@@ -1,8 +1,10 @@
 package com.onprempbx.onprem.ui;
 
+import com.onprempbx.onprem.config.AutoLoginConfig;
 import com.onprempbx.onprem.model.LoginCredentials;
 import com.onprempbx.onprem.service.AuthException;
 import com.onprempbx.onprem.service.AuthService;
+import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
 import com.vaadin.flow.component.html.H1;
@@ -24,6 +26,12 @@ import com.vaadin.flow.server.auth.AnonymousAllowed;
  * <p>On success → navigates to {@code /dashboard}. On
  * {@link AuthException} → shows a notification distinguishing 401
  * ("Invalid credentials") from 403 ("Account disabled").
+ *
+ * <p>When {@link AutoLoginConfig#isConfigured()} returns true, the
+ * view skips the form and submits the configured credentials
+ * immediately. A failed auto-login falls through to the manual form
+ * with the cloud's error notification — same UX as a manual fail —
+ * so a bad env-var combo is visible and recoverable.
  */
 @Route("login")
 @PageTitle("onprem-pbx admin · login")
@@ -32,8 +40,45 @@ public class LoginView extends VerticalLayout {
 
     private final AuthService auth;
 
-    public LoginView(AuthService auth) {
+    public LoginView(AuthService auth, AutoLoginConfig autoLogin) {
         this.auth = auth;
+
+        // Honour an existing session — operator navigated to /login
+        // while still logged in (e.g. browser back button). Skip both
+        // form render and auto-login; just send them to the dashboard.
+        if (auth.getToken() != null && !auth.getToken().isBlank()) {
+            UI.getCurrent().navigate("dashboard");
+            return;
+        }
+
+        // Auto-login path: when the operator opted in via env (see
+        // AutoLoginConfig), submit the configured credentials and
+        // navigate. On any failure, fall through to the manual form
+        // below — so a stale password is recoverable without restarting
+        // the JVM.
+        if (autoLogin.isConfigured()) {
+            final LoginCredentials creds = new LoginCredentials(
+                    autoLogin.getSociety(),
+                    autoLogin.getUser(),
+                    autoLogin.getPassword());
+            try {
+                auth.login(creds);
+                UI.getCurrent().navigate("dashboard");
+                return;
+            } catch (AuthException ae) {
+                Notification n = Notification.show(
+                        "Auto-login failed: " + ae.getMessage()
+                            + " — falling back to manual login.",
+                        4000, Notification.Position.MIDDLE);
+                n.addThemeVariants(NotificationVariant.LUMO_ERROR);
+            } catch (Exception ex) {
+                Notification n = Notification.show(
+                        "Auto-login could not reach backend: " + ex.getMessage()
+                            + " — falling back to manual login.",
+                        5000, Notification.Position.MIDDLE);
+                n.addThemeVariants(NotificationVariant.LUMO_ERROR);
+            }
+        }
 
         setSizeFull();
         setAlignItems(FlexComponent.Alignment.CENTER);

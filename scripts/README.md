@@ -174,6 +174,23 @@ lima shell sudo podman exec -it pbx-mongo mongosh \
     --eval 'db.getSiblingDB("pabx").subscribers.find().toArray()'
 ```
 
+### Skip the admin-UI login on every iteration
+
+When you're iterating on admin views and tired of typing credentials,
+set all three of these env vars before `run-admin-ui.sh`:
+
+```sh
+ADMIN_AUTO_SOCIETY=soc_sunset \
+ADMIN_AUTO_USER=ADMIN \
+ADMIN_AUTO_PASSWORD=changeme \
+    ./scripts/run-admin-ui.sh
+```
+
+The UI auto-submits on /login and forwards to /dashboard. Default OFF
+— missing any of the three falls back to the manual form. Cloud still
+validates the credentials, so a bad combo surfaces in the UI (and
+lets you log in manually). Don't enable on a shared dev box.
+
 ### Tear everything down
 
 ```sh
