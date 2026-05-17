@@ -217,11 +217,15 @@ TEST(SubscriberWatcher, Bootstrap_ProvisionsActive_DeprovisionsDisabled)
 
     w.bootstrap();
 
-    // alice active → 3 PUTs; bob disabled → 3 DELETEs.
-    EXPECT_EQ(3u, rest.puts.size());
-    EXPECT_EQ("u_alice", rest.puts[2].id);  // endpoint id
-    EXPECT_EQ(3u, rest.deletes.size());
-    EXPECT_EQ("u_bob",   rest.deletes[0].id);  // endpoint-first delete
+    // alice active → 2 PUTs (aor + endpoint; auth dropped by PR #77)
+    //                + 1 DELETE (legacy auth cleanup).
+    // bob   disabled → 3 DELETEs (endpoint-first, then auth, then aor).
+    EXPECT_EQ(2u, rest.puts.size());
+    EXPECT_EQ("u_alice", rest.puts[1].id);  // endpoint id (was index 2 pre-#77)
+    EXPECT_EQ(4u, rest.deletes.size());
+    // alice's auth-cleanup precedes bob's full deprovision in iteration order.
+    EXPECT_EQ("u_alice-auth", rest.deletes[0].id);
+    EXPECT_EQ("u_bob",        rest.deletes[1].id);  // bob's endpoint-first delete
     EXPECT_EQ(2u, w.cached_count())
         << "_id→sipUsername cache populated for both rows, so a later "
         << "delete event can resolve sipUsername.";
@@ -251,8 +255,9 @@ TEST(SubscriberWatcher, Bootstrap_NoChangeStream_TickIsSilentNoOp)
     SubscriberWatcher w(db, "soc1", prov);
 
     w.bootstrap();
-    // bootstrap still ran
-    EXPECT_EQ(3u, rest.puts.size());
+    // bootstrap still ran — 2 PUTs (aor + endpoint) for u_alice; PR #77
+    // dropped the auth PUT so it's no longer 3.
+    EXPECT_EQ(2u, rest.puts.size());
     rest.puts.clear();
     rest.deletes.clear();
 
@@ -276,8 +281,9 @@ TEST(SubscriberWatcher, Event_Insert_Active_Provisions)
     json doc = json::parse(subscriber_row("0000000000000000000000c1", "u_carol"));
     SubscriberWatcherTestAccess::deliver(w, event("insert", doc));
 
-    EXPECT_EQ(3u, rest.puts.size());
-    EXPECT_EQ("u_carol", rest.puts[2].id);
+    // PR #77: provision() emits aor + endpoint (2 PUTs), no auth.
+    EXPECT_EQ(2u, rest.puts.size());
+    EXPECT_EQ("u_carol", rest.puts[1].id);  // endpoint id (was index 2 pre-#77)
     EXPECT_EQ(1u, w.cached_count())
         << "insert populates the _id→sipUsername cache so a later delete "
         << "(which only carries documentKey._id) resolves sipUsername.";
@@ -393,14 +399,15 @@ TEST(SubscriberWatcher, Tick_DrainsOneEventPerCall)
     db.issued_cursor->queue.push_back(event("insert", b));
 
     w.tick();
-    EXPECT_EQ(3u, rest.puts.size())
+    // PR #77: provision() now emits 2 PUTs (aor + endpoint), was 3.
+    EXPECT_EQ(2u, rest.puts.size())
         << "one tick drains exactly one event — keeps the reactor responsive";
 
     w.tick();
-    EXPECT_EQ(6u, rest.puts.size());
+    EXPECT_EQ(4u, rest.puts.size());
 
     w.tick();  // queue empty
-    EXPECT_EQ(6u, rest.puts.size());
+    EXPECT_EQ(4u, rest.puts.size());
 }
 
 // ─── Resume-token capture + reopen recovery ────────────────────────────────
@@ -482,7 +489,8 @@ TEST(SubscriberWatcher, Tick_TryNextThrows_ReopensWithResumeToken)
     // Drain the queued event so the watcher captures RESUME-A as its
     // last applied token.
     w.tick();
-    EXPECT_EQ(3u, rest.puts.size());
+    // PR #77: provision() now emits 2 PUTs (aor + endpoint), was 3.
+    EXPECT_EQ(2u, rest.puts.size());
     EXPECT_NE(std::string::npos, w.resume_token().find("RESUME-A"));
 
     // Arm cursor A to throw on the next try_next, then tick: the
@@ -544,26 +552,22 @@ TEST(SubscriberWatcher, Resync_ReRunsFullScan_WithCurrentRealm)
     SubscriberWatcher w(db, "soc1", prov);
     w.bootstrap();
     const auto puts_after_bootstrap = rest.puts.size();
-    EXPECT_EQ(3u, puts_after_bootstrap);
+    // PR #77: provision() emits aor + endpoint (2 PUTs), no auth.
+    EXPECT_EQ(2u, puts_after_bootstrap);
 
     // Cloud sends a new realm; production handler sets it on prov first…
     prov.set_sip_realm("acme.pbx.local");
     // …then triggers resync. The full-scan runs again; sorcery absorbs
-    // duplicates, so we just verify that all three sorcery objects were
-    // re-PUT (the next 3 entries in rest.puts).
+    // duplicates, so we just verify that both sorcery objects were
+    // re-PUT (the next 2 entries in rest.puts).
     w.resync();
-    EXPECT_EQ(puts_after_bootstrap + 3u, rest.puts.size());
+    EXPECT_EQ(puts_after_bootstrap + 2u, rest.puts.size());
 
-    // The second round's auth PUT carries the new realm.
-    auto auth = nlohmann::json::parse(rest.puts[puts_after_bootstrap].fields_json);
-    bool found_realm = false;
-    for (const auto &f : auth["fields"]) {
-        if (f["attribute"] == "realm") {
-            EXPECT_EQ("acme.pbx.local", f["value"].get<std::string>());
-            found_realm = true;
-        }
-    }
-    EXPECT_TRUE(found_realm) << "auth PUT must carry the corrected realm";
+    // Note: pre-#77 this test verified the auth PUT carried the new
+    // realm in its `realm` field. PR #77 dropped digest auth entirely,
+    // so the realm is no longer carried in any PUT body — it lives
+    // only on PjsipProvisioner's m_sip_realm state. The re-PUT count
+    // above is sufficient to verify resync triggered the full-scan.
 }
 
 TEST(SubscriberWatcher, Resync_DoesNotTouchChangeStreamCursor)
