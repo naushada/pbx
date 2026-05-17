@@ -112,8 +112,11 @@ lima logs -f pbx-asterisk        # watch a live call
 
 ## Already inside the VM
 
-Once you're inside the VM (`lima shell` with no args), the `lima` shim
-is gone — you talk to podman directly. The compose stack runs as root,
+`lima shell` (with no args) prints a cyan **PABX** banner and drops
+you into an interactive bash session. The banner is your cue that
+the next prompt is the VM, not the host.
+
+Once inside, the `lima` shim is gone — you talk to podman directly. The compose stack runs as root,
 so every podman call needs `sudo`:
 
 ```sh

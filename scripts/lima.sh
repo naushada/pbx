@@ -123,7 +123,19 @@ case "$cmd" in
     fi
     if [ "$#" -eq 0 ]; then
       # Interactive shell — drop the `bash -c` wrapper so the user gets
-      # a real TTY with their shell history etc.
+      # a real TTY with their shell history etc. Print a banner BEFORE
+      # handing off so the user has a clear "yes I'm in the PABX VM" cue.
+      printf '\n\033[1;36m'
+      cat <<'BANNER'
+########     ###    ########  ##     ##
+##     ##   ## ##   ##     ##  ##   ##
+##     ##  ##   ##  ##     ##   ## ##
+########  ##     ## ########     ###
+##        ######### ##     ##   ## ##
+##        ##     ## ##     ##  ##   ##
+##        ##     ## ########  ##     ##
+BANNER
+      printf '\033[0m\n  on-prem PABX dev VM — \033[1msudo podman ps\033[0m for container status\n\n'
       exec limactl shell "$VM"
     else
       # One-shot command. `--` passes through to limactl shell, then to
