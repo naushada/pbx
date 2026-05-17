@@ -1,3 +1,39 @@
+# scripts/
+
+Operational scripts for onprem-pbx. Each is invokable as
+`./scripts/<name>.sh` from the repo root.
+
+**Convention:** every script accepts `help` (also `-h`, `--help`) and
+prints its full usage:
+
+```sh
+./scripts/lima.sh help
+./scripts/bootstrap-society.sh help
+./scripts/prune-images.sh help
+# …etc — works for every script in this directory.
+```
+
+## What each script does
+
+| Script                          | One-liner                                                                                          |
+|---------------------------------|----------------------------------------------------------------------------------------------------|
+| `lima.sh`                       | Provision a Lima VM and bring the full 6-container on-prem stack up against the deployed cloud.    |
+| `bootstrap-society.sh`          | Seed a new society + its first admin subscriber via the cloud REST + a direct Mongo write.        |
+| `setup-society.sh`              | Generate the Asterisk DTLS cert + coturn `static-auth-secret` + rendered `turnserver.conf`.       |
+| `sample_subscriber.sh`          | Seed two demo residents (A101, A102) into the on-prem Mongo for in-VM softphone testing.          |
+| `run-admin-ui.sh`               | Run the Vaadin admin UI in a `maven:3.9-eclipse-temurin-17` podman container against a backend.   |
+| `prune-images.sh`               | Reclaim podman image disk on the host AND inside the Lima VM (`--deep` for build cache too).      |
+| `verify-deploy.sh`              | curl-probe the deployed (or local) softphone stack — pass/fail table; non-zero on any failure.    |
+| `install-systemd.sh`            | Install/reinstall the systemd unit that brings up the on-prem stack on host boot. Linux-only.     |
+
+Run `./scripts/<name>.sh help` for the full surface (flags, env
+overrides, required tools).
+
+The rest of this file is a deep-dive on `lima.sh`, the most-used
+one. The other scripts document themselves via `help`.
+
+---
+
 # scripts/lima.sh
 
 One-shot harness that brings the **full on-prem container stack** up

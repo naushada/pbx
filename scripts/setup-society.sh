@@ -36,6 +36,15 @@
 
 set -euo pipefail
 
+usage() {
+  sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+case "${1:-}" in
+  -h|--help|help) usage 0 ;;
+esac
+
 SOCIETY_CODE="${1:-${SOCIETY_CODE:-demo-society}}"
 ASTERISK_KEYS_DIR="${ASTERISK_KEYS_DIR:-certs/asterisk-dtls}"
 TURN_CONF_PATH="${TURN_CONF_PATH:-certs/turnserver.conf}"

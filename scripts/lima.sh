@@ -43,7 +43,7 @@ COMPOSE=docker-compose.agent.yml
 
 usage() {
   cat <<EOF
-usage: $(basename "$0") {start|stop|shell [cmd...]|list|logs [-f] <container>}
+usage: $(basename "$0") {start|stop|shell [cmd...]|list|logs [-f] <container>|help}
   start            provision Lima VM '${VM}', acquire pbx-cpp-builder:bootstrap,
                    bring the 6-container on-prem stack up via podman-compose
                    against ${HEROKU_HOST}:${HEROKU_PORT}, watch for ${RUN_BUDGET_SECS}s.
@@ -58,12 +58,14 @@ usage: $(basename "$0") {start|stop|shell [cmd...]|list|logs [-f] <container>}
                      lima logs pbx-agent                 # last 100 lines
                      lima logs -f pbx-agent              # follow
                    Bare \`lima logs\` lists running pbx-* containers.
+  help             print this message and exit 0.
 EOF
-  exit 1
+  exit "${1:-1}"
 }
 
 cmd="${1:-}"
 case "$cmd" in
+  help|-h|--help) usage 0 ;;
   start) ;;
   stop)
     printf '\n\033[1;34m[lima] tearing down compose stack + VM %s\033[0m\n' "$VM"

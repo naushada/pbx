@@ -31,7 +31,7 @@ for arg in "$@"; do
     --deep) DEEP=1 ;;
     --host) SCOPE=host ;;
     --vm)   SCOPE=vm ;;
-    -h|--help)
+    -h|--help|help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
       exit 0
       ;;

@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
     --port)        PORT=$2;        shift 2 ;;
     --offline)     OFFLINE=1;      shift ;;
     --pull)        PULL=1;         shift ;;
-    -h|--help)     usage 0 ;;
+    -h|--help|help) usage 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;
   esac
 done
