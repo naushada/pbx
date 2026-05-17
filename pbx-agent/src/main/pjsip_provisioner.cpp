@@ -44,7 +44,13 @@ void PjsipProvisioner::provision(const std::string &sip_username,
   }
 
   const std::string auth_id = sip_username + "-auth";
-  const std::string aor_id  = sip_username + "-aor";
+  // AOR id MUST equal sip_username. Asterisk's res_pjsip_registrar
+  // looks up the AOR by the REGISTER's To-header user (e.g. "a102"),
+  // not via the endpoint's `aors=` field. A `-aor` suffix here makes
+  // every REGISTER fail with:
+  //   WARNING res_pjsip_registrar.c: AOR '' not found for endpoint 'a102'
+  // and the contact never binds. Found live 2026-05-17 (PR #103).
+  const std::string aor_id  = sip_username;
 
   ACE_DEBUG((LM_INFO,
              ACE_TEXT("%D [pbx-agent] PjsipProvisioner::provision sip_user=%s "
@@ -134,6 +140,13 @@ void PjsipProvisioner::deprovision(const std::string &sip_username) {
   // peer rather than an endpoint that briefly references a deleted
   // auth/aor. Sorcery's 404 on already-deleted objects is fine.
   m_rest.delete_dynamic_config(kCfgClass, "endpoint", sip_username);
+  // Legacy `<user>-auth` cleanup — auth is no longer provisioned
+  // (PR #77) so a freshly-provisioned subscriber will 404 here;
+  // kept best-effort to prune pre-fix astdb state.
   m_rest.delete_dynamic_config(kCfgClass, "auth",     sip_username + "-auth");
+  m_rest.delete_dynamic_config(kCfgClass, "aor",      sip_username);
+  // Legacy `<user>-aor` cleanup — AOR id used to carry a `-aor`
+  // suffix until PR #103 fixed the registrar mismatch. Drop the
+  // stale row so we don't leak orphan rows in astdb across upgrades.
   m_rest.delete_dynamic_config(kCfgClass, "aor",      sip_username + "-aor");
 }

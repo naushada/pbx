@@ -79,12 +79,15 @@ TEST(PjsipProvisioner, Provision_PutsAorAndEndpoint_PlusLegacyAuthCleanup)
 
     // Two PUTs: aor, endpoint — auth is no longer provisioned because
     // SIP digest is disabled (cloud `/sip-ws` bearer is the only auth).
+    // AOR id == sip_username (PR #103) — Asterisk's registrar looks
+    // up the AOR by the REGISTER's To-header user, NOT via the
+    // endpoint's `aors=` field.
     ASSERT_EQ(2u, rest.puts.size());
     EXPECT_EQ("res_pjsip", rest.puts[0].cfg_class);
     EXPECT_EQ("aor",       rest.puts[0].obj_type);
-    EXPECT_EQ("u_alice-aor",  rest.puts[0].id);
+    EXPECT_EQ("u_alice",   rest.puts[0].id);
     EXPECT_EQ("endpoint",  rest.puts[1].obj_type);
-    EXPECT_EQ("u_alice",      rest.puts[1].id);
+    EXPECT_EQ("u_alice",   rest.puts[1].id);
 
     // Best-effort cleanup of any legacy `<user>-auth` doc left by
     // pre-fix deployments — fires every provision; 404 is silently
@@ -101,8 +104,11 @@ TEST(PjsipProvisioner, Provision_EndpointFieldsMatchTemplate_AndCarryNoAuth)
     p.provision("u_alice", "ha1");
 
     auto ep = parse_fields(rest.puts[1].fields_json);
-    // Endpoint references the sibling aor by id.
-    EXPECT_EQ("u_alice-aor",  ep["aors"]);
+    // Endpoint references the sibling aor by id. AOR id == sip_username
+    // (PR #103) so endpoint and aor share the name in their respective
+    // sorcery namespaces — Asterisk's res_pjsip_registrar relies on
+    // this convention for the REGISTER → AOR match.
+    EXPECT_EQ("u_alice",  ep["aors"]);
     // No `auth` field — SIP digest is intentionally disabled.
     EXPECT_EQ(ep.end(), ep.find("auth"))
         << "endpoint must not reference an auth doc — the browser has no "
@@ -151,16 +157,20 @@ TEST(PjsipProvisioner, Deprovision_DeletesEndpointFirst_ThenAuthAndAor)
 
     p.deprovision("u_alice");
 
-    // Three DELETEs: endpoint first (so an in-flight INVITE finds no
+    // Four DELETEs: endpoint first (so an in-flight INVITE finds no
     // peer), then auth (legacy cleanup — no-op on freshly-provisioned
-    // subscribers), then aor.
-    ASSERT_EQ(3u, rest.deletes.size());
+    // subscribers since PR #77), then aor (current `<user>` id), then
+    // legacy aor (`<user>-aor` id from pre-PR-#103 deployments — kept
+    // best-effort to prune stale astdb rows across upgrades).
+    ASSERT_EQ(4u, rest.deletes.size());
     EXPECT_EQ("endpoint",     rest.deletes[0].obj_type);
     EXPECT_EQ("u_alice",      rest.deletes[0].id);
     EXPECT_EQ("auth",         rest.deletes[1].obj_type);
     EXPECT_EQ("u_alice-auth", rest.deletes[1].id);
     EXPECT_EQ("aor",          rest.deletes[2].obj_type);
-    EXPECT_EQ("u_alice-aor",  rest.deletes[2].id);
+    EXPECT_EQ("u_alice",      rest.deletes[2].id);
+    EXPECT_EQ("aor",          rest.deletes[3].obj_type);
+    EXPECT_EQ("u_alice-aor",  rest.deletes[3].id);
 
     EXPECT_TRUE(rest.puts.empty());
 }
