@@ -17,6 +17,10 @@
 #   ./deploy-heroku.sh push             # push cloud image
 #   ./deploy-heroku.sh release          # release the cloud image
 #   ./deploy-heroku.sh deploy           # build + push + release (cloud)
+#   ./deploy-heroku.sh package-society-certs SUNSET
+#                                       # bundle certs/cloud-issued/* into
+#                                       # /tmp/SUNSET-certs.tar.gz for the
+#                                       # society machine's install.sh
 #
 #   # UI (nginx + Angular SPA) — defaults to HEROKU_APP_UI=onprem
 #   ./deploy-heroku.sh build-ui
@@ -165,6 +169,28 @@ cmd_deploy() {
   cmd_release
 }
 
+# Bundle the cert family extracted by `cmd_extract_agent_certs` into a
+# single tarball suitable for shipping to a society machine. Pairs with
+# `install.sh` on the society side — that script accepts a tarball at
+# the path the operator types in.
+#
+# Usage:
+#   ./deploy-heroku.sh package-society-certs SUNSET
+#     → writes /tmp/SUNSET-certs.tar.gz containing
+#       certs/cloud-issued/innertls/ + certs/cloud-issued/sip-agent/
+cmd_package_society_certs() {
+  local society="${2:-}"
+  [ -n "$society" ] || die "usage: $0 package-society-certs <SOCIETY_CODE>"
+  local src="$(pwd)/certs/cloud-issued"
+  [ -d "$src/innertls" ] && [ -d "$src/sip-agent" ] \
+    || die "certs/cloud-issued/{innertls,sip-agent} missing — run \`$0 deploy\` first to mint them."
+  local out="/tmp/${society}-certs.tar.gz"
+  tar -czf "$out" -C "$src/.." cloud-issued
+  log "packaged → $out"
+  log "  ship it to the society machine (scp / USB / email)"
+  log "  on the society side, run:  sudo CERTS_TARBALL=$out ./install.sh"
+}
+
 cmd_logs() { heroku logs --tail --app "$HEROKU_APP"; }
 cmd_open() { heroku open --app "$HEROKU_APP_UI"; }
 
@@ -195,19 +221,20 @@ cmd_logs_ui() { heroku logs --tail --app "$HEROKU_APP_UI"; }
 cmd_deploy_all() { cmd_deploy; cmd_deploy_ui; }
 
 case "${1:-deploy}" in
-  login)            cmd_login           ;;
-  build-bootstrap)  cmd_build_bootstrap ;;
-  build)            cmd_build           ;;
-  push)             cmd_push            ;;
-  release)          cmd_release         ;;
-  deploy)           cmd_deploy          ;;
-  build-ui)         cmd_build_ui        ;;
-  push-ui)          cmd_push_ui         ;;
-  release-ui)       cmd_release_ui      ;;
-  deploy-ui)        cmd_deploy_ui       ;;
-  deploy-all)       cmd_deploy_all      ;;
-  logs)             cmd_logs            ;;
-  logs-ui)          cmd_logs_ui         ;;
-  open)             cmd_open            ;;
-  *)                die "unknown command: $1 (try login | build-bootstrap | build | push | release | deploy | build-ui | push-ui | release-ui | deploy-ui | deploy-all | logs | logs-ui | open)" ;;
+  login)                   cmd_login                      ;;
+  build-bootstrap)         cmd_build_bootstrap            ;;
+  build)                   cmd_build                      ;;
+  push)                    cmd_push                       ;;
+  release)                 cmd_release                    ;;
+  deploy)                  cmd_deploy                     ;;
+  package-society-certs)   cmd_package_society_certs "$@" ;;
+  build-ui)                cmd_build_ui                   ;;
+  push-ui)                 cmd_push_ui                    ;;
+  release-ui)              cmd_release_ui                 ;;
+  deploy-ui)               cmd_deploy_ui                  ;;
+  deploy-all)              cmd_deploy_all                 ;;
+  logs)                    cmd_logs                       ;;
+  logs-ui)                 cmd_logs_ui                    ;;
+  open)                    cmd_open                       ;;
+  *)                       die "unknown command: $1 (try login | build-bootstrap | build | push | release | deploy | package-society-certs | build-ui | push-ui | release-ui | deploy-ui | deploy-all | logs | logs-ui | open)" ;;
 esac
