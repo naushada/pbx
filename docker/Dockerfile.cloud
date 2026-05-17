@@ -16,7 +16,9 @@
 # ============================================================
 # Stage 1: C++ binary.
 # ============================================================
-FROM localhost/pbx-cpp-builder:bootstrap AS cpp-builder
+# BUILDER_IMAGE: see Dockerfile.agent for the three-context rationale.
+ARG BUILDER_IMAGE=localhost/pbx-cpp-builder:bootstrap
+FROM ${BUILDER_IMAGE} AS cpp-builder
 
 WORKDIR /src
 COPY CMakeLists.txt /src/
