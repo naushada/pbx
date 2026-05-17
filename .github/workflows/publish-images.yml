@@ -118,6 +118,15 @@ jobs:
           cache-from: type=registry,ref=${{ env.BOOTSTRAP_IMAGE }}:buildcache
           cache-to:   type=registry,ref=${{ env.BOOTSTRAP_IMAGE }}:buildcache,mode=max
 
+      - name: Sync Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username:        ${{ secrets.DOCKERHUB_USERNAME }}
+          password:        ${{ secrets.DOCKERHUB_TOKEN }}
+          repository:      ${{ env.ORG }}/pbx-cpp-builder
+          short-description: "INTERNAL — CI build base. Not for runtime."
+          readme-filepath: docker/dockerhub-descriptions/pbx-cpp-builder.md
+
   test:
     # Build the offtarget GTest image against the just-published
     # bootstrap, then RUN it. Quality gate for every downstream job —
@@ -204,6 +213,15 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.ORG }}/onprem-pbx-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.ORG }}/onprem-pbx-${{ matrix.service }}:buildcache
           cache-to:   type=registry,ref=${{ env.REGISTRY }}/${{ env.ORG }}/onprem-pbx-${{ matrix.service }}:buildcache,mode=max
+
+      - name: Sync Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username:          ${{ secrets.DOCKERHUB_USERNAME }}
+          password:          ${{ secrets.DOCKERHUB_TOKEN }}
+          repository:        ${{ env.ORG }}/onprem-pbx-${{ matrix.service }}
+          short-description: "On-prem PBX ${{ matrix.service }} runtime — pulled by install.sh."
+          readme-filepath:   docker/dockerhub-descriptions/onprem-pbx-${{ matrix.service }}.md
 
   publish-cloud:
     name: Deploy pbx-cloud to Heroku (amd64-only)
