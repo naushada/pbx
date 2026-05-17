@@ -384,13 +384,23 @@ Ubuntu 22/24 box), see [`INSTALL.md`](./INSTALL.md). One-line summary:
 ./deploy-heroku.sh package-society-certs SUNSET   # → /tmp/SUNSET-certs.tar.gz
 
 # On the society machine, after copying the repo + tarball:
-sudo ./install.sh                                  # 3 prompts, ~3-5 min
+sudo ./install.sh                                  # 6 prompts, ~3-5 min
 ```
 
-`install.sh` is the entry point. It pulls pre-built container images
-from Docker Hub (`docker.io/naushada/onprem-pbx-{agent,wsdbagent}`),
-generates per-society config, and installs a systemd unit so the
-stack auto-restarts on reboot.
+`install.sh` is the entry point. It:
+
+1. Pulls pre-built container images from Docker Hub
+   (`docker.io/naushada/onprem-pbx-{agent,wsdbagent}`).
+2. Generates per-society config (Asterisk DTLS cert + coturn config).
+3. **Seeds Mongo with the society + first ADMIN subscriber** — so the
+   operator can log into the admin UI immediately. The admin password
+   is PBKDF2-SHA256-hashed locally, never sent over the wire.
+4. Installs a systemd unit so the stack auto-restarts on reboot.
+
+Six prompts: society code, cloud hostname (default), cert tarball
+path, society's full name, admin email, admin password (silent). All
+six accept env-var overrides for unattended re-runs — see
+[`INSTALL.md`](./INSTALL.md) for the full operator walkthrough.
 
 ## Container image releases (CI)
 
