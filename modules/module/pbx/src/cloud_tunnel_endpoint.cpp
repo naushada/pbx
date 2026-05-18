@@ -45,6 +45,13 @@ void CloudTunnelEndpoint::on_agent_connected(
 }
 
 void CloudTunnelEndpoint::on_bytes_received(const std::string &bytes) {
+  // Hop 4 of the reverse trace (task #36): bytes arrived from agent.
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [CloudTunnelEndpoint:%t] on_bytes_received "
+                      "from agent %u bytes (bridge=%d)\n"),
+             static_cast<unsigned>(bytes.size()),
+             m_bridge ? 1 : 0));
+
   // Any inbound bytes are proof the agent is alive — clear the heartbeat
   // miss counter regardless of what the bytes decode to (a PONG on an
   // idle tunnel, DATA / PING during an active call: all prove liveness).

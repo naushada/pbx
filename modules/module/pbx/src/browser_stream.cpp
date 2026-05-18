@@ -164,12 +164,24 @@ int BrowserStream::handle_timeout(const ACE_Time_Value & /*tv*/,
 // ── BrowserSink ──────────────────────────────────────────────────────────────
 
 void BrowserStream::send_bytes(const std::string &sip_ws_bytes) {
+  // Hop 6 of the reverse trace (task #36): final write to browser WS.
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [BrowserStream:%t] send_bytes %u bytes "
+                      "handle=%d\n"),
+             static_cast<unsigned>(sip_ws_bytes.size()),
+             m_handle == ACE_INVALID_HANDLE ? -1 : 1));
   if (m_handle == ACE_INVALID_HANDLE) return;
   // SIP.js in the browser expects text frames for SIP messages
   // (RFC 7118 §2 mandates text). We emit text by default.
   const auto framed =
       wsframe::encode(string_to_bytes(sip_ws_bytes), kOpcodeText, /*mask=*/false);
-  m_stream.send_n(framed.data(), framed.size());
+  const ssize_t n = m_stream.send_n(framed.data(), framed.size());
+  if (n != static_cast<ssize_t>(framed.size()))
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [BrowserStream:%t] send_n short-write: "
+                        "wanted=%u sent=%d errno=%d\n"),
+               static_cast<unsigned>(framed.size()),
+               static_cast<int>(n), errno));
 }
 
 void BrowserStream::close(const std::string &reason) {
