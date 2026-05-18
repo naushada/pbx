@@ -66,12 +66,23 @@ public:
     /// `heartbeat_interval_sec <= 0` disables the heartbeat (used by
     /// existing tests that don't drive the clock).
     ///
-    /// 5 s × 3 missed = 15 s partition-detection window. Tightened
-    /// from 15 s × 3 = 45 s for kiosk deployments where a security-gate
-    /// intercom needs to be reachable within a few seconds of a network
-    /// blip — see docs/design/operations/cloud-tunnel-liveness.md.
-    int heartbeat_interval_sec = 5;
-    int heartbeat_max_missed   = 3;
+    /// 10 s × 5 missed = 50 s partition-detection window. Originally
+    /// tightened to 5 s × 3 = 15 s in PR #106 for kiosks; that turned
+    /// out to be too aggressive on the live cloud — Heroku-routed
+    /// inner-TLS records have enough latency jitter that the cloud
+    /// occasionally saw "3 silent ticks" mid-REGISTER and dropped the
+    /// agent tunnel, killing every in-flight browser stream
+    /// (`AsteriskStream sid=N closed: tunnel_lost`). Browser then sat
+    /// at "Connecting…" waiting for a 200 OK that never came back
+    /// (caught live 2026-05-18 by user testing post-v48 deploy).
+    ///
+    /// 50 s is still under Heroku's 55 s outer-WS idle limit, but
+    /// gives 3× more grace for slow round-trips during the REGISTER
+    /// handshake. Kiosks still get faster-than-default recovery
+    /// (the old default was 15 s × 3 = 45 s with no clock driver,
+    /// effectively never).
+    int heartbeat_interval_sec = 10;
+    int heartbeat_max_missed   = 5;
 
     /// Inner-TLS cert paths driven into every newly-attached
     /// `AgentStream`'s `setup_inner_tls()`. Heroku's router terminates
