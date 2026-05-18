@@ -60,6 +60,12 @@ on:
       - 'docker/Dockerfile.agent'
       - 'docker/Dockerfile.wsdbagent'
       - 'docker/Dockerfile.installer'
+      # Dockerfile.cloud + the UI sources both feed pbx-cloud's image
+      # (Dockerfile.cloud stage 2 runs `ng build` on ui/). PR #108 was
+      # the trigger to add these — auto-Connect UI change merged but
+      # didn't redeploy because `ui/**` wasn't in the filter.
+      - 'docker/Dockerfile.cloud'
+      - 'ui/**'
       - 'scripts/**'
       - 'docker-compose.agent.yml'
       - 'modules/**'
