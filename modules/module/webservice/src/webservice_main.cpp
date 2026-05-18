@@ -423,11 +423,13 @@ int main(int argc, char *argv[]) {
     // Arm the SipFrame heartbeat tick (DESIGN.md §6.6 +
     // docs/design/operations/cloud-tunnel-liveness.md) — the only
     // periodic work the cloud side does. Schedule before start()
-    // blocks. Tick at 5 s matches the heartbeat_interval_sec
-    // default; faster ticks would short-circuit inside maybe_heartbeat
-    // anyway.
+    // blocks. Tick at 10 s matches the heartbeat_interval_sec
+    // default (loosened from 5 s in the PR-after-#106 hotfix —
+    // 5 s × 3 missed = 15 s window was too aggressive for live
+    // Heroku-routed latency jitter; mid-REGISTER drops sat the
+    // browser at "Connecting…" indefinitely).
     CloudTunnelTickDriver cte_tick_driver(*inst.cloudTunnelEndpoint(),
-                                            /*interval_sec=*/5);
+                                            /*interval_sec=*/10);
     if (cte_tick_driver.register_with_reactor(
             ACE_Reactor::instance()) == -1) {
       ACE_ERROR((LM_ERROR,
@@ -595,11 +597,13 @@ int main(int argc, char *argv[]) {
     // Arm the SipFrame heartbeat tick (DESIGN.md §6.6 +
     // docs/design/operations/cloud-tunnel-liveness.md) — the only
     // periodic work the cloud side does. Schedule before start()
-    // blocks. Tick at 5 s matches the heartbeat_interval_sec
-    // default; faster ticks would short-circuit inside maybe_heartbeat
-    // anyway.
+    // blocks. Tick at 10 s matches the heartbeat_interval_sec
+    // default (loosened from 5 s in the PR-after-#106 hotfix —
+    // 5 s × 3 missed = 15 s window was too aggressive for live
+    // Heroku-routed latency jitter; mid-REGISTER drops sat the
+    // browser at "Connecting…" indefinitely).
     CloudTunnelTickDriver cte_tick_driver(*inst.cloudTunnelEndpoint(),
-                                            /*interval_sec=*/5);
+                                            /*interval_sec=*/10);
     if (cte_tick_driver.register_with_reactor(
             ACE_Reactor::instance()) == -1) {
       ACE_ERROR((LM_ERROR,
