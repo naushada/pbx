@@ -1,5 +1,7 @@
 #include "sip_frame_demux.hpp"
 
+#include <ace/Log_Msg.h>
+
 SipFrameDemux::SipFrameDemux(TunnelSink *tunnel, IAsteriskFactory &factory)
     : m_tunnel(tunnel), m_factory(factory) {}
 
@@ -44,8 +46,16 @@ void SipFrameDemux::set_subscriber_revoked_handler(
 
 void SipFrameDemux::on_asterisk_data(std::uint32_t stream_id,
                                       const std::string &bytes) {
-  if (m_streams.find(stream_id) == m_streams.end())
-    return; // Local socket bytes for a stream we already closed: drop.
+  // Hop 3 of the reverse trace (task #36): demux received bytes from
+  // an AsteriskStream, about to ship them upstream via the tunnel.
+  const bool known    = m_streams.find(stream_id) != m_streams.end();
+  const bool have_t   = m_tunnel != nullptr;
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [SipFrameDemux:%t] on_asterisk_data sid=%u "
+                      "bytes=%u known=%d tunnel=%d\n"),
+             stream_id, static_cast<unsigned>(bytes.size()),
+             known ? 1 : 0, have_t ? 1 : 0));
+  if (!known) return; // Local socket bytes for a stream we already closed.
   if (m_tunnel)
     m_tunnel->send_frame(SipFrame::Op::DATA, stream_id, bytes);
 }

@@ -160,6 +160,11 @@ int AsteriskStream::handle_input(ACE_HANDLE /*h*/) {
     notify_eof_once("peer_closed");
     return -1;
   }
+  // Hop 1 of the reverse trace (task #36): bytes read from Asterisk WS.
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [AsteriskStream:%t] sid=%u read %d bytes "
+                      "from Asterisk WS\n"),
+             m_stream_id, static_cast<int>(n)));
   m_recv_buf.insert(m_recv_buf.end(), chunk, chunk + n);
   return drain_frames() ? 0 : -1;
 }
@@ -174,6 +179,13 @@ bool AsteriskStream::drain_frames() {
     case kOpcodeBinary:
     case kOpcodeText:
     case kOpcodeContinuation:
+      // Hop 2: about to dispatch decoded SIP frame to demux.
+      ACE_DEBUG((LM_INFO,
+                 ACE_TEXT("%D [AsteriskStream:%t] sid=%u dispatching "
+                          "WS payload (%u bytes, opcode=%u) → demux\n"),
+                 m_stream_id,
+                 static_cast<unsigned>(frame.payload.size()),
+                 static_cast<unsigned>(frame.opcode)));
       m_demux.on_asterisk_data(m_stream_id, bytes_to_string(frame.payload));
       // The demux can release us mid-call (drops our entry from
       // m_streams → adapter destroyed → m_adapter dangles). Bail out

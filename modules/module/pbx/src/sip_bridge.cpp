@@ -88,7 +88,16 @@ void SipBridge::dispatch_frame(const SipFrame::Frame &f) {
   switch (f.op) {
   case Op::DATA: {
     auto it = m_browsers.find(f.stream_id);
-    if (it != m_browsers.end() && it->second)
+    // Hop 5 of the reverse trace (task #36): cloud dispatches DATA
+    // frame from agent to per-sid browser.
+    const bool found     = it != m_browsers.end();
+    const bool has_sink  = found && it->second != nullptr;
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [SipBridge:%t] DATA sid=%u bytes=%u "
+                        "found=%d sink=%d\n"),
+               f.stream_id, static_cast<unsigned>(f.payload.size()),
+               found ? 1 : 0, has_sink ? 1 : 0));
+    if (has_sink)
       it->second->send_bytes(f.payload);
     // Unknown stream-id is logged-and-dropped; do not echo back as ERR.
     return;
