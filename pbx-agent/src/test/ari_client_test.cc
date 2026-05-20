@@ -231,6 +231,22 @@ std::string endpoint_state_change(const std::string &tech,
   return j.dump();
 }
 
+// Asterisk's ContactStatusChange — fires on the PJSIP contact
+// lifecycle. `status` is one of "Created", "Removed", "Reachable",
+// "Unreachable", "NonQualified", "Unknown".
+std::string contact_status_change(const std::string &tech,
+                                   const std::string &resource,
+                                   const std::string &status) {
+  json j;
+  j["type"]                            = "ContactStatusChange";
+  j["application"]                     = "pbx";
+  j["endpoint"]["technology"]          = tech;
+  j["endpoint"]["resource"]            = resource;
+  j["contact_info"]["contact_status"]  = status;
+  j["contact_info"]["aor"]             = resource;
+  return j.dump();
+}
+
 std::string channel_destroyed(const std::string &channel_id,
                                 const std::string &cause_txt = "Normal Clearing") {
   json j;
@@ -716,6 +732,76 @@ TEST(AriClient, EndpointStateChange_NoHandler_IsSilentNoOp)
 
     // No handler installed — must not crash, must not throw.
     c.on_event(endpoint_state_change("PJSIP", "u_alice", "online"));
+}
+
+// ── ContactStatusChange → register-state callback (task #37) ─────────────────
+
+TEST(AriClient, ContactStatusChange_CreatedOrNonQualified_FiresHandlerWithTrue)
+{
+    // The presence-cache fix: with qualify_frequency=0, a plain REGISTER
+    // never moves EndpointStateChange — but ContactStatusChange fires
+    // "Created" immediately, and "NonQualified" is the steady state.
+    // Both must register the subscriber as online.
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    struct Hit { std::string user; bool online; };
+    std::vector<Hit> hits;
+    c.set_register_state_handler(
+        [&hits](const std::string &user, bool online) {
+            hits.push_back({user, online});
+        });
+
+    c.on_event(contact_status_change("PJSIP", "a101", "Created"));
+    c.on_event(contact_status_change("PJSIP", "a102", "NonQualified"));
+    c.on_event(contact_status_change("PJSIP", "a103", "Reachable"));
+
+    ASSERT_EQ(3u, hits.size());
+    EXPECT_EQ("a101", hits[0].user); EXPECT_TRUE(hits[0].online);
+    EXPECT_EQ("a102", hits[1].user); EXPECT_TRUE(hits[1].online);
+    EXPECT_EQ("a103", hits[2].user); EXPECT_TRUE(hits[2].online);
+}
+
+TEST(AriClient, ContactStatusChange_RemovedOrUnreachable_FiresHandlerWithFalse)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    struct Hit { std::string user; bool online; };
+    std::vector<Hit> hits;
+    c.set_register_state_handler(
+        [&hits](const std::string &user, bool online) {
+            hits.push_back({user, online});
+        });
+
+    c.on_event(contact_status_change("PJSIP", "a101", "Removed"));
+    c.on_event(contact_status_change("PJSIP", "a102", "Unreachable"));
+    c.on_event(contact_status_change("PJSIP", "a103", "Unknown"));
+
+    ASSERT_EQ(3u, hits.size());
+    EXPECT_FALSE(hits[0].online);
+    EXPECT_FALSE(hits[1].online);
+    EXPECT_FALSE(hits[2].online) << "unknown status maps to offline (safe)";
+}
+
+TEST(AriClient, ContactStatusChange_NonPjsip_OrNoHandler_IsIgnored)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    // No handler installed — must not crash.
+    c.on_event(contact_status_change("PJSIP", "a101", "Created"));
+
+    int hits = 0;
+    c.set_register_state_handler([&hits](const std::string &, bool) { ++hits; });
+    c.on_event(contact_status_change("Local", "loop", "Created"));
+    EXPECT_EQ(0, hits) << "only PJSIP contacts feed the presence cache";
 }
 
 // ── publish_register_snapshot — presence reconciliation on (re)connect ──────
