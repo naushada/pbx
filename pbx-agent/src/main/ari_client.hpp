@@ -249,6 +249,12 @@ private:
   void handle_channel_entered_bridge(const nlohmann::json &);
   void handle_channel_destroyed(const nlohmann::json &);
   void handle_endpoint_state_change (const nlohmann::json &);
+  /// ContactStatusChange — the reliable register signal. Fires on the
+  /// PJSIP contact lifecycle (Created on REGISTER, Removed on
+  /// unregister/expiry) independent of qualify, unlike
+  /// EndpointStateChange which only moves when a contact is qualified.
+  /// Feeds the cloud presence cache via the same RegisterStateHandler.
+  void handle_contact_status_change (const nlohmann::json &);
 
   bool over_admission_cap() const { return m_active_bridges >= m_cfg.max_concurrent_calls; }
 

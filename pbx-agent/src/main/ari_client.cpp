@@ -51,6 +51,8 @@ void AriClient::on_event(const std::string &json_event) {
   else if (type == "ChannelDestroyed")  handle_channel_destroyed(j);
   else if (type == "EndpointStateChange")
                                         handle_endpoint_state_change(j);
+  else if (type == "ContactStatusChange")
+                                        handle_contact_status_change(j);
   // Other event types intentionally ignored.
 }
 
@@ -76,6 +78,45 @@ void AriClient::handle_endpoint_state_change(const json &j) {
   // button gating).
   const std::string state = ep.value("state", std::string{});
   m_register_state_handler(resource, state == "online");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ContactStatusChange — the RELIABLE register signal.
+//
+// EndpointStateChange (above) tracks Asterisk's aggregate device state,
+// which only flips when a contact is *qualified*. The agent provisions
+// AORs with qualify_frequency=0 (no active OPTIONS ping), so a plain
+// REGISTER never moves endpoint.state and the directory's presence
+// cache went stale (every flat showed Offline — caught 2026-05-20,
+// task #37). ContactStatusChange fires on the contact lifecycle
+// itself — "Created" the instant a REGISTER binds a contact,
+// "Removed" on unregister/expiry — independent of qualify. That is
+// the event the presence cache actually wants.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AriClient::handle_contact_status_change(const json &j) {
+  if (!m_register_state_handler) return;
+  if (!j.contains("endpoint") || !j["endpoint"].is_object()) return;
+  const auto &ep = j["endpoint"];
+
+  const std::string tech = ep.value("technology", std::string{});
+  if (tech != "PJSIP") return;
+  const std::string resource = ep.value("resource", std::string{});
+  if (resource.empty()) return;
+
+  if (!j.contains("contact_info") || !j["contact_info"].is_object()) return;
+  const std::string status =
+      j["contact_info"].value("contact_status", std::string{});
+
+  // contact_status ∈ {Created, Removed, Reachable, Unreachable,
+  // NonQualified, Unknown}. A bound contact is online whether or not
+  // qualify is on — "NonQualified" is exactly our qualify_frequency=0
+  // case and MUST count as online. Only an explicit gone/dead status
+  // maps to offline.
+  const bool online = status == "Created" ||
+                       status == "Reachable" ||
+                       status == "NonQualified";
+  m_register_state_handler(resource, online);
 }
 
 void AriClient::set_register_state_handler(RegisterStateHandler h) {
