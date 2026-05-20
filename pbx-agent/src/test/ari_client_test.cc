@@ -3,6 +3,7 @@
 #include "mongodbc.hpp"
 #include "json.hpp"
 #include <gtest/gtest.h>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,7 @@ public:
   std::vector<EndpointCall>    endpoint_lookups;
   std::vector<BridgeCall>      bridges;
   std::vector<AddChannelCall>  add_channels;
+  std::set<std::string>        created_bridge_ids;  // for 409-on-dup
   Response                   continue_response{200, ""};
   Response                   subscribe_response{204, ""};
   Response                   get_endpoint_response{200, "{}"};
@@ -65,6 +67,14 @@ public:
   Response create_bridge(const std::string &bridge_id,
                           const std::string &type) override {
     bridges.push_back({bridge_id, type});
+    // Mirror Asterisk: creating a bridge whose id already exists is a
+    // 409 Conflict, NOT a 2xx. Tests that override create_bridge_response
+    // (e.g. the failure test) bypass this.
+    if (create_bridge_response.status >= 200 &&
+        create_bridge_response.status < 300 &&
+        !created_bridge_ids.insert(bridge_id).second) {
+      return {409, "{\"message\":\"Bridge already exists\"}"};
+    }
     return create_bridge_response;
   }
   Response add_channel_to_bridge(const std::string &bridge_id,
@@ -512,25 +522,36 @@ TEST(AriClient, ConfExtension_JoinsSocietyMixingBridge)
     EXPECT_TRUE(rest.originate_endpoints.empty());
 }
 
-TEST(AriClient, ConfExtension_SecondJoiner_ReusesSameBridge)
+TEST(AriClient, ConfExtension_SecondJoiner_409ConflictTreatedAsSuccess)
 {
-    // Every resident dialing "conf" lands in the same room. The bridge
-    // id is fixed per society; `create_bridge` with a taken id is
-    // create-or-attach, so the second joiner re-issues it harmlessly.
+    // Every resident dialing "conf" lands in the same room. The 2nd+
+    // joiner's create_bridge hits an already-existing id → Asterisk
+    // returns 409 Conflict. The agent MUST treat 409 as "bridge ready"
+    // and still add the channel — otherwise the conference never has
+    // more than one participant ("no voice", caught live 2026-05-20;
+    // PR #113 wrongly treated 409 as a failure + hung the joiner up).
     FakeAriRest rest;
     TestDb      db;
     CallRouter  router("s1", db, rest);
     AriClient   c(default_cfg(), rest, db, router);
 
-    c.on_event(stasis_start("ch-conf-1", "A-101", "conf"));
-    c.on_event(stasis_start("ch-conf-2", "A-102", "conf"));
+    c.on_event(stasis_start("ch-conf-1", "A-101", "conf"));   // creates
+    c.on_event(stasis_start("ch-conf-2", "A-102", "conf"));   // 409 → reuse
 
-    // Both joiners target the SAME bridge id.
+    // Both create_bridge calls were issued; the FakeAriRest returns 409
+    // on the second (mirrors Asterisk).
+    ASSERT_EQ(2u, rest.bridges.size());
+
+    // BOTH joiners got added to the SAME bridge — the 409 did not
+    // abort the second join.
     ASSERT_EQ(2u, rest.add_channels.size());
     EXPECT_EQ("s1-conf", rest.add_channels[0].bridge_id);
     EXPECT_EQ("s1-conf", rest.add_channels[1].bridge_id);
     EXPECT_EQ("ch-conf-1", rest.add_channels[0].channel_id);
     EXPECT_EQ("ch-conf-2", rest.add_channels[1].channel_id);
+
+    // Neither joiner was hung up.
+    EXPECT_TRUE(rest.hangups.empty());
 }
 
 TEST(AriClient, ConfExtension_CreateBridgeFails_HangsUpCaller)
