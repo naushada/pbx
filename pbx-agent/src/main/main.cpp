@@ -468,6 +468,19 @@ int main(int argc, char *argv[]) {
   //      so without this resync a tunnel drop can leave the cache stale
   //      until the next register flip (PR #20).
   connector.set_on_connected([&]() {
+    // Re-arm the demux's tunnel pointer. CloudConnector's
+    // on_tunnel_disconnect() nulls SipFrameDemux::m_tunnel on every
+    // disconnect; without re-setting it here, after the first
+    // reconnect every Asterisk→cloud frame (e.g. a REGISTER's 200 OK)
+    // is silently dropped at `if (m_tunnel)` in on_asterisk_data().
+    // The browser then hangs forever at "Connecting…". The connector
+    // object itself is process-lifetime so &connector is always the
+    // right pointer. Exact mirror of the cloud-side bridge re-arm in
+    // PR #101 (CloudTunnelEndpoint::on_agent_connected). Caught live
+    // 2026-05-20 via the reverse-path trace (task #36): the log line
+    // `on_asterisk_data sid=1 bytes=423 known=1 tunnel=0` was the
+    // smoking gun.
+    demux.set_tunnel(&connector);
     const nlohmann::json hello = {{"societyId", society_id}};
     connector.send_frame(SipFrame::Op::AGENT_HELLO, 0, hello.dump());
     ari_client.publish_register_snapshot();
