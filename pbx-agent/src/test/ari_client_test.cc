@@ -28,11 +28,15 @@ public:
   };
   struct HangupCall { std::string channel_id, reason; };
   struct EndpointCall { std::string tech, resource; };
-  std::vector<SubscribeCall> subscribes;
-  std::vector<ContinueCall>  continues;
-  std::vector<std::string>   originate_endpoints;
-  std::vector<HangupCall>    hangups;
-  std::vector<EndpointCall>  endpoint_lookups;
+  struct BridgeCall { std::string bridge_id, type; };
+  struct AddChannelCall { std::string bridge_id, channel_id; };
+  std::vector<SubscribeCall>   subscribes;
+  std::vector<ContinueCall>    continues;
+  std::vector<std::string>     originate_endpoints;
+  std::vector<HangupCall>      hangups;
+  std::vector<EndpointCall>    endpoint_lookups;
+  std::vector<BridgeCall>      bridges;
+  std::vector<AddChannelCall>  add_channels;
   Response                   continue_response{200, ""};
   Response                   subscribe_response{204, ""};
   Response                   get_endpoint_response{200, "{}"};
@@ -58,13 +62,18 @@ public:
     originate_endpoints.push_back(endpoint);
     return {200, ""};
   }
-  Response create_bridge(const std::string &, const std::string &) override {
-    return {200, ""};
+  Response create_bridge(const std::string &bridge_id,
+                          const std::string &type) override {
+    bridges.push_back({bridge_id, type});
+    return create_bridge_response;
   }
-  Response add_channel_to_bridge(const std::string &,
-                                  const std::string &) override {
-    return {204, ""};
+  Response add_channel_to_bridge(const std::string &bridge_id,
+                                  const std::string &channel_id) override {
+    add_channels.push_back({bridge_id, channel_id});
+    return add_channel_response;
   }
+  Response create_bridge_response{200, ""};
+  Response add_channel_response{204, ""};
   Response hangup(const std::string &cid, const std::string &reason) override {
     hangups.push_back({cid, reason});
     return {204, ""};
@@ -473,6 +482,71 @@ TEST(AriClient, CallerStasisStart_DelegatedToRouter)
     // A caller channel still gets a CDR context (unlike an outbound leg).
     c.on_event(channel_destroyed("ch-1"));
     EXPECT_EQ(1u, db.inserts.size());
+}
+
+// ── Conference join ──────────────────────────────────────────────────────────
+
+TEST(AriClient, ConfExtension_JoinsSocietyMixingBridge)
+{
+    // Dialing "conf" must NOT fork-ring a flat — it joins the shared
+    // society mixing bridge `<society>-conf`.
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    c.on_event(stasis_start("ch-conf-1", "A-101", "conf"));
+
+    ASSERT_EQ(1u, rest.bridges.size())
+        << "first conf joiner creates the society mixing bridge";
+    EXPECT_EQ("s1-conf", rest.bridges[0].bridge_id);
+    EXPECT_EQ("mixing",  rest.bridges[0].type);
+
+    ASSERT_EQ(1u, rest.add_channels.size());
+    EXPECT_EQ("s1-conf",    rest.add_channels[0].bridge_id);
+    EXPECT_EQ("ch-conf-1",  rest.add_channels[0].channel_id);
+
+    // Conf path bypasses CallRouter entirely — no flat resolution, so
+    // no congestion hangup (which is what the no-route path would do).
+    EXPECT_TRUE(rest.hangups.empty());
+    EXPECT_TRUE(rest.originate_endpoints.empty());
+}
+
+TEST(AriClient, ConfExtension_SecondJoiner_ReusesSameBridge)
+{
+    // Every resident dialing "conf" lands in the same room. The bridge
+    // id is fixed per society; `create_bridge` with a taken id is
+    // create-or-attach, so the second joiner re-issues it harmlessly.
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+
+    c.on_event(stasis_start("ch-conf-1", "A-101", "conf"));
+    c.on_event(stasis_start("ch-conf-2", "A-102", "conf"));
+
+    // Both joiners target the SAME bridge id.
+    ASSERT_EQ(2u, rest.add_channels.size());
+    EXPECT_EQ("s1-conf", rest.add_channels[0].bridge_id);
+    EXPECT_EQ("s1-conf", rest.add_channels[1].bridge_id);
+    EXPECT_EQ("ch-conf-1", rest.add_channels[0].channel_id);
+    EXPECT_EQ("ch-conf-2", rest.add_channels[1].channel_id);
+}
+
+TEST(AriClient, ConfExtension_CreateBridgeFails_HangsUpCaller)
+{
+    FakeAriRest rest;
+    TestDb      db;
+    CallRouter  router("s1", db, rest);
+    AriClient   c(default_cfg(), rest, db, router);
+    rest.create_bridge_response = {500, "boom"};
+
+    c.on_event(stasis_start("ch-conf-1", "A-101", "conf"));
+
+    EXPECT_TRUE(rest.add_channels.empty())
+        << "no add-channel attempt once the bridge create failed";
+    ASSERT_EQ(1u, rest.hangups.size());
+    EXPECT_EQ("ch-conf-1", rest.hangups[0].channel_id);
 }
 
 TEST(AriClient, OutboundLegStasisStart_NoAdmissionCheck_NoCdrContext)

@@ -12,6 +12,13 @@ namespace {
 // appArgs[0] on a StasisStart that belongs to a leg CallRouter
 // originated (vs. a fresh caller leg from the dialplan's Stasis()).
 constexpr char kOutboundTag[] = "outbound";
+
+// Well-known dialed extension for the society conference. The UI's
+// "Join conference" button dials sip:conf@pbx.local; the dialplan
+// routes conf@pbx → Stasis(pbx,conf); the StasisStart then carries
+// "conf" as the dialed extension. Anyone dialing this joins the
+// shared society mixing bridge instead of fork-ringing a flat.
+constexpr char kConfExtension[] = "conf";
 } // namespace
 
 AriClient::AriClient(Config cfg, IAriRest &rest, IMongodbClient &db,
@@ -208,12 +215,57 @@ void AriClient::handle_stasis_start(const json &j) {
     cx.callee_flat = j["args"][0].get<std::string>();
   }
 
-  // Hand the dialed extension to the router — it resolves the flat and
-  // forks a ringing leg per target (or hangs the caller up on no route).
   const std::string caller_flat = cx.caller_flat;
   const std::string callee_flat = cx.callee_flat;
   m_channels.emplace(channel_id, std::move(cx));
+
+  // Conference: dialing the well-known "conf" extension joins the
+  // society's shared mixing bridge — no flat resolution, no
+  // fork-ring. Everyone who dials "conf" lands in the same room.
+  if (callee_flat == kConfExtension) {
+    handle_conference_join(channel_id);
+    return;
+  }
+
+  // Hand the dialed extension to the router — it resolves the flat and
+  // forks a ringing leg per target (or hangs the caller up on no route).
   m_router.on_caller_start(channel_id, caller_flat, callee_flat);
+}
+
+void AriClient::handle_conference_join(const std::string &channel_id) {
+  // One shared mixing bridge per society, id `<society>-conf`.
+  // `create_bridge` with a fixed id is create-or-attach: Asterisk
+  // returns the existing bridge if the id is already taken, so every
+  // joiner calls it unconditionally and only the first actually
+  // creates one (→ a single BridgeCreated event, a single +1 on the
+  // admission counter regardless of how many residents join).
+  const std::string conf_bridge = m_cfg.society_id + "-conf";
+
+  const IAriRest::Response br = m_rest.create_bridge(conf_bridge, "mixing");
+  if (br.status < 200 || br.status >= 300) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] conference: create_bridge %s "
+                        "failed (%d) — hanging up %s\n"),
+               conf_bridge.c_str(), br.status, channel_id.c_str()));
+    m_rest.hangup(channel_id, "congestion");
+    return;
+  }
+
+  const IAriRest::Response add =
+      m_rest.add_channel_to_bridge(conf_bridge, channel_id);
+  if (add.status < 200 || add.status >= 300) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] conference: add_channel %s → %s "
+                        "failed (%d) — hanging up\n"),
+               channel_id.c_str(), conf_bridge.c_str(), add.status));
+    m_rest.hangup(channel_id, "congestion");
+    return;
+  }
+
+  ACE_DEBUG((LM_INFO,
+             ACE_TEXT("%D [pbx-agent] conference: channel %s joined "
+                      "bridge %s\n"),
+             channel_id.c_str(), conf_bridge.c_str()));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
