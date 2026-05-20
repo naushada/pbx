@@ -96,6 +96,18 @@ void PjsipProvisioner::provision(const std::string &sip_username,
       make_fields_body({
           {"type",                          "endpoint"},
           {"context",                       "pbx"},
+          // from_domain pins the host of the From URI on every INVITE
+          // Asterisk *originates* to this endpoint. Left empty,
+          // Asterisk fills it with the container hostname — a
+          // docker-generated 12-hex-char id like `0643991491b2`.
+          // That is not a valid SIP host: RFC 3261's `toplabel` must
+          // start with a letter, so sip.js's strict parser rejects
+          // the whole From header ("error parsing header 'From'") and
+          // drops the INVITE — the callee never rings (caught live
+          // 2026-05-20). `pbx.local` is the same fixed, underscore-free
+          // host the browser already uses (PR #76); nothing routes on
+          // it, the cloud `/sip-ws` bearer is the only auth.
+          {"from_domain",                   "pbx.local"},
           {"disallow",                      "all"},
           {"allow",                         "opus,ulaw,alaw"},
           {"direct_media",                  "yes"},

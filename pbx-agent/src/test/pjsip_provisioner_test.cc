@@ -122,6 +122,12 @@ TEST(PjsipProvisioner, Provision_EndpointFieldsMatchTemplate_AndCarryNoAuth)
     EXPECT_EQ("dtls",         ep["media_encryption"]);
     EXPECT_EQ("opus,ulaw,alaw", ep["allow"]);
     EXPECT_EQ("pbx",          ep["context"]);
+    // from_domain MUST be a valid SIP host. Empty → Asterisk fills the
+    // originated-INVITE From URI with the container hostname (a
+    // docker-generated hex id), which RFC 3261 rejects as a host
+    // (toplabel must start with a letter) → sip.js drops the INVITE,
+    // callee never rings (caught live 2026-05-20).
+    EXPECT_EQ("pbx.local",    ep["from_domain"]);
 }
 
 TEST(PjsipProvisioner, Provision_EmptySipUsername_IsNoOp)
