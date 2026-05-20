@@ -238,6 +238,12 @@ private:
   };
 
   void handle_stasis_start    (const nlohmann::json &);
+  /// A caller leg whose dialed extension is the well-known conference
+  /// extension joins the society's shared mixing bridge instead of
+  /// fork-ringing flats. One bridge per society, id `<society>-conf`,
+  /// created lazily on the first joiner (`create_bridge` with a fixed
+  /// id is create-or-attach).
+  void handle_conference_join (const std::string &channel_id);
   void handle_bridge_created  (const nlohmann::json &);
   void handle_bridge_destroyed(const nlohmann::json &);
   void handle_channel_entered_bridge(const nlohmann::json &);
