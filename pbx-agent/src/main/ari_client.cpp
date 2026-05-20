@@ -274,16 +274,24 @@ void AriClient::handle_stasis_start(const json &j) {
 }
 
 void AriClient::handle_conference_join(const std::string &channel_id) {
-  // One shared mixing bridge per society, id `<society>-conf`.
-  // `create_bridge` with a fixed id is create-or-attach: Asterisk
-  // returns the existing bridge if the id is already taken, so every
-  // joiner calls it unconditionally and only the first actually
-  // creates one (→ a single BridgeCreated event, a single +1 on the
-  // admission counter regardless of how many residents join).
+  // One shared mixing bridge per society, id `<society>-conf`. Every
+  // joiner calls create_bridge unconditionally; only the first
+  // actually creates one.
+  //
+  // create_bridge with an already-taken id returns 409 Conflict (NOT
+  // a 2xx with the existing bridge — that assumption in PR #113 was
+  // wrong and caused the 2nd+ joiner to be hung up, so the conference
+  // never had more than one participant → "no voice", caught live
+  // 2026-05-20). 409 means "the bridge already exists", which is
+  // exactly the shared-bridge outcome we want — treat it as success
+  // and fall through to add_channel_to_bridge.
   const std::string conf_bridge = m_cfg.society_id + "-conf";
 
+  constexpr int kHttpConflict = 409;
   const IAriRest::Response br = m_rest.create_bridge(conf_bridge, "mixing");
-  if (br.status < 200 || br.status >= 300) {
+  const bool bridge_ready =
+      (br.status >= 200 && br.status < 300) || br.status == kHttpConflict;
+  if (!bridge_ready) {
     ACE_ERROR((LM_ERROR,
                ACE_TEXT("%D [pbx-agent] conference: create_bridge %s "
                         "failed (%d) — hanging up %s\n"),
