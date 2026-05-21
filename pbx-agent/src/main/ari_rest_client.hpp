@@ -68,6 +68,7 @@ public:
                                   const std::string &channel_id) override;
   Response hangup(const std::string &channel_id,
                    const std::string &reason) override;
+  Response answer(const std::string &channel_id) override;
   Response get_endpoint(const std::string &tech,
                          const std::string &resource) override;
   Response list_endpoints(const std::string &tech) override;
@@ -112,6 +113,11 @@ public:
   /// A `DELETE`, not a `POST` — the verb is baked into the request line.
   static std::string build_hangup_request(
       const std::string &channel_id, const std::string &reason,
+      const std::string &host, const std::string &basic_auth);
+
+  /// `POST /ari/channels/{channel_id}/answer` — no query, no body.
+  static std::string build_answer_request(
+      const std::string &channel_id,
       const std::string &host, const std::string &basic_auth);
 
   /// A `GET` — `/ari/endpoints/{tech}/{resource}`. Both path components

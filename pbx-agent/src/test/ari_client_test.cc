@@ -88,6 +88,9 @@ public:
     hangups.push_back({cid, reason});
     return {204, ""};
   }
+  Response answer(const std::string &) override {
+    return {204, ""};
+  }
   Response get_endpoint(const std::string &tech,
                          const std::string &resource) override {
     endpoint_lookups.push_back({tech, resource});

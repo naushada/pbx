@@ -89,6 +89,14 @@ AriRestClient::hangup(const std::string &channel_id,
 }
 
 IAriRest::Response
+AriRestClient::answer(const std::string &channel_id) {
+  const std::string basic = base64_encode(
+      m_cfg.username + ":" + m_cfg.password);
+  const std::string req = build_answer_request(channel_id, m_cfg.host, basic);
+  return do_request(req);
+}
+
+IAriRest::Response
 AriRestClient::get_endpoint(const std::string &tech,
                              const std::string &resource) {
   const std::string basic = base64_encode(
@@ -297,6 +305,22 @@ std::string AriRestClient::build_hangup_request(
   std::ostringstream os;
   os << "DELETE /ari/channels/" << url_encode(channel_id)
      << "?reason=" << url_encode(reason)
+     << " HTTP/1.1\r\n"
+     << "Host: " << host << "\r\n"
+     << "Authorization: Basic " << basic_auth << "\r\n"
+     << "Content-Length: 0\r\n"
+     << "Connection: close\r\n"
+     << "\r\n";
+  return os.str();
+}
+
+// ── build_answer_request ─────────────────────────────────────────────────────
+
+std::string AriRestClient::build_answer_request(
+    const std::string &channel_id, const std::string &host,
+    const std::string &basic_auth) {
+  std::ostringstream os;
+  os << "POST /ari/channels/" << url_encode(channel_id) << "/answer"
      << " HTTP/1.1\r\n"
      << "Host: " << host << "\r\n"
      << "Authorization: Basic " << basic_auth << "\r\n"

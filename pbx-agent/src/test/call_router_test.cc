@@ -84,6 +84,7 @@ public:
   std::vector<CreateBridge> created_bridges;
   std::vector<AddChannel>   added_channels;
   std::vector<Hangup>       hangups;
+  std::vector<std::string>  answered;
   int originate_status = 200;
 
   Response originate(const std::string &endpoint, const std::string &app,
@@ -105,6 +106,10 @@ public:
   Response hangup(const std::string &channel_id,
                   const std::string &reason) override {
     hangups.push_back({channel_id, reason});
+    return {204, {}};
+  }
+  Response answer(const std::string &channel_id) override {
+    answered.push_back(channel_id);
     return {204, {}};
   }
 
@@ -367,6 +372,11 @@ TEST(CallRouter, ForkRing_FirstAnswerWins_BridgesAndTearsDownSiblings)
     const std::string loser2 = rest.originates[2].channel_id;
 
     router.on_leg_start(winner, "ch-1");
+
+    // The caller is answered when its first leg connects — without the
+    // 200 OK the caller's browser never finishes media negotiation.
+    ASSERT_EQ(1u, rest.answered.size());
+    EXPECT_EQ("ch-1", rest.answered[0]);
 
     // One bridge, caller + winner pulled into it.
     ASSERT_EQ(1u, rest.created_bridges.size());

@@ -49,6 +49,9 @@ public:
   Response hangup(const std::string &, const std::string &) override {
     return {204, ""};
   }
+  Response answer(const std::string &) override {
+    return {204, ""};
+  }
   Response get_endpoint(const std::string &, const std::string &) override {
     return {200, "{}"};
   }
