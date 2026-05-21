@@ -2,7 +2,6 @@
   "extends": "@react-native/typescript-config/tsconfig.json",
   "compilerOptions": {
     "strict": true,
-    "noUncheckedIndexedAccess": true,
     "types": ["jest", "react-native"]
   },
   "include": ["src", "App.tsx", "index.js", "jest.setup.ts"],

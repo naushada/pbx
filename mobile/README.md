@@ -9,16 +9,13 @@ a destination flat number, and calls it.
 
 ## Status
 
-**TDD layer M0 — scaffold & harness.** This is the project skeleton:
-build/test config, the Jest + Testing Library harness, native-module
-mocks, the `FakeCloud` test double, and a smoke test. It is *not* yet a
-runnable app — M1 onward (auth, calling, push) build on it, one green
-layer at a time. See the TDD plan for the layer breakdown.
+Built one TDD layer at a time — *not* yet a runnable app. See the TDD
+plan for the layer breakdown.
 
 | Layer | Scope | State |
 |---|---|---|
-| **M0** | Scaffold, Jest/RNTL harness, FakeCloud, native mocks | ✅ this PR |
-| M1 | Auth & registration (screens, API client, session) | next |
+| **M0** | Scaffold, Jest/RNTL harness, FakeCloud, native mocks | ✅ |
+| **M1** | Auth & registration | ⏳ logic done (validation, CloudClient, SessionStore, flow); Login/Register screens next |
 | M2 | Outbound calling (SIP + WebRTC) | — |
 | M3 | Inbound calling & push | — |
 | M4 | Detox E2E | — |
