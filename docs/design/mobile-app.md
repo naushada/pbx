@@ -77,6 +77,51 @@ mechanics). No new on-prem code.
 The new work is **client app + a small amount of cloud REST**
 (registration endpoint, society-name resolution, mobile push fan-out).
 
+### 2.1 Connectivity — the app never contacts the agent directly
+
+A common misread: "the mobile app connects to the on-prem agent." It
+does **not**. The on-prem stack has **no inbound ports** — `pbx-agent`
+*dials out* to the cloud. The mobile app talks **only to the cloud**,
+and the cloud relays over the tunnel the agent already opened.
+
+There are two independent planes:
+
+**Signalling (SIP — call setup)** — mobile → cloud → agent → Asterisk:
+
+```
+ mobile ──wss /sip-ws?token=──► cloud SipBridge ──┐
+                                                  │ frames onto the
+ pbx-agent ──wss /agent (mTLS, dialled OUT)──► cloud CloudTunnelEndpoint
+                                                  │
+ cloud relays the SIP frames down that tunnel ────┘
+        └─► pbx-agent SipFrameDemux ──► ws :8088 ──► Asterisk
+```
+
+The agent is reached **indirectly** — the cloud multiplexes each
+`/sip-ws` session onto the agent's own pre-existing outbound `/agent`
+tunnel. The app never opens a connection to the agent, and never needs
+to be on the society LAN.
+
+**Media (RTP — the audio)** — a *separate* path that does **not** cross
+the tunnel and does **not** involve the agent at all:
+
+```
+ mobile ◄──ICE / DTLS-SRTP──► coturn ◄────► Asterisk
+ (react-native-webrtc)       (on-prem; the one      (on-prem)
+                              public UDP port)
+```
+
+WebRTC negotiates a media session between the device and Asterisk
+directly; because the device is remote and Asterisk is on a private
+LAN, ICE relays the audio through **coturn** — the single on-prem
+component with a public UDP port. `pbx-agent` is not in the media
+path.
+
+Net effect: one public UDP port for coturn is the *only* inbound
+exposure a society needs; everything else is outbound. The app works
+from any network — mobile data, any Wi-Fi — exactly like the web
+softphone.
+
 ---
 
 ## 3. Tech stack
