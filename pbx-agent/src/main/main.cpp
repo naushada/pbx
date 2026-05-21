@@ -18,6 +18,7 @@
 
 #include "ace_ssl_transport.hpp"
 #include "ari_client.hpp"
+#include "ari_dispatch_task.hpp"
 #include "ari_rest_client.hpp"
 #include "ari_ws_client.hpp"
 #include "asterisk_ws_factory.hpp"
@@ -40,8 +41,10 @@
 #include <csignal>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AceSystemClock — production IClock for CloudConnector.
@@ -156,6 +159,70 @@ public:
 
 private:
   CloudConnector &m_cc;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReactorFrameOutbox — marshals frames produced on a worker thread onto
+// the reactor thread before they touch the cloud transport.
+//
+// CloudConnector and its TLS transport are single-threaded: only the
+// reactor thread may call send_frame() (it runs SSL_write on the cloud
+// socket, plus touches the outbound buffer / transport pointer). But
+// AriClient's register-state and asterisk-status callbacks fire on the
+// AriDispatchTask worker thread — on_event() and publish_register_
+// snapshot() both run there. A worker calling connector.send_frame()
+// directly does an SSL_write concurrent with the reactor's own writes;
+// two threads on one OpenSSL object corrupt its state
+// (`ssl3_write_bytes:bad length`) and crash the agent.
+//
+// post() is thread-safe: it queues the frame and wakes the reactor via
+// ACE_Reactor::notify(). handle_exception() — which the reactor invokes
+// on its own thread — drains the queue and does the send_frame() there.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class ReactorFrameOutbox : public ACE_Event_Handler {
+public:
+  ReactorFrameOutbox(CloudConnector &cc, ACE_Reactor *reactor) : m_cc(cc) {
+    this->reactor(reactor);
+  }
+
+  ~ReactorFrameOutbox() override {
+    if (reactor()) reactor()->purge_pending_notifications(this);
+  }
+
+  /// Thread-safe. Queue a frame and wake the reactor to flush it. Safe
+  /// to call from any thread, including the reactor thread itself.
+  void post(SipFrame::Op op, std::uint32_t stream_id, std::string payload) {
+    {
+      std::lock_guard<std::mutex> g(m_mutex);
+      m_pending.push_back({op, stream_id, std::move(payload)});
+    }
+    if (reactor())
+      reactor()->notify(this, ACE_Event_Handler::EXCEPT_MASK);
+  }
+
+  /// Runs on the reactor thread (ACE_Reactor::notify -> handle_exception).
+  /// A failed notify() leaves frames queued; the next post() flushes them.
+  int handle_exception(ACE_HANDLE /*h*/) override {
+    std::vector<Frame> drained;
+    {
+      std::lock_guard<std::mutex> g(m_mutex);
+      drained.swap(m_pending);
+    }
+    for (const auto &f : drained)
+      m_cc.send_frame(f.op, f.stream_id, f.payload);
+    return 0;
+  }
+
+private:
+  struct Frame {
+    SipFrame::Op  op;
+    std::uint32_t stream_id;
+    std::string   payload;
+  };
+  CloudConnector    &m_cc;
+  std::mutex         m_mutex;
+  std::vector<Frame> m_pending;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,6 +398,19 @@ int main(int argc, char *argv[]) {
   AriClient ari_client(ari_cfg, ari_rest, *db, call_router);
   ari_client.start();  // POSTs the subscription to Asterisk
 
+  // Active Object that runs every AriClient entry point off the reactor
+  // thread. AriWsClient reads /ari/events ON the reactor and only
+  // ENQUEUEs here; this task's single worker thread pops the queue and
+  // runs AriClient -> CallRouter -> AriRestClient, whose REST calls
+  // block. Without it the blocking call-setup burst stalled the reactor
+  // long enough for Asterisk's websocket_write_timeout to tear down the
+  // ARI socket mid-call (calls stuck at "Calling...", no audio). One
+  // worker thread keeps AriClient / CallRouter single-threaded — their
+  // documented "no internal locking" invariant holds, just on the worker
+  // instead of the reactor. Declared after ari_client so it is destroyed
+  // (worker joined) BEFORE ari_client — the queued jobs capture it.
+  AriDispatchTask ari_dispatch;
+
   // ── PjsipProvisioner + SubscriberWatcher ───────────────────────────────
   //
   // Materialise every active `subscribers` row as auth/aor/endpoint sorcery
@@ -354,7 +434,15 @@ int main(int argc, char *argv[]) {
   ari_ws_cfg.password = ari_pass;
   AriWsClient ari_ws(ari_ws_cfg,
                       [&](const std::string &event) {
-                        ari_client.on_event(event);
+                        // Reactor thread: enqueue and return immediately
+                        // so handle_input keeps draining /ari/events.
+                        // The job runs AriClient::on_event (and its
+                        // blocking CallRouter/AriRestClient work) on the
+                        // AriDispatchTask worker thread.
+                        ari_dispatch.dispatch(
+                            [&ari_client, event]() {
+                              ari_client.on_event(event);
+                            });
                       });
 
   // ── AsteriskWsFactory needs the demux + reactor at construction.
@@ -400,6 +488,13 @@ int main(int argc, char *argv[]) {
   CloudConnector connector(cc_cfg, transport_factory, clock);
   cc_ptr = &connector;
 
+  // Worker-thread frames (REGISTER_STATE / ASTERISK_STATUS — emitted by
+  // AriClient callbacks that run on the AriDispatchTask worker thread)
+  // are posted here and sent on the reactor thread. Never call
+  // connector.send_frame() from a worker thread — concurrent SSL_write
+  // on the cloud socket corrupts OpenSSL state. See ReactorFrameOutbox.
+  ReactorFrameOutbox frame_outbox(connector, reactor);
+
   // We need an IAsteriskFactory ref for SipFrameDemux's ctor; build a
   // shim that defers to the real AsteriskWsFactory once it exists. This
   // breaks the construction-order cycle (demux needs factory; factory
@@ -427,8 +522,14 @@ int main(int argc, char *argv[]) {
         try {
           const auto j = nlohmann::json::parse(payload);
           if (j.contains("sipUsername") && j["sipUsername"].is_string())
-            ari_client.revoke_subscriber(
-                j["sipUsername"].get<std::string>());
+            // revoke_subscriber does blocking ARI REST (endpoint lookup
+            // + per-channel hangup) — run it on the ARI worker, not the
+            // reactor thread that delivered the tunnel frame.
+            ari_dispatch.dispatch(
+                [&ari_client,
+                 sip_username = j["sipUsername"].get<std::string>()]() {
+                  ari_client.revoke_subscriber(sip_username);
+                });
         } catch (...) {
           ACE_ERROR((LM_ERROR,
                      ACE_TEXT("%D [pbx-agent] bad SUBSCRIBER_REVOKED "
@@ -438,7 +539,9 @@ int main(int argc, char *argv[]) {
 
   // Asterisk reported a SIP REGISTER state change → publish it to the
   // cloud's presence cache via a REGISTER_STATE SipFrame. Stream-id 0
-  // (control op, not tied to any browser stream).
+  // (control op, not tied to any browser stream). This callback fires on
+  // the AriDispatchTask worker thread, so the frame is posted to the
+  // reactor via frame_outbox rather than sent inline.
   ari_client.set_register_state_handler(
       [&](const std::string &sip_username, bool online) {
         const nlohmann::json payload = {
@@ -446,17 +549,19 @@ int main(int argc, char *argv[]) {
             {"sipUsername", sip_username},
             {"online",      online},
         };
-        connector.send_frame(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
+        frame_outbox.post(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
       });
 
   // AriClient's reachability probe (driven by publish_register_snapshot,
   // which already runs on every tunnel reconnect) → cloud admin
   // connectivity chip via an ASTERISK_STATUS SipFrame. Costs zero new
   // periodic work — piggybacks on the existing ARI GET. Stream-id 0.
+  // Also fires on the AriDispatchTask worker thread (publish_register_
+  // snapshot) — post to the reactor, never send_frame() inline.
   ari_client.set_asterisk_status_handler(
       [&](bool connected) {
         const nlohmann::json payload = {{"connected", connected}};
-        connector.send_frame(SipFrame::Op::ASTERISK_STATUS, 0, payload.dump());
+        frame_outbox.post(SipFrame::Op::ASTERISK_STATUS, 0, payload.dump());
       });
 
   // After every (re)connect to the cloud:
@@ -483,7 +588,12 @@ int main(int argc, char *argv[]) {
     demux.set_tunnel(&connector);
     const nlohmann::json hello = {{"societyId", society_id}};
     connector.send_frame(SipFrame::Op::AGENT_HELLO, 0, hello.dump());
-    ari_client.publish_register_snapshot();
+    // publish_register_snapshot() does a blocking GET /ari/endpoints
+    // then fans REGISTER_STATE frames to the cloud — run it on the ARI
+    // worker so a reconnect never stalls the reactor.
+    ari_dispatch.dispatch([&ari_client]() {
+      ari_client.publish_register_snapshot();
+    });
   });
 
   // Cloud responded to our AGENT_HELLO with SOCIETY_BOOTSTRAP carrying
@@ -551,9 +661,21 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  // Spawn the ARI worker thread before entering the reactor loop so the
+  // very first StasisStart is dispatched, not silently dropped.
+  if (ari_dispatch.start() == -1) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] AriDispatchTask start failed\n")));
+    return -1;
+  }
+
   ACE_DEBUG((LM_INFO,
              ACE_TEXT("%D [pbx-agent] reactor ready; entering event loop\n")));
   reactor->run_reactor_event_loop();
+
+  // Reactor stopped (SIGINT/SIGTERM). Join the ARI worker thread before
+  // any object its queued jobs captured goes out of scope.
+  ari_dispatch.stop();
 
   ACE_DEBUG((LM_INFO, ACE_TEXT("%D [pbx-agent] shutdown clean\n")));
   return 0;
