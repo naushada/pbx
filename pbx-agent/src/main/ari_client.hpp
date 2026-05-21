@@ -267,6 +267,12 @@ private:
 
   bool over_admission_cap() const { return m_active_bridges >= m_cfg.max_concurrent_calls; }
 
+  /// Resolve a subscriber's human flat number from their `sipUsername`
+  /// via the `subscribers` collection. Used to stamp the CALLER's flat
+  /// onto the originated leg, so the callee's incoming-call alert shows
+  /// who is calling. Returns "" on a miss or a DB error.
+  std::string lookup_flat_number(const std::string &sip_username) const;
+
   Config           m_cfg;
   IAriRest        &m_rest;
   IMongodbClient  &m_db;

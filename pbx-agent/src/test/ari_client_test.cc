@@ -34,6 +34,7 @@ public:
   std::vector<SubscribeCall>   subscribes;
   std::vector<ContinueCall>    continues;
   std::vector<std::string>     originate_endpoints;
+  std::vector<std::string>     originate_caller_ids;
   std::vector<HangupCall>      hangups;
   std::vector<EndpointCall>    endpoint_lookups;
   std::vector<BridgeCall>      bridges;
@@ -60,8 +61,9 @@ public:
   // call_router_test.
   Response originate(const std::string &endpoint, const std::string &,
                       const std::string &, const std::string &,
-                      const std::string &) override {
+                      const std::string &caller_id) override {
     originate_endpoints.push_back(endpoint);
+    originate_caller_ids.push_back(caller_id);
     return {200, ""};
   }
   Response create_bridge(const std::string &bridge_id,
@@ -136,9 +138,16 @@ public:
   struct Insert { std::string coll, doc; };
   std::vector<Insert> inserts;
 
+  // Seeded by tests: get_document → a subscriber doc (caller-flat
+  // lookup); get_documents → a JSON array (CallRouter resolve_targets).
+  std::string get_document_result;
+  std::string get_documents_result;
+
   const std::string &get_database() const override { return m_db; }
   std::string get_document(const std::string &, const std::string &,
-                            const std::string &) override { return {}; }
+                            const std::string &) override {
+    return get_document_result;
+  }
   std::string create_document(const std::string &, const std::string &coll,
                                const std::string &doc) override {
     inserts.push_back({coll, doc});
@@ -157,7 +166,9 @@ public:
     return false;
   }
   std::string get_documents(const std::string &, const std::string &,
-                             const std::string &) override { return {}; }
+                             const std::string &) override {
+    return get_documents_result;
+  }
   std::string get_documents(const std::string &,
                              const std::string &) override { return {}; }
   std::string next_awbno(const std::string &) override { return {}; }
@@ -1043,4 +1054,55 @@ TEST(AriClient, IgnoresMalformedJson)
     EXPECT_EQ(0, c.active_bridges());
     EXPECT_EQ(0u, db.inserts.size());
     EXPECT_EQ(0u, rest.continues.size());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Caller-ID — the leg originated to the callee carries the CALLER's flat
+// number, so the callee's incoming-call alert shows who is calling.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(AriClientCallerId, OriginatedLegUsesCallerFlatResolvedFromSubscriber) {
+    TestDb      db;
+    // The caller (sipUsername a102) resolves to flat "A-102"...
+    db.get_document_result =
+        R"({"flatNumber":"A-102","sipUsername":"a102"})";
+    // ...and the dialed flat B-204 has one active target.
+    db.get_documents_result =
+        R"([{"sipUsername":"a204","status":"active","flatNumber":"B-204"}])";
+    FakeAriRest  rest;
+    CallRouter   router("soc1", db, rest);
+    AriClient    c(default_cfg(), rest, db, router);
+
+    // Caller StasisStart — channel.name carries the caller's sipUsername;
+    // channel.caller.number is deliberately omitted (it is unreliable).
+    json j;
+    j["type"]                         = "StasisStart";
+    j["application"]                  = "pbx";
+    j["channel"]["id"]                = "ch-caller";
+    j["channel"]["name"]              = "PJSIP/a102-00000000";
+    j["channel"]["state"]             = "Ring";
+    j["channel"]["dialplan"]["exten"] = "B-204";
+    j["args"]                         = json::array({"B-204"});
+    c.on_event(j.dump());
+
+    ASSERT_EQ(1u, rest.originate_caller_ids.size());
+    EXPECT_EQ("A-102", rest.originate_caller_ids[0])
+        << "the callee's leg must be originated with the caller's flat";
+}
+
+TEST(AriClientCallerId, FallsBackToChannelCallerNumberWhenNotResolvable) {
+    TestDb      db;
+    db.get_document_result = "";  // subscriber lookup misses
+    db.get_documents_result =
+        R"([{"sipUsername":"a204","status":"active","flatNumber":"B-204"}])";
+    FakeAriRest  rest;
+    CallRouter   router("soc1", db, rest);
+    AriClient    c(default_cfg(), rest, db, router);
+
+    // stasis_start() sets channel.caller.number but no channel.name, so
+    // resolution cannot run and the fallback supplies the caller-id.
+    c.on_event(stasis_start("ch-caller", "A-102", "B-204"));
+
+    ASSERT_EQ(1u, rest.originate_caller_ids.size());
+    EXPECT_EQ("A-102", rest.originate_caller_ids[0]);
 }
