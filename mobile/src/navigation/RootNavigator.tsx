@@ -1,17 +1,30 @@
 /**
- * Root navigator.
+ * Root navigator — TDD layer M1.c.
  *
- * TDD layer M0: a placeholder root component — enough for the smoke
- * test to prove the Jest + Testing Library pipeline renders the app.
- *
- * M1 replaces the body with a React Navigation native-stack:
- *   Login → Create account → Dial
- * (`@react-navigation/native` + `@react-navigation/native-stack`,
- * already declared in package.json).
+ * The React Navigation native-stack: Login → Register → Dial. This is
+ * thin wiring — the screens are unit-tested in isolation; the navigator
+ * itself is exercised by Detox (TDD layer M4).
  */
 import React from 'react';
-import {PlaceholderScreen} from '../screens/PlaceholderScreen';
+import {NavigationContainer} from '@react-navigation/native';
+import {createNativeStackNavigator} from '@react-navigation/native-stack';
+import type {RootStackParamList} from './types';
+import {LoginScreen} from '../screens/LoginScreen';
+import {RegisterScreen} from '../screens/RegisterScreen';
+import {DialScreen} from '../screens/DialScreen';
+
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function RootNavigator(): React.JSX.Element {
-  return <PlaceholderScreen />;
+  return (
+    <NavigationContainer>
+      <Stack.Navigator
+        initialRouteName="Login"
+        screenOptions={{headerShown: false}}>
+        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="Register" component={RegisterScreen} />
+        <Stack.Screen name="Dial" component={DialScreen} />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
 }

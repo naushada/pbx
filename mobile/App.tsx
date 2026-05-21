@@ -1,17 +1,20 @@
 /**
  * App root.
  *
- * TDD layer M0: this is the minimal root that makes the smoke test
- * (`src/__tests__/smoke.test.tsx`) pass — it renders `RootNavigator`,
- * nothing more.
- *
- * M1 wraps this in `SafeAreaProvider` and turns `RootNavigator` into a
- * real React Navigation stack (Login / Create-account / Dial). See
- * docs/design/mobile-app-tdd.md.
+ * Thin shell: a safe-area provider, the status bar, and the navigator.
+ * The screens' deps (cloud client, session store) come from the
+ * default `DepsContext` value — no provider needed in production.
  */
 import React from 'react';
+import {StatusBar} from 'react-native';
+import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {RootNavigator} from './src/navigation/RootNavigator';
 
 export default function App(): React.JSX.Element {
-  return <RootNavigator />;
+  return (
+    <SafeAreaProvider>
+      <StatusBar barStyle="light-content" />
+      <RootNavigator />
+    </SafeAreaProvider>
+  );
 }
