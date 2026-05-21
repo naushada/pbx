@@ -119,6 +119,7 @@ TEST(AriRestClient, BuildOriginateRequest_PathAndQuery)
                        "&app=pbx"
                        "&appArgs=outbound%2Cch-1"
                        "&channelId=ch-1-leg-0"
+                       "&formats=opus%2Culaw%2Calaw"
                        "&callerId=A-101 HTTP/1.1\r\n"));
     EXPECT_NE(std::string::npos, req.find("Host: 127.0.0.1\r\n"));
     EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
@@ -131,7 +132,9 @@ TEST(AriRestClient, BuildOriginateRequest_OmitsEmptyCallerId)
         "PJSIP/u_a", "pbx", "outbound,ch-1", "leg-0", "", "h", "YWJj");
     // No trailing &callerId= when there's no caller id to send.
     EXPECT_EQ(std::string::npos, req.find("callerId"));
-    EXPECT_NE(std::string::npos, req.find("&channelId=leg-0 HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos,
+              req.find("&channelId=leg-0"
+                       "&formats=opus%2Culaw%2Calaw HTTP/1.1\r\n"));
 }
 
 // ── build_create_bridge_request ───────────────────────────────────────────────
