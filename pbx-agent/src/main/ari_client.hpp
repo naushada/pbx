@@ -101,6 +101,15 @@ public:
   virtual Response hangup(const std::string &channel_id,
                            const std::string &reason) = 0;
 
+  /// `POST /ari/channels/{channel_id}/answer` — answer a channel.
+  /// Adding a channel to an ARI bridge does NOT implicitly answer it, so
+  /// the forked-ring caller (which entered Stasis from an inbound INVITE
+  /// and is still ringing) must be answered explicitly the moment its
+  /// first leg connects. Without it Asterisk sends no 200 OK to the
+  /// caller's browser — the browser never completes DTLS-SRTP/ICE and
+  /// the bridged call has audio on neither side.
+  virtual Response answer(const std::string &channel_id) = 0;
+
   /// `GET /ari/endpoints/{tech}/{resource}` — fetch one endpoint's state.
   /// The response body carries a `channel_ids` array of the channels that
   /// endpoint currently owns; `AriClient::revoke_subscriber` uses it to

@@ -137,6 +137,27 @@ TEST(AriRestClient, BuildOriginateRequest_OmitsEmptyCallerId)
                        "&formats=opus%2Culaw%2Calaw HTTP/1.1\r\n"));
 }
 
+// ── build_answer_request ──────────────────────────────────────────────────────
+
+TEST(AriRestClient, BuildAnswerRequest_PostVerbAndPath)
+{
+    const std::string req =
+        AriRestClient::build_answer_request("ch-1-leg-0", "127.0.0.1", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("POST /ari/channels/ch-1-leg-0/answer HTTP/1.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Host: 127.0.0.1\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Authorization: Basic YWJj\r\n"));
+    EXPECT_NE(std::string::npos, req.find("Content-Length: 0\r\n"));
+}
+
+TEST(AriRestClient, BuildAnswerRequest_EncodesChannelId)
+{
+    const std::string req =
+        AriRestClient::build_answer_request("weird/cid", "h", "YWJj");
+    EXPECT_NE(std::string::npos,
+              req.find("POST /ari/channels/weird%2Fcid/answer "));
+}
+
 // ── build_create_bridge_request ───────────────────────────────────────────────
 
 TEST(AriRestClient, BuildCreateBridgeRequest_PathAndQuery)

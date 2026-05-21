@@ -136,6 +136,14 @@ void CallRouter::on_leg_start(const std::string &leg,
   call.connected_leg = leg;
   call.ringing_legs.erase(leg);
 
+  // Answer the caller. It entered Stasis from an inbound INVITE and is
+  // still ringing; adding it to the bridge below does NOT answer it, so
+  // without this Asterisk sends no 200 OK to the caller's browser — the
+  // browser never finishes DTLS-SRTP/ICE and the bridged call is silent
+  // both ways. The leg is already up (its endpoint answered the
+  // originate), so only the caller needs this.
+  m_rest.answer(caller);
+
   const std::string bridge = caller + "-bridge";
   m_rest.create_bridge(bridge, "mixing");
   m_rest.add_channel_to_bridge(bridge, caller);
