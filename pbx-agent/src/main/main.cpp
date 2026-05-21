@@ -41,8 +41,10 @@
 #include <csignal>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AceSystemClock — production IClock for CloudConnector.
@@ -157,6 +159,70 @@ public:
 
 private:
   CloudConnector &m_cc;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReactorFrameOutbox — marshals frames produced on a worker thread onto
+// the reactor thread before they touch the cloud transport.
+//
+// CloudConnector and its TLS transport are single-threaded: only the
+// reactor thread may call send_frame() (it runs SSL_write on the cloud
+// socket, plus touches the outbound buffer / transport pointer). But
+// AriClient's register-state and asterisk-status callbacks fire on the
+// AriDispatchTask worker thread — on_event() and publish_register_
+// snapshot() both run there. A worker calling connector.send_frame()
+// directly does an SSL_write concurrent with the reactor's own writes;
+// two threads on one OpenSSL object corrupt its state
+// (`ssl3_write_bytes:bad length`) and crash the agent.
+//
+// post() is thread-safe: it queues the frame and wakes the reactor via
+// ACE_Reactor::notify(). handle_exception() — which the reactor invokes
+// on its own thread — drains the queue and does the send_frame() there.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class ReactorFrameOutbox : public ACE_Event_Handler {
+public:
+  ReactorFrameOutbox(CloudConnector &cc, ACE_Reactor *reactor) : m_cc(cc) {
+    this->reactor(reactor);
+  }
+
+  ~ReactorFrameOutbox() override {
+    if (reactor()) reactor()->purge_pending_notifications(this);
+  }
+
+  /// Thread-safe. Queue a frame and wake the reactor to flush it. Safe
+  /// to call from any thread, including the reactor thread itself.
+  void post(SipFrame::Op op, std::uint32_t stream_id, std::string payload) {
+    {
+      std::lock_guard<std::mutex> g(m_mutex);
+      m_pending.push_back({op, stream_id, std::move(payload)});
+    }
+    if (reactor())
+      reactor()->notify(this, ACE_Event_Handler::EXCEPT_MASK);
+  }
+
+  /// Runs on the reactor thread (ACE_Reactor::notify -> handle_exception).
+  /// A failed notify() leaves frames queued; the next post() flushes them.
+  int handle_exception(ACE_HANDLE /*h*/) override {
+    std::vector<Frame> drained;
+    {
+      std::lock_guard<std::mutex> g(m_mutex);
+      drained.swap(m_pending);
+    }
+    for (const auto &f : drained)
+      m_cc.send_frame(f.op, f.stream_id, f.payload);
+    return 0;
+  }
+
+private:
+  struct Frame {
+    SipFrame::Op  op;
+    std::uint32_t stream_id;
+    std::string   payload;
+  };
+  CloudConnector    &m_cc;
+  std::mutex         m_mutex;
+  std::vector<Frame> m_pending;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -422,6 +488,13 @@ int main(int argc, char *argv[]) {
   CloudConnector connector(cc_cfg, transport_factory, clock);
   cc_ptr = &connector;
 
+  // Worker-thread frames (REGISTER_STATE / ASTERISK_STATUS — emitted by
+  // AriClient callbacks that run on the AriDispatchTask worker thread)
+  // are posted here and sent on the reactor thread. Never call
+  // connector.send_frame() from a worker thread — concurrent SSL_write
+  // on the cloud socket corrupts OpenSSL state. See ReactorFrameOutbox.
+  ReactorFrameOutbox frame_outbox(connector, reactor);
+
   // We need an IAsteriskFactory ref for SipFrameDemux's ctor; build a
   // shim that defers to the real AsteriskWsFactory once it exists. This
   // breaks the construction-order cycle (demux needs factory; factory
@@ -466,7 +539,9 @@ int main(int argc, char *argv[]) {
 
   // Asterisk reported a SIP REGISTER state change → publish it to the
   // cloud's presence cache via a REGISTER_STATE SipFrame. Stream-id 0
-  // (control op, not tied to any browser stream).
+  // (control op, not tied to any browser stream). This callback fires on
+  // the AriDispatchTask worker thread, so the frame is posted to the
+  // reactor via frame_outbox rather than sent inline.
   ari_client.set_register_state_handler(
       [&](const std::string &sip_username, bool online) {
         const nlohmann::json payload = {
@@ -474,17 +549,19 @@ int main(int argc, char *argv[]) {
             {"sipUsername", sip_username},
             {"online",      online},
         };
-        connector.send_frame(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
+        frame_outbox.post(SipFrame::Op::REGISTER_STATE, 0, payload.dump());
       });
 
   // AriClient's reachability probe (driven by publish_register_snapshot,
   // which already runs on every tunnel reconnect) → cloud admin
   // connectivity chip via an ASTERISK_STATUS SipFrame. Costs zero new
   // periodic work — piggybacks on the existing ARI GET. Stream-id 0.
+  // Also fires on the AriDispatchTask worker thread (publish_register_
+  // snapshot) — post to the reactor, never send_frame() inline.
   ari_client.set_asterisk_status_handler(
       [&](bool connected) {
         const nlohmann::json payload = {{"connected", connected}};
-        connector.send_frame(SipFrame::Op::ASTERISK_STATUS, 0, payload.dump());
+        frame_outbox.post(SipFrame::Op::ASTERISK_STATUS, 0, payload.dump());
       });
 
   // After every (re)connect to the cloud:
