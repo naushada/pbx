@@ -231,6 +231,16 @@ std::string AriRestClient::build_originate_request(
      << "&app="       << url_encode(app)
      << "&appArgs="   << url_encode(app_args)
      << "&channelId=" << url_encode(channel_id);
+  // Pin the originated leg's codec capability to Opus first, then the
+  // G.711 fallbacks. Without an explicit `formats`, an ARI-originated
+  // channel takes a default core format set that EXCLUDES Opus — so the
+  // leg offers only ulaw/alaw, while the caller (a browser-initiated
+  // INVITE) negotiated Opus. Asterisk ships no codec_opus transcoder
+  // here, so an Opus<->ulaw bridge has no translation path and passes
+  // no audio (`ast_translator_build_path: No translator path`). Listing
+  // opus first makes both browser legs settle on Opus → the bridge is a
+  // straight passthrough, no transcoding module required.
+  os << "&formats=" << url_encode("opus,ulaw,alaw");
   // An empty callerId param confuses some Asterisk builds — leave it off
   // entirely and let the endpoint's configured CallerID stand.
   if (!caller_id.empty())
