@@ -18,6 +18,7 @@
 
 #include "ace_ssl_transport.hpp"
 #include "ari_client.hpp"
+#include "ari_dispatch_task.hpp"
 #include "ari_rest_client.hpp"
 #include "ari_ws_client.hpp"
 #include "asterisk_ws_factory.hpp"
@@ -331,6 +332,19 @@ int main(int argc, char *argv[]) {
   AriClient ari_client(ari_cfg, ari_rest, *db, call_router);
   ari_client.start();  // POSTs the subscription to Asterisk
 
+  // Active Object that runs every AriClient entry point off the reactor
+  // thread. AriWsClient reads /ari/events ON the reactor and only
+  // ENQUEUEs here; this task's single worker thread pops the queue and
+  // runs AriClient -> CallRouter -> AriRestClient, whose REST calls
+  // block. Without it the blocking call-setup burst stalled the reactor
+  // long enough for Asterisk's websocket_write_timeout to tear down the
+  // ARI socket mid-call (calls stuck at "Calling...", no audio). One
+  // worker thread keeps AriClient / CallRouter single-threaded — their
+  // documented "no internal locking" invariant holds, just on the worker
+  // instead of the reactor. Declared after ari_client so it is destroyed
+  // (worker joined) BEFORE ari_client — the queued jobs capture it.
+  AriDispatchTask ari_dispatch;
+
   // ── PjsipProvisioner + SubscriberWatcher ───────────────────────────────
   //
   // Materialise every active `subscribers` row as auth/aor/endpoint sorcery
@@ -354,7 +368,15 @@ int main(int argc, char *argv[]) {
   ari_ws_cfg.password = ari_pass;
   AriWsClient ari_ws(ari_ws_cfg,
                       [&](const std::string &event) {
-                        ari_client.on_event(event);
+                        // Reactor thread: enqueue and return immediately
+                        // so handle_input keeps draining /ari/events.
+                        // The job runs AriClient::on_event (and its
+                        // blocking CallRouter/AriRestClient work) on the
+                        // AriDispatchTask worker thread.
+                        ari_dispatch.dispatch(
+                            [&ari_client, event]() {
+                              ari_client.on_event(event);
+                            });
                       });
 
   // ── AsteriskWsFactory needs the demux + reactor at construction.
@@ -427,8 +449,14 @@ int main(int argc, char *argv[]) {
         try {
           const auto j = nlohmann::json::parse(payload);
           if (j.contains("sipUsername") && j["sipUsername"].is_string())
-            ari_client.revoke_subscriber(
-                j["sipUsername"].get<std::string>());
+            // revoke_subscriber does blocking ARI REST (endpoint lookup
+            // + per-channel hangup) — run it on the ARI worker, not the
+            // reactor thread that delivered the tunnel frame.
+            ari_dispatch.dispatch(
+                [&ari_client,
+                 sip_username = j["sipUsername"].get<std::string>()]() {
+                  ari_client.revoke_subscriber(sip_username);
+                });
         } catch (...) {
           ACE_ERROR((LM_ERROR,
                      ACE_TEXT("%D [pbx-agent] bad SUBSCRIBER_REVOKED "
@@ -483,7 +511,12 @@ int main(int argc, char *argv[]) {
     demux.set_tunnel(&connector);
     const nlohmann::json hello = {{"societyId", society_id}};
     connector.send_frame(SipFrame::Op::AGENT_HELLO, 0, hello.dump());
-    ari_client.publish_register_snapshot();
+    // publish_register_snapshot() does a blocking GET /ari/endpoints
+    // then fans REGISTER_STATE frames to the cloud — run it on the ARI
+    // worker so a reconnect never stalls the reactor.
+    ari_dispatch.dispatch([&ari_client]() {
+      ari_client.publish_register_snapshot();
+    });
   });
 
   // Cloud responded to our AGENT_HELLO with SOCIETY_BOOTSTRAP carrying
@@ -551,9 +584,21 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  // Spawn the ARI worker thread before entering the reactor loop so the
+  // very first StasisStart is dispatched, not silently dropped.
+  if (ari_dispatch.start() == -1) {
+    ACE_ERROR((LM_ERROR,
+               ACE_TEXT("%D [pbx-agent] AriDispatchTask start failed\n")));
+    return -1;
+  }
+
   ACE_DEBUG((LM_INFO,
              ACE_TEXT("%D [pbx-agent] reactor ready; entering event loop\n")));
   reactor->run_reactor_event_loop();
+
+  // Reactor stopped (SIGINT/SIGTERM). Join the ARI worker thread before
+  // any object its queued jobs captured goes out of scope.
+  ari_dispatch.stop();
 
   ACE_DEBUG((LM_INFO, ACE_TEXT("%D [pbx-agent] shutdown clean\n")));
   return 0;
