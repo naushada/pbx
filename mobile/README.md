@@ -17,7 +17,7 @@ plan for the layer breakdown.
 | **M0** | Scaffold, Jest/RNTL harness, FakeCloud, native mocks | ✅ |
 | **M1** | Auth & registration — validation, API client, session, Login/Register/Dial screens, React Navigation stack | ✅ |
 | **M2** | Outbound calling (SIP + WebRTC) | ⏳ primitives + SIP tunnel + WebRTC adapter + Dial/in-call screens done; only the sip.js `UserAgent` engine binding remains (toolchain-required) |
-| M3 | Inbound calling & push | — |
+| **M3** | Inbound calling & push | ⏳ push-payload parsing + device-token registration done (pure logic); CallKit / PushKit / FCM native glue is toolchain + device work |
 | M4 | Detox E2E | — |
 | M5 | Manual device matrix → store release | — |
 

@@ -48,7 +48,9 @@ describe('FakeCloud — login', () => {
 
   it('never returns the password on the subscriber', () => {
     const s = seeded().login('SUNSET', 'A-101', 'pw-a101');
-    expect((s.subscriber as Record<string, unknown>).password).toBeUndefined();
+    expect(
+      (s.subscriber as unknown as Record<string, unknown>).password,
+    ).toBeUndefined();
   });
 
   it('throws INVALID_CREDENTIALS for a wrong password', () => {

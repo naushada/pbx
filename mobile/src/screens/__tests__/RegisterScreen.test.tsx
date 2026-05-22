@@ -71,12 +71,14 @@ describe('RegisterScreen', () => {
     fillRequired();
     fireEvent.press(screen.getByTestId('register-submit'));
     await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0][0]).toMatchObject({
-      societyName: 'SUNSET',
-      flatNumber: 'B-204',
-      residentName: 'Asha Rao',
-      password: 'pw-asha-204',
-    });
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        societyName: 'SUNSET',
+        flatNumber: 'B-204',
+        residentName: 'Asha Rao',
+        password: 'pw-asha-204',
+      }),
+    );
   });
 
   it('auto-logs-in straight to Dial on success (ungated registration)', async () => {
