@@ -19,6 +19,25 @@ constexpr char kOutboundTag[] = "outbound";
 // "conf" as the dialed extension. Anyone dialing this joins the
 // shared society mixing bridge instead of fork-ringing a flat.
 constexpr char kConfExtension[] = "conf";
+
+// Extract the pjsip endpoint name (== the subscriber's sipUsername)
+// from an ARI channel name. Asterisk names PJSIP channels
+// "PJSIP/<endpoint>-<8 hex>"; strip the tech prefix and the trailing
+// sequence id. Returns "" if `name` is empty.
+std::string sip_user_from_channel_name(const std::string &name) {
+  const auto slash = name.find('/');
+  std::string s = slash == std::string::npos ? name : name.substr(slash + 1);
+  if (s.size() > 9) {
+    const std::string tail = s.substr(s.size() - 9);
+    const bool seq =
+        tail[0] == '-' &&
+        std::all_of(tail.begin() + 1, tail.end(), [](unsigned char c) {
+          return std::isxdigit(c) != 0;
+        });
+    if (seq) s.erase(s.size() - 9);
+  }
+  return s;
+}
 } // namespace
 
 AriClient::AriClient(Config cfg, IAriRest &rest, IMongodbClient &db,
@@ -207,6 +226,29 @@ void AriClient::revoke_subscriber(const std::string &sip_username) {
 // StasisStart — first time we see a new channel. Admission decision here.
 // ─────────────────────────────────────────────────────────────────────────────
 
+std::string AriClient::lookup_flat_number(
+    const std::string &sip_username) const {
+  if (sip_username.empty()) return {};
+  const json filter = {{"societyId", m_cfg.society_id},
+                       {"sipUsername", sip_username}};
+  std::string doc;
+  try {
+    doc = m_db.get_document("subscribers", filter.dump(), "{}");
+  } catch (...) {
+    return {};
+  }
+  if (doc.empty()) return {};
+  try {
+    const json sub = json::parse(doc);
+    if (sub.is_object() && sub.contains("flatNumber") &&
+        sub["flatNumber"].is_string()) {
+      return sub["flatNumber"].get<std::string>();
+    }
+  } catch (...) {
+  }
+  return {};
+}
+
 void AriClient::handle_stasis_start(const json &j) {
   if (!j.contains("channel") || !j["channel"].is_object()) return;
   const auto &ch = j["channel"];
@@ -243,8 +285,18 @@ void AriClient::handle_stasis_start(const json &j) {
   ChannelCtx cx;
   cx.channel_id = channel_id;
   cx.started_at = std::time(nullptr);
-  if (ch.contains("caller") && ch["caller"].is_object() &&
-      ch["caller"].contains("number") && ch["caller"]["number"].is_string()) {
+  // The callee's incoming-call alert must show the CALLER's flat
+  // number. A WebRTC caller channel's `caller.number` is unreliable —
+  // often empty, so the originated leg inherits Asterisk's default
+  // "asterisk" caller-id and that is what the callee sees. Resolve the
+  // caller's flat from its subscriber record (keyed on the sipUsername
+  // parsed out of channel.name); fall back to `caller.number` only if
+  // that resolution misses.
+  cx.caller_flat = lookup_flat_number(
+      sip_user_from_channel_name(ch.value("name", std::string{})));
+  if (cx.caller_flat.empty() && ch.contains("caller") &&
+      ch["caller"].is_object() && ch["caller"].contains("number") &&
+      ch["caller"]["number"].is_string()) {
     cx.caller_flat = ch["caller"]["number"].get<std::string>();
   }
   if (ch.contains("dialplan") && ch["dialplan"].is_object() &&
