@@ -168,3 +168,35 @@ describe('CloudClient — transport failure', () => {
     expect((rejection as ApiError).code).toBe('NETWORK');
   });
 });
+
+describe('CloudClient.registerDevice', () => {
+  it('POSTs /api/v1/push/device with sipUsername, platform and token', async () => {
+    const t = new ScriptedTransport(() => ({status: 204, body: null}));
+    await new CloudClient(t).registerDevice({
+      sipUsername: 'a101',
+      platform: 'ios',
+      token: 'apns-tok',
+    });
+    expect(t.calls[0].method).toBe('POST');
+    expect(t.calls[0].path).toBe('/api/v1/push/device');
+    expect(t.calls[0].body).toEqual({
+      sipUsername: 'a101',
+      platform: 'ios',
+      token: 'apns-tok',
+    });
+  });
+
+  it('resolves on a 2xx and maps a non-2xx to a typed ApiError', async () => {
+    await expect(
+      new CloudClient(
+        new ScriptedTransport(() => ({status: 200, body: null})),
+      ).registerDevice({sipUsername: 'a101', platform: 'android', token: 't'}),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      new CloudClient(
+        new ScriptedTransport(() => ({status: 429, body: {}})),
+      ).registerDevice({sipUsername: 'a101', platform: 'android', token: 't'}),
+    ).rejects.toHaveProperty('code', 'RATE_LIMITED');
+  });
+});

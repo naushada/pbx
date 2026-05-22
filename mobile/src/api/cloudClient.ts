@@ -17,6 +17,13 @@ export interface RegisterRequest {
   email?: string;
 }
 
+export interface DeviceRegistration {
+  sipUsername: string;
+  platform: 'ios' | 'android';
+  /** APNs (PushKit) or FCM device token. */
+  token: string;
+}
+
 export class CloudClient {
   constructor(private readonly transport: HttpTransport) {}
 
@@ -69,6 +76,20 @@ export class CloudClient {
       }
       throw new ApiError('SERVER', 'malformed society-resolve response');
     }
+    throw errorFor(res);
+  }
+
+  /**
+   * POST /api/v1/push/device — register this device's APNs/FCM token so
+   * the cloud can wake the app for an incoming call.
+   */
+  async registerDevice(reg: DeviceRegistration): Promise<void> {
+    const res = await this.send('POST', '/api/v1/push/device', {
+      sipUsername: reg.sipUsername,
+      platform: reg.platform,
+      token: reg.token,
+    });
+    if (isOk(res)) return;
     throw errorFor(res);
   }
 
