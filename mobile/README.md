@@ -15,7 +15,7 @@ plan for the layer breakdown.
 | Layer | Scope | State |
 |---|---|---|
 | **M0** | Scaffold, Jest/RNTL harness, FakeCloud, native mocks | ✅ |
-| **M1** | Auth & registration | ⏳ logic done (validation, CloudClient, SessionStore, flow); Login/Register screens next |
+| **M1** | Auth & registration — validation, API client, session, Login/Register/Dial screens, React Navigation stack | ✅ |
 | M2 | Outbound calling (SIP + WebRTC) | — |
 | M3 | Inbound calling & push | — |
 | M4 | Detox E2E | — |
@@ -76,8 +76,9 @@ mobile/
   index.js                 RN entry point
   jest.setup.ts            M0.4 — native-module mocks
   src/
-    navigation/            RootNavigator (M1 → React Navigation stack)
-    screens/               PlaceholderScreen (M1 → Login / Register / Dial)
+    navigation/            RootNavigator (React Navigation native-stack) + types
+    screens/               Login / Register / Dial + FormField
+    state/                 deps context (test-injectable client + store)
     test/
       fakeCloud.ts         M0.3 — in-memory cloud double
       __tests__/           tests of the test infrastructure

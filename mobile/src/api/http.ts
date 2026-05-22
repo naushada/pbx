@@ -32,10 +32,17 @@ export class TransportError extends Error {
 
 /** Production transport — talks to the real cloud over `fetch`. */
 export class FetchTransport implements HttpTransport {
+  private readonly fetchImpl: typeof fetch;
+
+  // `globalThis.fetch` is read (not the bare `fetch` identifier) so
+  // constructing this never throws if a global `fetch` is absent — it
+  // only matters when `request()` actually runs.
   constructor(
     private readonly baseUrl: string,
-    private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+    fetchImpl?: typeof fetch,
+  ) {
+    this.fetchImpl = fetchImpl ?? globalThis.fetch;
+  }
 
   async request(
     method: HttpMethod,
