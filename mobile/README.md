@@ -16,7 +16,7 @@ plan for the layer breakdown.
 |---|---|---|
 | **M0** | Scaffold, Jest/RNTL harness, FakeCloud, native mocks | ✅ |
 | **M1** | Auth & registration — validation, API client, session, Login/Register/Dial screens, React Navigation stack | ✅ |
-| M2 | Outbound calling (SIP + WebRTC) | — |
+| **M2** | Outbound calling (SIP + WebRTC) | ⏳ call primitives done (SIP URI, call state machine, SDP/Opus); SIP transport + WebRTC adapter + Dial screen next |
 | M3 | Inbound calling & push | — |
 | M4 | Detox E2E | — |
 | M5 | Manual device matrix → store release | — |
