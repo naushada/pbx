@@ -10,15 +10,20 @@ import {createContext, useContext} from 'react';
 import {CloudClient} from '../api/cloudClient';
 import {defaultClient} from '../api/defaultClient';
 import {SessionStore, SessionStoreApi} from '../session/sessionStore';
+import {CallController, StubCallController} from '../call/callController';
 
 export interface AppDeps {
   client: CloudClient;
   sessionStore: SessionStoreApi;
+  callController: CallController;
 }
 
 const DepsContext = createContext<AppDeps>({
   client: defaultClient,
   sessionStore: SessionStore,
+  // Drives the Dial UI's state machine only — replaced by the
+  // sip.js-backed CallController once the call engine lands.
+  callController: new StubCallController(),
 });
 
 /** Test seam — wrap a screen to inject fake deps. */

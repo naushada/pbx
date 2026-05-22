@@ -9,6 +9,7 @@ import {fireEvent, render, screen, waitFor} from '@testing-library/react-native'
 import {RegisterScreen} from '../RegisterScreen';
 import {DepsProvider} from '../../state/deps';
 import {ApiError, Session} from '../../api/types';
+import {StubCallController} from '../../call/callController';
 import type {CloudClient} from '../../api/cloudClient';
 import type {SessionStoreApi} from '../../session/sessionStore';
 
@@ -32,7 +33,8 @@ function renderRegister(register: jest.Mock = jest.fn()) {
   };
   const navigation = {navigate: jest.fn(), replace: jest.fn()};
   render(
-    <DepsProvider value={{client, sessionStore}}>
+    <DepsProvider
+      value={{client, sessionStore, callController: new StubCallController()}}>
       <RegisterScreen
         navigation={navigation as never}
         route={{key: 'r', name: 'Register', params: undefined} as never}
