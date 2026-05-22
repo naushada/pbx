@@ -9,6 +9,7 @@ import {fireEvent, render, screen, waitFor} from '@testing-library/react-native'
 import {LoginScreen} from '../LoginScreen';
 import {DepsProvider} from '../../state/deps';
 import {ApiError, Session} from '../../api/types';
+import {StubCallController} from '../../call/callController';
 import type {CloudClient} from '../../api/cloudClient';
 import type {SessionStoreApi} from '../../session/sessionStore';
 
@@ -32,7 +33,8 @@ function renderLogin(login: jest.Mock = jest.fn()) {
   };
   const navigation = {navigate: jest.fn(), replace: jest.fn()};
   render(
-    <DepsProvider value={{client, sessionStore}}>
+    <DepsProvider
+      value={{client, sessionStore, callController: new StubCallController()}}>
       <LoginScreen
         navigation={navigation as never}
         route={{key: 'l', name: 'Login', params: undefined} as never}
