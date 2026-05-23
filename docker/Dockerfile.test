@@ -22,14 +22,23 @@ COPY test/         /src/test/
 # [endpoint-resident-template] section. Skips gracefully if missing
 # (dev machines running tests outside this image).
 COPY docker/      /src/docker/
-# innertls_test reads server.crt/server.key (and now client.crt/key
-# for the mTLS PeerSubjectCn tests). The cloud-runtime Dockerfile
-# regenerates server.{crt,key} at build time, but the offtarget tests
-# just need a working CA + server + client triple to drive the paired
-# handshake — copy them straight from the repo. Tests skip gracefully
-# (GTEST_SKIP) when missing, so dev machines running `cmake; ctest`
-# outside this image still stay green.
+# innertls_test reads server.crt/server.key (and client.crt/key for
+# the mTLS PeerSubjectCn tests) from /src/certs/. Only the project CA
+# cert + generate.sh are committed — the *.key files are gitignored
+# — so a fresh checkout (CI, another dev machine) has nothing for
+# COPY to bring in. Without keys the suite's SetUp calls
+# GTEST_SKIP and all 10 InnerTls tests silently pass-as-skipped,
+# which makes any handshake regression invisible.
+#
+# Run generate.sh INSIDE the image to mint a fresh test-only triple
+# every build. Keys live only in this image, never on disk or in git;
+# rebuilding the image rotates them, and the openssl version that
+# generates them is the same one the tests link against (so there's
+# no host vs container cipher mismatch to chase). Dev machines
+# running `cmake; ctest` outside this image still skip gracefully —
+# that's intentional, the comment on the GTEST_SKIP describes it.
 COPY certs/innertls/ /src/certs/
+RUN cd /src/certs && bash generate.sh > /dev/null
 
 WORKDIR /src/build
 RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
