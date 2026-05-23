@@ -1,6 +1,6 @@
 # onprem-pbx
 
-VoIP PBX for residential societies. Heroku-hosted control plane (C++ / ACE) + on-prem `pbx-agent` (C++ / ACE + Asterisk + coturn + MongoDB) + Angular web softphone (SIP.js + WebRTC).
+VoIP PBX for residential societies. Heroku-hosted control plane (C++ / ACE) + on-prem `pbx-agent` (C++ / ACE + Asterisk + coturn + MongoDB) + Angular web softphone (SIP.js + WebRTC) + React Native mobile softphone (iOS / Android, JS-complete through TDD layer M3.b).
 
 **Live**: <https://pabx-5fbf3550f938.herokuapp.com/webui/> — single Heroku app (`pabx`) serving UI at `/webui/` + REST + SIP-over-WS + `/agent` mTLS tunnel. UI assets at `/webui/main.js`, `/webui/favicon.svg`, `/webui/sw.js`. SPA login is dev-mode permissive — any non-empty `societyCode` / `flatNumber` / `password` returns a synthetic session until the CSV-import flow + `PBX_AUTH_STRICT=1` are wired.
 
@@ -45,6 +45,7 @@ See:
 | 4   | InnerTLS peer-cert CN exposure + latent-bug fix — `InnerTlsServer::peer_subject_cn()` extracts the agent's verified CN for log labels + future cross-checks; the underlying `SSL_CTX_use_certificate_file`-after-`SSL_new` bug (silently presented no cert) replaced with the per-SSL `SSL_use_certificate_file` API. | ✅ PR #25 (merged) |
 | 4   | `scripts/lima.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following the established C++ toolchain recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
+| Mob | React Native mobile softphone (`mobile/`) — TDD layers M0 (scaffold) → M1 (auth) → M2 (outbound calling — primitives + tunnel + WebRTC adapter + Dial/in-call screens against the `CallController` seam) → M3.a (push payload + device registration) → M3.b (incoming-call glue — `IncomingCallController`, ring reducer, accept/decline/timeout against mocked CallKit + signaling). 17 Jest files / 113 tests green via `docker/Dockerfile.mobile-test`. Remaining: real sip.js `UserAgent` + CallKit / PushKit / ConnectionService / FCM bindings behind the seams, M4 Detox, M5 device matrix — all toolchain + device work. | ✅ M0–M3.b landed (see [`mobile/README.md`](./mobile/README.md)) |
 | CI/CD | `publish-images.yml` workflow auto-deploys `pbx-cloud` to Heroku on every same-path push to main: builds amd64 image, pushes to `registry.heroku.com/pabx/web`, calls `heroku container:release`. Replaces the manual `./deploy-heroku.sh deploy` round-trip; the script stays as an escape hatch for emergency push from a laptop. | ✅ PR #95 |
 | CI/CD | `concurrency.cancel-in-progress: true` on the workflow — a newer push auto-cancels older in-flight runs for the same ref. Saves CI minutes; bundles back-to-back merges into one CI cycle (e.g. PR #100 + PR #101 → single run, single deploy). Plus an `offtarget` GTest job as a quality gate before any image publish or Heroku release — catches today's class of bugs (missing-header, missing opcode whitelist, stale provisioner gate, missing bridge re-arm) at CI time instead of at deploy. Plus `LM_INFO`/`LM_WARNING` re-added to the cloud's `priority_mask` so the observability lines from PR #80 + PR #88 actually emit. | ✅ PR #96 |
 | Op   | `install.sh` Mongo seeding — after the compose stack is up, seeds the on-prem Mongo with the society's `societies` row + first ADMIN subscriber (PBKDF2-SHA256 hashed locally, never sent over the wire). Without this the cloud's login returns 401 "Invalid credentials" for everything in strict-auth mode. | ✅ PR #96 |
@@ -388,6 +389,28 @@ podman run --rm -p 4200:4200 -v "$PWD/ui:/ui" -w /ui docker.io/library/node:16-a
 ```
 
 See [`ui/README.md`](./ui/README.md) for slice plan and dependency pinning notes.
+
+## Run the mobile softphone test suite
+
+React Native + Jest under `mobile/` — TDD layers M0 → M3.b are JS-
+complete. Test runner is containerised (Node not required on the host):
+
+```sh
+podman-compose -f docker-compose.mobile-test.yml build mobile-test
+podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
+```
+
+> ⚠️ `podman-compose run` alone reuses the cached image — when `mobile/`
+> source changes, the explicit `build` step above is required or the
+> new code never enters the image (same caveat as `offtarget`).
+
+Current suite: **17 files / 113 tests**. Image:
+[`docker/Dockerfile.mobile-test`](./docker/Dockerfile.mobile-test).
+
+Actually building the iOS / Android app (.ipa / .apk) needs the
+RN toolchain on a dev machine — see
+[`mobile/README.md`](./mobile/README.md) for the dev-machine workflow
+and the M4 / M5 device-required layers.
 
 ## Run the Vaadin admin UI
 

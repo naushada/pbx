@@ -9,38 +9,108 @@ a destination flat number, and calls it.
 
 ## Status
 
-Built one TDD layer at a time — *not* yet a runnable app. See the TDD
-plan for the layer breakdown.
+Built test-first, one TDD layer at a time. **Not yet a runnable
+app** — every layer that can be proven without an iOS/Android
+toolchain or real device is now landed (113 Jest tests green); the
+remainder needs a dev machine + simulators or hardware.
 
 | Layer | Scope | State |
 |---|---|---|
-| **M0** | Scaffold, Jest/RNTL harness, FakeCloud, native mocks | ✅ |
-| **M1** | Auth & registration — validation, API client, session, Login/Register/Dial screens, React Navigation stack | ✅ |
-| **M2** | Outbound calling (SIP + WebRTC) | ⏳ primitives + SIP tunnel + WebRTC adapter + Dial/in-call screens done; only the sip.js `UserAgent` engine binding remains (toolchain-required) |
-| **M3** | Inbound calling & push | ⏳ push-payload parsing + device-token registration done (pure logic); CallKit / PushKit / FCM native glue is toolchain + device work |
-| M4 | Detox E2E | — |
-| M5 | Manual device matrix → store release | — |
+| **M0** | Scaffold, Jest/RNTL harness, `FakeCloud`, native-module mocks | ✅ landed |
+| **M1** | Auth & registration — validation, API client, session, Login / Register / Dial screens, React Navigation stack | ✅ landed |
+| **M2** | Outbound calling — call primitives, SIP tunnel, WebRTC adapter (`MediaSession`), Dial + in-call screens against the `CallController` seam | ✅ landed (the sip.js `UserAgent` binding behind the seam is the only TODO and needs the RN toolchain) |
+| **M3.a** | Push payload + device registration (pure logic) | ✅ landed |
+| **M3.b** | Incoming-call glue — `IncomingCallController`, pure ring reducer, accept/decline/timeout against mocked CallKit + signaling | ✅ landed (PR #138) |
+| M3 native | Real CallKit / PushKit / ConnectionService / FCM bindings behind the M3.b seams | toolchain + device work |
+| M4 | Detox E2E across iOS simulator + Android emulator | not started |
+| M5 | Manual device matrix → store release | not started |
 
-## Prerequisites
+## Quickstart — run the test suite
 
-- **Node.js ≥ 18** and npm — for install and `npm test`.
-- For running on a device/simulator: the standard React Native
-  environment — Xcode (iOS) and/or Android Studio + JDK 17 (Android).
-  See <https://reactnative.dev/docs/set-up-your-environment>.
+Two paths. Pick the one that matches what you have on the host.
 
-## Setup
+### A. In a container (recommended — no host install)
+
+Mirrors the C++ `offtarget` workflow. Needs only podman/podman-compose.
+
+```sh
+podman-compose -f docker-compose.mobile-test.yml build mobile-test
+podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
+```
+
+> ⚠️ `podman-compose run` alone **reuses the cached image** — when
+> `mobile/` source changes, you must run the explicit `build` step
+> first or the new code never enters the image (same caveat as
+> `offtarget`).
+
+Image: `docker/Dockerfile.mobile-test` — Node 20 + the
+node-gyp toolchain, `npm install`, then `npm test --ci`. The current
+suite is **17 files / 113 tests**.
+
+### B. On a dev machine (needed to actually build the native app)
+
+```sh
+cd mobile
+npm install          # JS deps
+npm test             # Jest, same suite as the container
+npm run typecheck    # tsc --noEmit
+```
+
+Requirements: **Node ≥ 18** and npm.
+
+## How to use the mobile app today
+
+> The mobile app is **JS-complete through layer M3.b** but not yet a
+> shipped installable. There is no signed `.ipa` / `.apk` and no App
+> Store / Play Store listing. The only way to exercise it on a real
+> phone right now is the dev-machine workflow below.
+
+### Today: as a developer, on a simulator / device
 
 ```sh
 cd mobile
 npm install
+# one-time per dev machine — see "Native shells" below
+npm run ios      # opens iOS Simulator (needs macOS + Xcode)
+npm run android  # opens an Android emulator (needs JDK 17 + Android Studio)
 ```
 
-### Native projects (`ios/` and `android/`)
+On first launch the resident:
+
+1. **Logs in or self-registers** (Login / Register screens, M1.c) with
+   their society code, flat number, and password. Registration is
+   ungated by design for v1 — see
+   [`mobile-app.md` §9.1](../docs/design/mobile-app.md).
+2. Lands on **Dial** (M2.d). Types a destination flat number and taps
+   **Call**.
+3. **Outbound calling** runs through the M2 seams. The
+   `StubCallController` drives the on-screen state machine; the real
+   sip.js `UserAgent` binding is part of the remaining toolchain work
+   (so the call state visibly progresses to "Calling…" but does **not**
+   yet land an INVITE without that binding).
+4. **Incoming calls** (M3.b) — `IncomingCallController.reportPush()`
+   parses an APNs / FCM wake-up payload and asks `react-native-callkeep`
+   to show the OS incoming-call UI. The accept → `ensureConnected` →
+   `answer` → `connectMedia` and decline → SIP 603 paths are wired but
+   bound to the same M2/M3 toolchain work for real signalling.
+
+### Later: as a resident
+
+Once the M3 native glue and a signed build are done, residents will
+install from TestFlight / Play internal-testing (M5) and ultimately
+from the App Store / Play Store. The runtime topology is unchanged
+from the Angular browser softphone: the app talks **only to the
+cloud**, signalling goes app → cloud → agent's outbound tunnel →
+Asterisk, and media (RTP) is a separate WebRTC path through the
+on-prem coturn. Full picture in
+[`mobile-app.md` §2.1](../docs/design/mobile-app.md).
+
+## Native projects (`ios/` and `android/`)
 
 The native shells are **not committed** — they are generated by the
 React Native CLI and are large, mostly-boilerplate trees. `npm test`
-(the M0 deliverable) does **not** need them. To run the app on a
-device/simulator, generate them once:
+and the container suite both work **without** them. To run the app on
+a device/simulator, generate them once:
 
 ```sh
 # generate a throwaway RN project of the same name + version, then
@@ -53,41 +123,43 @@ cp -R /tmp/sn-shell/ios /tmp/sn-shell/android ./
 (They are `.gitignore`d at the build-output level only — once
 generated, the project files are committed normally.)
 
-## Testing
-
-```sh
-npm test              # run the Jest suite (unit + component)
-npm run test:coverage # with coverage
-npm run typecheck     # tsc --noEmit
-```
-
-The suite runs in pure Node — every native module
-(`react-native-webrtc`, `react-native-callkeep`, `react-native-keychain`)
-is mocked in [`jest.setup.ts`](./jest.setup.ts). A green `npm test`
-therefore says nothing about CallKit / WebRTC / Keychain working on a
-real device — that is covered only by Detox (M4) and the manual device
-matrix (M5).
-
 ## Layout
 
 ```
 mobile/
-  App.tsx                  app root
-  index.js                 RN entry point
-  jest.setup.ts            M0.4 — native-module mocks
+  App.tsx                       app root
+  index.js                      RN entry point
+  jest.setup.ts                 native-module mocks (M0)
   src/
-    navigation/            RootNavigator (React Navigation native-stack) + types
-    screens/               Login / Register / Dial + FormField
-    state/                 deps context (test-injectable client + store)
-    test/
-      fakeCloud.ts         M0.3 — in-memory cloud double
-      __tests__/           tests of the test infrastructure
-    __tests__/             app-level tests (smoke)
+    api/                        cloud REST client (M1.a)
+      cloudClient.ts, http.ts, defaultClient.ts, types.ts
+    call/                       call control seams (M2.d, M3.b)
+      callController.ts         outbound seam + StubCallController
+      incomingCallController.ts M3.b inbound glue
+      useCall.ts                React hook over CallController
+    navigation/                 React Navigation native-stack root
+    push/                       APNs/FCM payload + device registration (M3.a)
+      pushPayload.ts, deviceRegistrar.ts
+    screens/                    Login / Register / Dial / InCallPanel
+    session/                    keychain-backed session store (M1.b)
+    sip/                        pure call models + transport adapters
+      callState.ts              outbound call reducer (M2.a)
+      incomingCall.ts           inbound ring reducer (M3.b)
+      sipTunnel.ts              token'd /sip-ws transport (M2.b)
+      mediaSession.ts           WebRTC adapter (M2.c)
+      sdp.ts, sipUri.ts
+    state/                      AppDeps context (test-injectable seams)
+    test/                       in-test fakes
+      fakeCloud.ts, fakeCloudTransport.ts, fakeCallController.ts
+    validation/                 form-input rules (M1.a)
 ```
 
-As later layers land, `src/` gains `api/` (cloud REST client),
-`sip/` (sip.js + the react-native-webrtc adapter), `state/`, and
-`push/` — each introduced test-first per the TDD plan.
+Every layer is introduced **test-first**: a sibling `__tests__/`
+directory drives each module before the implementation lands. The
+seam pattern (`CallController`, `IncomingCallController`,
+`CallKitBridge`, `IncomingCallSignaling`, …) keeps the integration
+slice — sip.js, real CallKit / PushKit — as drop-in replacements for
+the fakes used in tests.
 
 ## How it connects
 
@@ -96,3 +168,17 @@ The app talks **only to the cloud** — never directly to the on-prem
 outbound tunnel) → Asterisk; media (RTP) is a separate WebRTC path
 relayed through the on-prem coturn. Full detail in
 [`mobile-app.md` §2.1](../docs/design/mobile-app.md).
+
+## What's next
+
+Strictly toolchain / device work, in TDD layer order:
+
+- The sip.js `UserAgent` binding behind `CallController` and the
+  `IncomingCallSignaling` seam.
+- Real CallKit / PushKit (iOS) and ConnectionService / FCM (Android)
+  bindings behind `CallKitBridge`.
+- **M4** — Detox flows across an iOS simulator + Android emulator
+  against a dedicated test cloud + a synthetic answerer.
+- **M5** — manual device matrix (real APNs / FCM, audio over mobile
+  data + Wi-Fi + TURN, Doze / OEM battery killers), TestFlight + Play
+  internal testing, then store submission.

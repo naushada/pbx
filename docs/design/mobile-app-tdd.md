@@ -8,6 +8,25 @@ order — each layer is fully green before the next starts.
 This mirrors the discipline of the root [`TDD-PLAN.md`](../../TDD-PLAN.md)
 (the C++/Angular system), adapted to the React Native toolchain.
 
+## Status (as of 2026-05-23)
+
+| Layer | State |
+|---|---|
+| M0 — Scaffold & harness | ✅ landed |
+| M1 — Auth & registration (a/b/c/d) | ✅ landed |
+| M2 — Outbound calling (a/b/c/d) | ✅ landed against the `CallController` seam — the sip.js `UserAgent` binding behind the seam remains and needs the RN toolchain |
+| M3.a — Push payload + device registration | ✅ landed |
+| M3.b — Incoming-call glue (mocked CallKit) | ✅ landed |
+| M3 native | not started — real CallKit / PushKit / ConnectionService / FCM bindings behind the M3.b seams (toolchain + devices) |
+| M4 — End-to-end (Detox) | not started — needs iOS simulator + Android emulator + a test cloud + synthetic answerer |
+| M5 — Manual device matrix | not started |
+
+Containerised Jest runner shipped via PR #137
+([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
+— the entire pre-toolchain suite (17 files / 113 tests) is reproducible
+without an RN install on the host. See
+[`mobile/README.md`](../../mobile/README.md) for invocation.
+
 ---
 
 ## Conventions

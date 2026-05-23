@@ -232,6 +232,47 @@ enables Mongo change streams. Standalone mongod degrades the
 `SubscriberWatcher` to bootstrap-only (live updates require an agent
 restart).
 
+### 2.8 Mobile softphone (`mobile/`)
+
+React Native 0.74 (iOS & Android) — a parallel client to the Angular
+browser softphone (§2.1), same cloud contract, JS-complete through
+TDD layer M3.b. Connectivity is identical to the browser softphone:
+the app talks **only to the cloud**, never directly to the on-prem
+agent.
+
+| Role | Where |
+|------|-------|
+| Login / Register | `screens/LoginScreen` + `screens/RegisterScreen` → `api/cloudClient` → `POST /api/v1/subscriber/{login,register}` → token + subscriber stashed in `session/sessionStore` (Keychain / Keystore). |
+| Auth gate | `state/deps` injects the resolved client into every screen via React context; `RootNavigator` (`@react-navigation/native-stack`) routes login → Dial. |
+| Call seam | `call/CallController` interface — outbound; `call/IncomingCallController` — inbound (M3.b). The screens depend only on the seams; the production sip.js `UserAgent` binding behind them is the remaining toolchain slice. |
+| SIP transport | `sip/SipTunnel` opens `wss://${CLOUD_HOST}/sip-ws?token=…`, reconnect-backoff identical to the browser path. |
+| Media | `sip/MediaSession` wraps a `react-native-webrtc` `RTCPeerConnection` — Opus-first SDP, ICE both ways, mic acquired via `mediaDevices.getUserMedia`. |
+| Inbound | `push/parseWakeUp` decodes the APNs / FCM wake-up; `IncomingCallController.reportPush()` rings via `react-native-callkeep` (CallKit on iOS, ConnectionService on Android), arms the missed-call timer, and on accept does `ensureConnected → answer → connectMedia`. |
+| Device registration | `push/DeviceRegistrar` posts the APNs / FCM token to `POST /api/v1/push/device` only when it has rotated. |
+
+Tests run in pure Node — every native module is faked in
+`jest.setup.ts`. The full 17-file / 113-test suite is reproducible
+without an RN toolchain via
+[`docker/Dockerfile.mobile-test`](./docker/Dockerfile.mobile-test):
+
+```sh
+podman-compose -f docker-compose.mobile-test.yml build mobile-test
+podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
+```
+
+What's **not** yet wired (genuinely needs the RN toolchain + devices):
+
+- The sip.js `UserAgent` / `Registerer` / `Inviter` binding behind
+  `CallController`, and the SDH that delegates to `MediaSession`.
+- Real CallKit / PushKit (iOS) and ConnectionService / FCM (Android)
+  modules behind `CallKitBridge`.
+- M4 (Detox E2E on simulator + emulator) and M5 (device matrix +
+  store submission).
+
+Full design: [`docs/design/mobile-app.md`](./docs/design/mobile-app.md).
+TDD plan: [`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md).
+Developer workflow: [`mobile/README.md`](./mobile/README.md).
+
 ---
 
 ## 3. Trace one full call
