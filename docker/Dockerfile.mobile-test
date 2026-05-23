@@ -1,0 +1,42 @@
+# Dockerfile.mobile-test — containerised Jest runner for the mobile app.
+#
+# The React Native softphone in mobile/ is built test-first (TDD layers
+# M0–M3, see docs/design/mobile-app-tdd.md). Those layers are pure
+# Jest + React Native Testing Library — they exercise validation, API,
+# session, SIP/call logic and screens against fakes and mocked native
+# modules. No iOS/Android SDK, simulator or device is involved, so the
+# whole JS test suite runs in plain Node.
+#
+# This image makes `npm test` reproducible without a dev machine —
+# the same role docker-compose.test.yml's `offtarget` service plays
+# for the C++ suite.
+#
+# Usage: podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
+#
+# NOT covered here (genuinely need real toolchains/devices):
+#   - M4 Detox E2E — needs an iOS simulator + Android emulator.
+#   - M5 release smoke — needs physical devices.
+#   - Native builds (.ipa/.apk) — need Xcode / Android SDK.
+FROM docker.io/library/node:20-bookworm-slim
+
+# git: some RN transitive deps are fetched from git refs.
+# python3/make/g++: node-gyp toolchain for any package with a native
+# addon postinstall (none are built for the JS test path, but npm runs
+# the install scripts regardless).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# package.json first so the dependency install layer is cached
+# independently of source changes. No lockfile is committed yet, so
+# this is `npm install`, not `npm ci`.
+COPY mobile/package.json ./
+RUN npm install --no-audit --no-fund
+
+# Source, configs and the native-module mocks.
+COPY mobile/ ./
+
+# --ci: fail (don't write) on an obsolete snapshot; deterministic runs.
+CMD ["npm", "test", "--", "--ci", "--colors"]

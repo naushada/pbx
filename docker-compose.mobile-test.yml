@@ -1,0 +1,11 @@
+version: "3.8"
+
+# Mobile-app test harness — build the Jest runner and run the React
+# Native JS test suite (TDD layers M0–M3, docs/design/mobile-app-tdd.md).
+# Pure Jest + RNTL; no simulator, emulator or device required.
+# Usage: podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
+services:
+  mobile-test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mobile-test
