@@ -45,7 +45,7 @@ RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
  && make -j"$(nproc)" offtarget pbx-agent pbx-cloud
 
 WORKDIR /src/build/test
-# Five tests filtered out because they need fixtures we don't ship:
+# Four tests filtered out because they need fixtures we don't ship:
 #   1. AccountLoginTest.ValidCredentials_Returns200WithAccountData
 #      — inherited xpmile; needs live Mongo.
 #   2. AccountLoginTest.ResponseBody_ExcludesSensitiveFields
@@ -56,11 +56,14 @@ WORKDIR /src/build/test
 #      — inherited xpmile; reads /src/docker/mongo-init.js which
 #      onprem-pbx doesn't ship (we seed via install.sh, not
 #      mongo-init).
-#   5. MicroServiceRouting.RoutesSubscriberImportTemplateGET
-#      — post-PR-#43 the /import POST route requires an admin session
-#      token; the test doesn't supply one. Fix in a follow-up by
-#      minting + including a session cookie.
 # Documented in README.md (Status > Skipped tests). Drop a name from
 # the filter once the corresponding fixture / fix lands.
+#
+# Recently retired:
+#   - MicroServiceRouting.RoutesSubscriberImportTemplateGET — was
+#     filtered because the POST half of the test hit the admin-only
+#     /import route without a session token; fix was to seed an admin
+#     session + include ?token=admin-tok in the URL (same pattern as
+#     RoutesSubscriberImportPost), 2026-05-23.
 CMD ["./offtarget", "--gtest_color=yes", \
-     "--gtest_filter=-AccountLoginTest.ValidCredentials_Returns200WithAccountData:AccountLoginTest.ResponseBody_ExcludesSensitiveFields:WsDbServer.SecondAgentRejected_When_FirstAlive:SeedDataTest.BootstrapAdminHasHashedPassword:MicroServiceRouting.RoutesSubscriberImportTemplateGET"]
+     "--gtest_filter=-AccountLoginTest.ValidCredentials_Returns200WithAccountData:AccountLoginTest.ResponseBody_ExcludesSensitiveFields:WsDbServer.SecondAgentRejected_When_FirstAlive:SeedDataTest.BootstrapAdminHasHashedPassword"]

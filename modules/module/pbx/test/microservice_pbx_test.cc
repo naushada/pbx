@@ -1837,12 +1837,16 @@ TEST(MicroServiceRouting, RoutesSubscriberImportTemplateGET)
     }
 
     // POST on the same /import prefix must still reach the import handler.
+    // The POST half is admin-only (PR #43+), so seed a session and pass
+    // ?token= — same pattern as RoutesSubscriberImportPost above.
     seed_society_and_flats(db);
+    seed_session(db, "admin-tok", "admin");
     const std::string csv =
         "flat_number,name,email,phone,role\r\n"
         "A-101,Asha,asha@x,9999,resident\r\n";
     const std::string req = make_post(
-        "/api/v1/subscriber/import?societyId=s1", csv, "text/csv");
+        "/api/v1/subscriber/import?societyId=s1&token=admin-tok",
+        csv, "text/csv");
     std::string rsp = e.dispatch_pbx_routes(const_cast<std::string &>(req), db);
     EXPECT_NE(std::string::npos, rsp.find("HTTP/1.1 200 OK"));
     EXPECT_NE(std::string::npos, rsp.find("X-Import-Created: 1"));
