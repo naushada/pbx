@@ -705,7 +705,7 @@ tests, integration tests, drift checks).
 # Full build + test run (sandboxed in podman).
 podman-compose -f docker-compose.test.yml build --no-cache offtarget
 podman-compose -f docker-compose.test.yml run --rm offtarget
-# → 516/519 tests pass; 3 baseline failures (documented in README.md).
+# → 595/599 tests pass; 4 baseline failures (documented in README.md).
 
 # Run just one suite.
 podman-compose -f docker-compose.test.yml run --rm offtarget \
