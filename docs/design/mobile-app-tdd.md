@@ -18,7 +18,7 @@ an iOS Simulator build with #143 + #144 landed.
 | M0 — Scaffold & harness | ✅ landed |
 | M1 — Auth & registration (a/b/c/d) | ✅ landed |
 | M2 — Outbound calling (a/b/c/d) | ✅ landed against the `CallController` seam |
-| **M2 sip.js engine** | ✅ landed PR #143 — `SipCallController` backed by sip.js `UserAgent`+`Inviter`; reuses `ui/src/common/sip-ua-sipjs.ts` verbatim |
+| **M2 sip.js engine** | ✅ landed PR #143 — `SipCallController` backed by sip.js `UserAgent`+`Inviter`; consolidated into a single shared source at `shared/sip-ua/sip-ua-sipjs.ts` by PR #146 (both ui/ and mobile/ now re-export from there) |
 | M3.a — Push payload + device registration | ✅ landed |
 | M3.b — Incoming-call glue (mocked CallKit) | ✅ landed |
 | **M3.b sip.js inbound bridge** | ✅ landed PR #143 — `SipInboundBridge` implements `IncomingCallSignaling` + feeds `reportPush` on every UA-delivered INVITE |
@@ -29,7 +29,7 @@ an iOS Simulator build with #143 + #144 landed.
 
 Containerised Jest runner shipped via PR #137
 ([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
-— the entire suite (**21 files / 147 tests**) is reproducible without
+— the entire suite (**21 files / 150 tests**) is reproducible without
 an RN install on the host. See
 [`mobile/README.md`](../../mobile/README.md) for invocation and the
 how-to-call walkthrough.

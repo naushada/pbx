@@ -45,7 +45,7 @@ See:
 | 4   | InnerTLS peer-cert CN exposure + latent-bug fix — `InnerTlsServer::peer_subject_cn()` extracts the agent's verified CN for log labels + future cross-checks; the underlying `SSL_CTX_use_certificate_file`-after-`SSL_new` bug (silently presented no cert) replaced with the per-SSL `SSL_use_certificate_file` API. | ✅ PR #25 (merged) |
 | 4   | `scripts/lima.sh` — one-shot Lima-VM dry test harness. Provisions an arm64 Ubuntu VM (Apple Virtualization framework, no QEMU), builds pbx-agent following the established C++ toolchain recipe verbatim, runs against the deployed Heroku cloud, captures any coredump. | ✅ PR #26 (merged) |
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
-| Mob | React Native mobile softphone (`mobile/`) — TDD layers M0 (scaffold) → M1 (auth) → M2 (outbound + sip.js `UserAgent` engine reusing `ui/sip-ua-sipjs.ts` verbatim) → M3.a (push payload + device registration) → M3.b (incoming-call glue + `SipInboundBridge` + `IncomingCallOverlay` foreground ring UI) → App-shell auth-aware sip env wiring. 21 Jest files / 147 tests green via `docker/Dockerfile.mobile-test`. **End-to-end runnable** for outbound + foreground inbound calls from an iOS Simulator build (one-time `react-native init` for the `ios/` shell is the only remaining dev-machine step). Remaining: real CallKit / PushKit / ConnectionService / FCM for wake-up from background, logout UI, M4 Detox, M5 device matrix. | ✅ M0–M3.b + sip engine + App shell landed (see [`mobile/README.md`](./mobile/README.md)) |
+| Mob | React Native mobile softphone (`mobile/`) — TDD layers M0 (scaffold) → M1 (auth) → M2 (outbound + sip.js `UserAgent` engine sharing the cloud softphone's wrapper via `shared/sip-ua/`) → M3.a (push payload + device registration) → M3.b (incoming-call glue + `SipInboundBridge` + `IncomingCallOverlay` foreground ring UI) → App-shell auth-aware sip env wiring → sign-out control. 21 Jest files / 150 tests green via `docker/Dockerfile.mobile-test`. **End-to-end runnable** for outbound + foreground inbound calls from an iOS Simulator build (one-time `react-native init` for the `ios/` shell is the only remaining dev-machine step). Remaining: real CallKit / PushKit / ConnectionService / FCM for wake-up from background, M4 Detox, M5 device matrix. | ✅ M0–M3.b + sip engine + App shell + sign-out landed (see [`mobile/README.md`](./mobile/README.md)) |
 | CI/CD | `publish-images.yml` workflow auto-deploys `pbx-cloud` to Heroku on every same-path push to main: builds amd64 image, pushes to `registry.heroku.com/pabx/web`, calls `heroku container:release`. Replaces the manual `./deploy-heroku.sh deploy` round-trip; the script stays as an escape hatch for emergency push from a laptop. | ✅ PR #95 |
 | CI/CD | `concurrency.cancel-in-progress: true` on the workflow — a newer push auto-cancels older in-flight runs for the same ref. Saves CI minutes; bundles back-to-back merges into one CI cycle (e.g. PR #100 + PR #101 → single run, single deploy). Plus an `offtarget` GTest job as a quality gate before any image publish or Heroku release — catches today's class of bugs (missing-header, missing opcode whitelist, stale provisioner gate, missing bridge re-arm) at CI time instead of at deploy. Plus `LM_INFO`/`LM_WARNING` re-added to the cloud's `priority_mask` so the observability lines from PR #80 + PR #88 actually emit. | ✅ PR #96 |
 | Op   | `install.sh` Mongo seeding — after the compose stack is up, seeds the on-prem Mongo with the society's `societies` row + first ADMIN subscriber (PBKDF2-SHA256 hashed locally, never sent over the wire). Without this the cloud's login returns 401 "Invalid credentials" for everything in strict-auth mode. | ✅ PR #96 |
@@ -301,7 +301,7 @@ The agent doesn't pre-list endpoints in `pjsip.conf`. On boot
 dynamic-config PUTs, plus a best-effort `DELETE auth/<user>-auth` to
 prune any legacy `auth` row left over from pre-PR-#77 builds. **SIP
 digest auth is intentionally not provisioned** — the browser has no
-SIP password (see `ui/src/common/sip-ua-sipjs.ts:18`), the cloud's
+SIP password (see `shared/sip-ua/sip-ua-sipjs.ts` `authorizationPassword: ''`), the cloud's
 `/sip-ws` upgrade is the only auth layer, and a second digest layer
 would put Asterisk into an unanswerable 401 loop. After the bootstrap
 the watcher tails the Mongo change stream at 200 ms cadence; `insert`
@@ -926,8 +926,12 @@ deploy-heroku.sh            # podman + heroku CLI wrapper
 .env.agent.example          # Template for docker-compose.agent.yml env
 
 docs/           # PRD, DESIGN, TDD-PLAN are at the root; sub-design docs land here
+shared/         # Source shared between ui/ and mobile/
+                #   sip-ua/       — sip.js wrapper + interface seam (PR #146);
+                #                   re-exported by ui/src/common/sip-ua{,-sipjs}.ts
+                #                   and mobile/src/sip/{sipUa,sipJsUaFactory}.ts
 ui/             # Angular 14 + Clarity softphone — all 7 slices complete
-                #   src/common/   — auth, sip-ua seam, sip-ua-sipjs production wrapper,
+                #   src/common/   — auth, sip-ua seam (re-exports shared/sip-ua),
                 #                   sip.service, ringtone.service, push.service,
                 #                   device.service, httpsvc, pubsubsvc, app-globals
                 #   src/app/      — login, main (shell + sidebar), dashboard,

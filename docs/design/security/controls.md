@@ -134,7 +134,7 @@ In that order. Reversing any two of these leaks the socket, double-frees, or lea
 
 **What.** When a subscriber is already in a call and a second INVITE arrives over `/sip-ws`, `SipService` auto-rejects the new call with SIP 486 Busy Here. Same applies at the UA level via `ua.delegate.onInvite` when no listener is registered (defensive default in `SipJsUaHandle.dispatchIncoming`).
 
-**Where.** `ui/src/common/sip.service.ts::onIncoming`, `ui/src/common/sip-ua-sipjs.ts::SipJsUaHandle.dispatchIncoming`.
+**Where.** `ui/src/common/sip.service.ts::onIncoming`, `shared/sip-ua/sip-ua-sipjs.ts::SipJsUaHandle::dispatchIncoming`.
 
 **Failure modes defended.**
 - Call-waiting UX confusion — user doesn't see two overlapping incoming-call panels.

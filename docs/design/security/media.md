@@ -103,5 +103,5 @@ coturn validates the credential via the shared `static-auth-secret` it knows (`d
 | `docker/asterisk/pjsip.conf` | `media_encryption=dtls` + `dtls_verify=fingerprint` + `direct_media=yes` per RFC 5764 §5 |
 | `docker/coturn/turnserver.conf` | `use-auth-secret` for time-limited TURN creds (RFC 5766 §5) |
 | `MicroServicePbx::handle_turn_credentials` | Mints `{ unix_ts:sip_user, HMAC-SHA1(secret, username), 300s TTL }` for the browser |
-| `ui/src/common/sip-ua-sipjs.ts` | `sessionDescriptionHandlerOptions.constraints = { audio: true }` — sip.js handles the DTLS-SRTP setup internally |
+| `shared/sip-ua/sip-ua-sipjs.ts` | `sessionDescriptionHandlerOptions.constraints = { audio: true }` — sip.js handles the DTLS-SRTP setup internally (single source consumed by both ui/ and mobile/) |
 | `ui/src/app/call-panel/call-panel.component.ts` | Binds the remote SRTP-decoded `MediaStream` to a hidden `<audio>` element |

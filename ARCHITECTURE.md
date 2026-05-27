@@ -245,14 +245,14 @@ directly to the on-prem agent.
 |------|-------|
 | Login / Register | `screens/LoginScreen` + `screens/RegisterScreen` → `api/cloudClient` → `POST /api/v1/subscriber/{login,register}` → token + subscriber stashed in `session/sessionStore` (Keychain / Keystore). On success they call `AuthContext.setSession(...)` so the App shell builds the sip env before DialScreen mounts. |
 | App shell | `App.tsx` is auth-aware (PR #144) — boots `SessionStore.load()`, builds the sip env via `state/createSipEnv.ts` when `session` is non-null, tears it down when null. `state/authContext.tsx` carries `{session, setSession}`. |
-| Call seam | `call/CallController` (outbound) implemented by `call/sipCallController.ts` (PR #143) — backed by the mirrored `sip/sipJsUaFactory.ts` (verbatim copy of `ui/src/common/sip-ua-sipjs.ts` minus the Angular bits). `call/IncomingCallController` (inbound, M3.b) is unchanged; its `IncomingCallSignaling` seam is implemented by `call/sipIncomingSignaling.ts` (PR #143) — `SipInboundBridge` keeps a Call-ID → `IncomingCallHandle` registry and feeds every inbound INVITE to `reportPush`. |
+| Call seam | `call/CallController` (outbound) implemented by `call/sipCallController.ts` (PR #143) — backed by `sip/sipJsUaFactory.ts`, a thin re-export of the single shared sip.js wrapper at `shared/sip-ua/sip-ua-sipjs.ts` (consolidated 2026-05-27 by PR #146; the Angular softphone re-exports the same source via `ui/src/common/sip-ua-sipjs.ts` with an `@Injectable` subclass). `call/IncomingCallController` (inbound, M3.b) is unchanged; its `IncomingCallSignaling` seam is implemented by `call/sipIncomingSignaling.ts` (PR #143) — `SipInboundBridge` keeps a Call-ID → `IncomingCallHandle` registry and feeds every inbound INVITE to `reportPush`. |
 | SIP transport | sip.js's bundled `Transport` opens `wss://<cloud>/sip-ws?token=…` directly — same `?token=` bearer the cloud's `/sip-ws` accepts. `sip/sipTunnel.ts` from M2.b remains as the test-only fake. |
 | Media | sip.js's bundled platform/web `SessionDescriptionHandler` drives `RTCPeerConnection` via `sip/webrtcGlobals.ts` (installs `react-native-webrtc` exports as the globals it expects). Opus-first SDP, ICE both ways, mic via `mediaDevices.getUserMedia`. |
 | Inbound UI | `screens/IncomingCallOverlay.tsx` (PR #144) is a full-screen Modal subscribed to `IncomingCallController` — paints over any screen while ringing, exposes Accept / Decline. Foreground-only; real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states is a separate native slice (the M3.b `CallKitBridge` seam already accepts the right shape). |
 | Device registration | `push/DeviceRegistrar` posts the APNs / FCM token to `POST /api/v1/push/device` only when it has rotated. |
 
 Tests run in pure Node — every native module is faked in
-`jest.setup.ts`. The full **21-file / 147-test** suite is reproducible
+`jest.setup.ts`. The full **21-file / 150-test** suite is reproducible
 without an RN toolchain via
 [`docker/Dockerfile.mobile-test`](./docker/Dockerfile.mobile-test):
 
@@ -267,13 +267,13 @@ What's **not** yet wired (needs native modules / devices / product UX):
   modules behind `CallKitBridge` — wake the app from killed /
   backgrounded states. A no-op stub is wired today; foreground works
   without it.
-- A user-facing **logout** UI (`AuthContext.setSession(null)` already
-  tears the UA down deterministically).
 - M4 (Detox E2E on simulator + emulator) and M5 (device matrix +
   store submission).
-- Extracting the duplicated ui/mobile `sip-ua` interfaces into a
-  single shared source (each mobile copy carries a `MIRRORS:` header
-  pointing back to ui).
+
+Recent landings: the sign-out control on `DialScreen` (PR #147) and
+the consolidation of the ui+mobile sip-ua duplicates into a single
+`shared/sip-ua/` source (PR #146) closed the previously listed
+follow-ups.
 
 Full design: [`docs/design/mobile-app.md`](./docs/design/mobile-app.md).
 TDD plan: [`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md).
