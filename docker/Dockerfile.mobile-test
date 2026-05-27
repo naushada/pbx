@@ -38,5 +38,10 @@ RUN npm install --no-audit --no-fund
 # Source, configs and the native-module mocks.
 COPY mobile/ ./
 
+# The `sip-ua` module is shared with ui/ — keep it parallel to the
+# mobile/ root so `../shared/sip-ua/...` imports resolve the same as
+# in the source tree (mirrors metro.config.js's watchFolders entry).
+COPY shared/ /shared/
+
 # --ci: fail (don't write) on an obsolete snapshot; deterministic runs.
 CMD ["npm", "test", "--", "--ci", "--colors"]

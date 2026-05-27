@@ -180,7 +180,11 @@ export class SipService {
     setMute(mute: boolean): void { this.call?.handle.setMute(mute); }
 
     getRemoteStream(): MediaStream | undefined {
-        return this.call?.handle.getRemoteStream();
+        // SipCallHandle is platform-agnostic; sip.js's web SDH exposes
+        // the remote stream, so we narrow here.
+        const handle = this.call?.handle as
+            { getRemoteStream?(): MediaStream | undefined } | undefined;
+        return handle?.getRemoteStream?.();
     }
 
     // ─── Slice 4: inbound call ───────────────────────────────────────
