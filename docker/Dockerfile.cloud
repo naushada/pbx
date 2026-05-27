@@ -92,6 +92,9 @@ COPY ui/package.json ui/package-lock.json ./
 RUN npm install --legacy-peer-deps --no-audit --no-fund
 
 COPY ui/ ./
+# The `sip-ua` module is shared with mobile/ — keep it parallel to the
+# ui/ root so `../../../shared/sip-ua/...` imports resolve.
+COPY shared/ /shared/
 # Dev configuration is used so the build fits within podman-machine
 # memory under amd64 emulation; the output JS is identical in shape,
 # only minification/optimisation differs. Switch to `production` once

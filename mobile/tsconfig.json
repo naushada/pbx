@@ -4,6 +4,6 @@
     "strict": true,
     "types": ["jest", "react-native"]
   },
-  "include": ["src", "App.tsx", "index.js", "jest.setup.ts"],
+  "include": ["src", "App.tsx", "index.js", "jest.setup.ts", "../shared/sip-ua/**/*.ts"],
   "exclude": ["node_modules", "ios", "android", "coverage"]
 }

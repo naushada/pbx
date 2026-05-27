@@ -1,8 +1,15 @@
+const path = require('path');
+
 module.exports = {
   preset: 'react-native',
   setupFiles: ['./jest.setup.ts'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
   testMatch: ['**/__tests__/**/*.test.{ts,tsx}'],
+  // The shared sip-ua module lives at `../shared/` (sibling to mobile/).
+  // Tell Jest's resolver where to find this project's node_modules so
+  // babel-jest's `@babel/runtime/helpers/*` requires resolve when
+  // transforming files outside `mobile/`.
+  modulePaths: [path.resolve(__dirname, 'node_modules')],
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',
     '!src/**/__tests__/**',

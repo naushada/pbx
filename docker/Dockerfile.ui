@@ -16,6 +16,11 @@ RUN npm install --legacy-peer-deps --no-audit --no-fund
 # Source files come next.
 COPY ui/ ./
 
+# The `sip-ua` module is shared with mobile/ — keep it parallel to the
+# ui/ root so `../../../shared/sip-ua/...` imports resolve the same as
+# in the source tree.
+COPY shared/ /shared/
+
 RUN npx ng build --configuration production
 
 # ─── Runtime stage ──────────────────────────────────────────────────
