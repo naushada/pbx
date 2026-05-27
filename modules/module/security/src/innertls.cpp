@@ -5,6 +5,8 @@
 #include <cstring>
 
 #include <openssl/bio.h>
+#include <openssl/bn.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
@@ -15,6 +17,58 @@ std::string ssl_error_string()
   unsigned long e = ERR_get_error();
   if (e == 0) return "unknown (empty error queue)";
   return ERR_error_string(e, nullptr);
+}
+
+// SSL_CTX_set_verify callback installed by InnerTlsServer. Runs once per
+// cert in the presented chain. On success (preverify_ok==1) it returns
+// 1 unchanged — happy paths are silent. On failure it logs the specific
+// OpenSSL error PLUS the presented cert's subject / issuer / serial /
+// depth so the operator has something concrete to grep for instead of
+// `tls_process_client_certificate:certificate verify failed`. Returns 0
+// to actually reject (current behaviour preserved). See
+// `project_agent_inner_tls_cert_reject` memory.
+int innertls_verify_with_logging(int preverify_ok, X509_STORE_CTX *ctx)
+{
+  if (preverify_ok) return 1;
+
+  const int err   = X509_STORE_CTX_get_error(ctx);
+  const int depth = X509_STORE_CTX_get_error_depth(ctx);
+  const char *reason = X509_verify_cert_error_string(err);
+
+  char subject[512] = {0};
+  char issuer[512]  = {0};
+  char serial_hex[160] = {0};
+
+  X509 *cert = X509_STORE_CTX_get_current_cert(ctx);
+  if (cert) {
+    X509_NAME_oneline(X509_get_subject_name(cert), subject, sizeof(subject));
+    X509_NAME_oneline(X509_get_issuer_name(cert),  issuer,  sizeof(issuer));
+
+    ASN1_INTEGER *s = X509_get_serialNumber(cert);
+    if (s) {
+      BIGNUM *bn = ASN1_INTEGER_to_BN(s, nullptr);
+      if (bn) {
+        char *hex = BN_bn2hex(bn);
+        if (hex) {
+          std::snprintf(serial_hex, sizeof(serial_hex), "%s", hex);
+          OPENSSL_free(hex);
+        }
+        BN_free(bn);
+      }
+    }
+  }
+
+  std::fprintf(stderr,
+               "[InnerTlsServer] cert verify FAILED "
+               "depth=%d err=%d (%s)\n"
+               "                 subject: %s\n"
+               "                 issuer:  %s\n"
+               "                 serial:  %s\n",
+               depth, err, reason ? reason : "?",
+               subject[0] ? subject : "(no cert)",
+               issuer[0]  ? issuer  : "(no cert)",
+               serial_hex[0] ? serial_hex : "(no cert)");
+  return 0;
 }
 } // namespace
 
@@ -218,7 +272,8 @@ InnerTlsServer::InnerTlsServer(IInnerTlsTransport &transport,
                          "Re-enable for production.\n");
             SSL_CTX_set_verify(m_ctx.get(), SSL_VERIFY_NONE, nullptr);
         } else {
-            SSL_CTX_set_verify(m_ctx.get(), SSL_VERIFY_PEER, nullptr);
+            SSL_CTX_set_verify(m_ctx.get(), SSL_VERIFY_PEER,
+                               innertls_verify_with_logging);
         }
     }
 
