@@ -5,9 +5,10 @@
  * is simulated via `controller.emit(...)`.
  */
 import React from 'react';
-import {act, fireEvent, render, screen} from '@testing-library/react-native';
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react-native';
 import {DialScreen} from '../DialScreen';
 import {DepsProvider} from '../../state/deps';
+import {AuthProvider} from '../../state/authContext';
 import {FakeCallController} from '../../test/fakeCallController';
 import {callReducer, idleCall} from '../../sip/callState';
 import {Session} from '../../api/types';
@@ -25,25 +26,33 @@ const SESSION: Session = {
   },
 };
 
-function renderDial() {
+function renderDial(opts?: {clearError?: unknown}) {
   const callController = new FakeCallController();
   const client = {} as unknown as CloudClient;
   const sessionStore = {
     save: jest.fn(),
     load: jest.fn(),
-    clear: jest.fn(),
+    clear: jest.fn().mockImplementation(
+      opts?.clearError
+        ? () => Promise.reject(opts.clearError)
+        : () => Promise.resolve(),
+    ),
   } as unknown as SessionStoreApi;
+  const setSession = jest.fn();
+  const navigation = {reset: jest.fn()} as unknown as never;
   render(
-    <DepsProvider value={{client, sessionStore, callController}}>
-      <DialScreen
-        navigation={{} as never}
-        route={
-          {key: 'd', name: 'Dial', params: {session: SESSION}} as never
-        }
-      />
-    </DepsProvider>,
+    <AuthProvider value={{session: SESSION, setSession}}>
+      <DepsProvider value={{client, sessionStore, callController}}>
+        <DialScreen
+          navigation={navigation}
+          route={
+            {key: 'd', name: 'Dial', params: {session: SESSION}} as never
+          }
+        />
+      </DepsProvider>
+    </AuthProvider>,
   );
-  return {callController};
+  return {callController, sessionStore, setSession, navigation};
 }
 
 describe('DialScreen', () => {
@@ -75,5 +84,39 @@ describe('DialScreen', () => {
 
     expect(screen.queryByTestId('dial-screen')).toBeNull();
     expect(screen.getByTestId('incall-panel')).toBeTruthy();
+  });
+
+  describe('sign out', () => {
+    it('renders the sign-out button on the idle dialer', () => {
+      renderDial();
+      expect(screen.getByTestId('dial-signout')).toBeTruthy();
+    });
+
+    it('clears the session store, signals AuthContext, and resets nav to Login', async () => {
+      const {sessionStore, setSession, navigation} = renderDial();
+
+      fireEvent.press(screen.getByTestId('dial-signout'));
+
+      await waitFor(() => expect(sessionStore.clear).toHaveBeenCalledTimes(1));
+      expect(setSession).toHaveBeenCalledWith(null);
+      expect(navigation.reset).toHaveBeenCalledWith({
+        index: 0,
+        routes: [{name: 'Login'}],
+      });
+    });
+
+    it('still signs out locally if sessionStore.clear() rejects', async () => {
+      const {setSession, navigation} = renderDial({
+        clearError: new Error('keychain unavailable'),
+      });
+
+      fireEvent.press(screen.getByTestId('dial-signout'));
+
+      await waitFor(() => expect(setSession).toHaveBeenCalledWith(null));
+      expect(navigation.reset).toHaveBeenCalledWith({
+        index: 0,
+        routes: [{name: 'Login'}],
+      });
+    });
   });
 });
