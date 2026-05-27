@@ -21,16 +21,17 @@ further code work.
 | **M0** | Scaffold, Jest/RNTL harness, `FakeCloud`, native-module mocks | ✅ landed |
 | **M1** | Auth & registration — validation, API client, session, Login / Register / Dial screens, React Navigation stack | ✅ landed |
 | **M2** | Outbound calling — call primitives, SIP tunnel, WebRTC adapter (`MediaSession`), Dial + in-call screens against the `CallController` seam | ✅ landed (PRs #131–#134) |
-| **M2 sip.js engine** | Real `SipCallController` backed by sip.js `UserAgent` + `Inviter` (reuses `ui/src/common/sip-ua-sipjs.ts` verbatim — `MIRRORS:` header in each copy) | ✅ landed (PR #143) |
+| **M2 sip.js engine** | Real `SipCallController` backed by sip.js `UserAgent` + `Inviter`; the wrapper lives in `shared/sip-ua/sip-ua-sipjs.ts` (single source shared with the Angular softphone — `mobile/src/sip/sipJsUaFactory.ts` is a thin re-export) | ✅ landed (PR #143; consolidated PR #146) |
 | **M3.a** | Push payload + device registration (pure logic) | ✅ landed |
 | **M3.b** | Incoming-call glue — `IncomingCallController`, pure ring reducer, accept/decline/timeout against mocked CallKit + signaling | ✅ landed (PR #138) |
 | **M3.b sip.js inbound bridge** | `SipInboundBridge` — Call-ID → `IncomingCallHandle` registry, implements the M3.b `IncomingCallSignaling` seam, feeds `IncomingCallController.reportPush` on every inbound INVITE | ✅ landed (PR #143) |
 | **App shell** | `AuthContext` + `createSipEnv` factory + `IncomingCallOverlay` (foreground ring UI); `App.tsx` builds the engine on login, tears it down on logout | ✅ landed (PR #144) |
+| **Sign-out** | `DialScreen` sign-out button — `sessionStore.clear()` → `setSession(null)` → `navigation.reset(Login)`; UA torn down by the App shell's `useEffect([session])` | ✅ landed (PR #147) |
 | M3 native | Real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states | toolchain + device work |
 | M4 | Detox E2E across iOS simulator + Android emulator | not started |
 | M5 | Manual device matrix → store release | not started |
 
-Current suite: **21 Jest files / 147 tests**, all green via
+Current suite: **21 Jest files / 150 tests**, all green via
 `docker-compose.mobile-test.yml`.
 
 ## Quickstart — run the test suite
@@ -53,7 +54,9 @@ podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
 
 Image: `docker/Dockerfile.mobile-test` — Node 20 + the
 node-gyp toolchain, `npm install`, then `npm test --ci`. The current
-suite is **21 files / 147 tests**.
+suite is **21 files / 150 tests**. The build also copies the
+top-level `shared/` directory parallel to `mobile/` so the
+`shared/sip-ua/` source resolves the same way it does in-tree.
 
 ### B. On a dev machine (needed to actually build the native app)
 
@@ -191,8 +194,8 @@ mobile/
       incomingCall.ts              inbound ring reducer (M3.b)
       sipTunnel.ts                 token'd /sip-ws transport (M2.b)
       mediaSession.ts              WebRTC adapter (M2.c)
-      sipUa.ts                     sip.js seam interfaces — MIRRORS ui/src/common/sip-ua.ts
-      sipJsUaFactory.ts            concrete sip.js wrapper — MIRRORS ui/src/common/sip-ua-sipjs.ts
+      sipUa.ts                     re-export of shared/sip-ua/sip-ua (interface seam)
+      sipJsUaFactory.ts            re-export of shared/sip-ua/sip-ua-sipjs (sip.js wrapper)
       webrtcGlobals.ts             installs react-native-webrtc as globals for sip.js platform/web SDH
       sdp.ts, sipUri.ts
     state/                         AppDeps + Auth contexts; sip env factory
@@ -229,11 +232,6 @@ modules, real devices, or product UX:
   killed / backgrounded states. A no-op stub is wired in
   `createSipEnv.ts` today; `IncomingCallOverlay` handles the
   foreground case without it.
-- **Logout UI** — `AuthContext.setSession(null)` already tears the
-  UA down deterministically; the screen / button for it is missing.
-- **Extract the duplicated `ui/mobile` sip-ua interfaces** into a
-  single shared source (each mobile copy has a `MIRRORS:` header
-  pointing back to its ui original).
 - **M4** — Detox flows across an iOS simulator + Android emulator
   against a dedicated test cloud + a synthetic answerer.
 - **M5** — manual device matrix (real APNs / FCM, audio over mobile

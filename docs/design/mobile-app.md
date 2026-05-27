@@ -137,11 +137,12 @@ softphone.
 | State / nav | React Navigation; lightweight store (Zustand or Context) |
 
 **Why React Native:** the web softphone's calling layer is `sip.js`
-in TypeScript (`ui/.../sip-ua-sipjs.ts`, `SipService`). React Native
-keeps the SIP/session logic in the same language and lets us share the
-hard-won call-flow code (registration, INVITE, first-answer handling)
-rather than re-implementing it twice in Swift + Kotlin. Alternatives
-(Flutter, fully-native) are weighed in §11.
+in TypeScript (`shared/sip-ua/sip-ua-sipjs.ts`, consumed by both
+`ui/src/common/sip.service.ts` and `mobile/src/sip/sipCallController.ts`).
+React Native keeps the SIP/session logic in the same language and lets
+us share the hard-won call-flow code (registration, INVITE, first-
+answer handling) rather than re-implementing it twice in Swift +
+Kotlin. Alternatives (Flutter, fully-native) are weighed in §11.
 
 The one part that does **not** port for free is the media engine: the
 browser gives `sip.js` a `RTCPeerConnection` for free; React Native
