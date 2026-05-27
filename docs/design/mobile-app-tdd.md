@@ -8,24 +8,31 @@ order — each layer is fully green before the next starts.
 This mirrors the discipline of the root [`TDD-PLAN.md`](../../TDD-PLAN.md)
 (the C++/Angular system), adapted to the React Native toolchain.
 
-## Status (as of 2026-05-23)
+## Status (as of 2026-05-27)
+
+**End-to-end runnable** for outbound + foreground inbound calls from
+an iOS Simulator build with #143 + #144 landed.
 
 | Layer | State |
 |---|---|
 | M0 — Scaffold & harness | ✅ landed |
 | M1 — Auth & registration (a/b/c/d) | ✅ landed |
-| M2 — Outbound calling (a/b/c/d) | ✅ landed against the `CallController` seam — the sip.js `UserAgent` binding behind the seam remains and needs the RN toolchain |
+| M2 — Outbound calling (a/b/c/d) | ✅ landed against the `CallController` seam |
+| **M2 sip.js engine** | ✅ landed PR #143 — `SipCallController` backed by sip.js `UserAgent`+`Inviter`; reuses `ui/src/common/sip-ua-sipjs.ts` verbatim |
 | M3.a — Push payload + device registration | ✅ landed |
 | M3.b — Incoming-call glue (mocked CallKit) | ✅ landed |
-| M3 native | not started — real CallKit / PushKit / ConnectionService / FCM bindings behind the M3.b seams (toolchain + devices) |
+| **M3.b sip.js inbound bridge** | ✅ landed PR #143 — `SipInboundBridge` implements `IncomingCallSignaling` + feeds `reportPush` on every UA-delivered INVITE |
+| **App shell** | ✅ landed PR #144 — `AuthContext` + `createSipEnv` factory + `IncomingCallOverlay` foreground ring Modal; `App.tsx` builds the engine on login, tears it down on logout |
+| M3 native | not started — real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states (the M3.b `CallKitBridge` seam already accepts the right shape) |
 | M4 — End-to-end (Detox) | not started — needs iOS simulator + Android emulator + a test cloud + synthetic answerer |
 | M5 — Manual device matrix | not started |
 
 Containerised Jest runner shipped via PR #137
 ([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
-— the entire pre-toolchain suite (17 files / 113 tests) is reproducible
-without an RN install on the host. See
-[`mobile/README.md`](../../mobile/README.md) for invocation.
+— the entire suite (**21 files / 147 tests**) is reproducible without
+an RN install on the host. See
+[`mobile/README.md`](../../mobile/README.md) for invocation and the
+how-to-call walkthrough.
 
 ---
 

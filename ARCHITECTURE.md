@@ -235,23 +235,24 @@ restart).
 ### 2.8 Mobile softphone (`mobile/`)
 
 React Native 0.74 (iOS & Android) — a parallel client to the Angular
-browser softphone (§2.1), same cloud contract, JS-complete through
-TDD layer M3.b. Connectivity is identical to the browser softphone:
-the app talks **only to the cloud**, never directly to the on-prem
-agent.
+browser softphone (§2.1), same cloud contract. **End-to-end runnable
+for outbound + foreground inbound calls** from an iOS Simulator build
+(one-time `react-native init` for the `ios/` shell is the only
+dev-machine step). The app talks **only to the cloud**, never
+directly to the on-prem agent.
 
 | Role | Where |
 |------|-------|
-| Login / Register | `screens/LoginScreen` + `screens/RegisterScreen` → `api/cloudClient` → `POST /api/v1/subscriber/{login,register}` → token + subscriber stashed in `session/sessionStore` (Keychain / Keystore). |
-| Auth gate | `state/deps` injects the resolved client into every screen via React context; `RootNavigator` (`@react-navigation/native-stack`) routes login → Dial. |
-| Call seam | `call/CallController` interface — outbound; `call/IncomingCallController` — inbound (M3.b). The screens depend only on the seams; the production sip.js `UserAgent` binding behind them is the remaining toolchain slice. |
-| SIP transport | `sip/SipTunnel` opens `wss://${CLOUD_HOST}/sip-ws?token=…`, reconnect-backoff identical to the browser path. |
-| Media | `sip/MediaSession` wraps a `react-native-webrtc` `RTCPeerConnection` — Opus-first SDP, ICE both ways, mic acquired via `mediaDevices.getUserMedia`. |
-| Inbound | `push/parseWakeUp` decodes the APNs / FCM wake-up; `IncomingCallController.reportPush()` rings via `react-native-callkeep` (CallKit on iOS, ConnectionService on Android), arms the missed-call timer, and on accept does `ensureConnected → answer → connectMedia`. |
+| Login / Register | `screens/LoginScreen` + `screens/RegisterScreen` → `api/cloudClient` → `POST /api/v1/subscriber/{login,register}` → token + subscriber stashed in `session/sessionStore` (Keychain / Keystore). On success they call `AuthContext.setSession(...)` so the App shell builds the sip env before DialScreen mounts. |
+| App shell | `App.tsx` is auth-aware (PR #144) — boots `SessionStore.load()`, builds the sip env via `state/createSipEnv.ts` when `session` is non-null, tears it down when null. `state/authContext.tsx` carries `{session, setSession}`. |
+| Call seam | `call/CallController` (outbound) implemented by `call/sipCallController.ts` (PR #143) — backed by the mirrored `sip/sipJsUaFactory.ts` (verbatim copy of `ui/src/common/sip-ua-sipjs.ts` minus the Angular bits). `call/IncomingCallController` (inbound, M3.b) is unchanged; its `IncomingCallSignaling` seam is implemented by `call/sipIncomingSignaling.ts` (PR #143) — `SipInboundBridge` keeps a Call-ID → `IncomingCallHandle` registry and feeds every inbound INVITE to `reportPush`. |
+| SIP transport | sip.js's bundled `Transport` opens `wss://<cloud>/sip-ws?token=…` directly — same `?token=` bearer the cloud's `/sip-ws` accepts. `sip/sipTunnel.ts` from M2.b remains as the test-only fake. |
+| Media | sip.js's bundled platform/web `SessionDescriptionHandler` drives `RTCPeerConnection` via `sip/webrtcGlobals.ts` (installs `react-native-webrtc` exports as the globals it expects). Opus-first SDP, ICE both ways, mic via `mediaDevices.getUserMedia`. |
+| Inbound UI | `screens/IncomingCallOverlay.tsx` (PR #144) is a full-screen Modal subscribed to `IncomingCallController` — paints over any screen while ringing, exposes Accept / Decline. Foreground-only; real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states is a separate native slice (the M3.b `CallKitBridge` seam already accepts the right shape). |
 | Device registration | `push/DeviceRegistrar` posts the APNs / FCM token to `POST /api/v1/push/device` only when it has rotated. |
 
 Tests run in pure Node — every native module is faked in
-`jest.setup.ts`. The full 17-file / 113-test suite is reproducible
+`jest.setup.ts`. The full **21-file / 147-test** suite is reproducible
 without an RN toolchain via
 [`docker/Dockerfile.mobile-test`](./docker/Dockerfile.mobile-test):
 
@@ -260,18 +261,23 @@ podman-compose -f docker-compose.mobile-test.yml build mobile-test
 podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
 ```
 
-What's **not** yet wired (genuinely needs the RN toolchain + devices):
+What's **not** yet wired (needs native modules / devices / product UX):
 
-- The sip.js `UserAgent` / `Registerer` / `Inviter` binding behind
-  `CallController`, and the SDH that delegates to `MediaSession`.
 - Real CallKit / PushKit (iOS) and ConnectionService / FCM (Android)
-  modules behind `CallKitBridge`.
+  modules behind `CallKitBridge` — wake the app from killed /
+  backgrounded states. A no-op stub is wired today; foreground works
+  without it.
+- A user-facing **logout** UI (`AuthContext.setSession(null)` already
+  tears the UA down deterministically).
 - M4 (Detox E2E on simulator + emulator) and M5 (device matrix +
   store submission).
+- Extracting the duplicated ui/mobile `sip-ua` interfaces into a
+  single shared source (each mobile copy carries a `MIRRORS:` header
+  pointing back to ui).
 
 Full design: [`docs/design/mobile-app.md`](./docs/design/mobile-app.md).
 TDD plan: [`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md).
-Developer workflow: [`mobile/README.md`](./mobile/README.md).
+Developer workflow + how-to-call: [`mobile/README.md`](./mobile/README.md).
 
 ---
 

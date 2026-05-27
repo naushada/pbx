@@ -9,21 +9,29 @@ a destination flat number, and calls it.
 
 ## Status
 
-Built test-first, one TDD layer at a time. **Not yet a runnable
-app** — every layer that can be proven without an iOS/Android
-toolchain or real device is now landed (113 Jest tests green); the
-remainder needs a dev machine + simulators or hardware.
+**End-to-end runnable** for outbound + foreground inbound calls
+once you do the one-time native-shell generation below. The sip.js
+engine and the App-shell wiring landed in **PRs #143 + #144**; an
+iOS Simulator build can place and receive calls — to/from the
+Angular browser softphone or another mobile instance — with no
+further code work.
 
 | Layer | Scope | State |
 |---|---|---|
 | **M0** | Scaffold, Jest/RNTL harness, `FakeCloud`, native-module mocks | ✅ landed |
 | **M1** | Auth & registration — validation, API client, session, Login / Register / Dial screens, React Navigation stack | ✅ landed |
-| **M2** | Outbound calling — call primitives, SIP tunnel, WebRTC adapter (`MediaSession`), Dial + in-call screens against the `CallController` seam | ✅ landed (the sip.js `UserAgent` binding behind the seam is the only TODO and needs the RN toolchain) |
+| **M2** | Outbound calling — call primitives, SIP tunnel, WebRTC adapter (`MediaSession`), Dial + in-call screens against the `CallController` seam | ✅ landed (PRs #131–#134) |
+| **M2 sip.js engine** | Real `SipCallController` backed by sip.js `UserAgent` + `Inviter` (reuses `ui/src/common/sip-ua-sipjs.ts` verbatim — `MIRRORS:` header in each copy) | ✅ landed (PR #143) |
 | **M3.a** | Push payload + device registration (pure logic) | ✅ landed |
 | **M3.b** | Incoming-call glue — `IncomingCallController`, pure ring reducer, accept/decline/timeout against mocked CallKit + signaling | ✅ landed (PR #138) |
-| M3 native | Real CallKit / PushKit / ConnectionService / FCM bindings behind the M3.b seams | toolchain + device work |
+| **M3.b sip.js inbound bridge** | `SipInboundBridge` — Call-ID → `IncomingCallHandle` registry, implements the M3.b `IncomingCallSignaling` seam, feeds `IncomingCallController.reportPush` on every inbound INVITE | ✅ landed (PR #143) |
+| **App shell** | `AuthContext` + `createSipEnv` factory + `IncomingCallOverlay` (foreground ring UI); `App.tsx` builds the engine on login, tears it down on logout | ✅ landed (PR #144) |
+| M3 native | Real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states | toolchain + device work |
 | M4 | Detox E2E across iOS simulator + Android emulator | not started |
 | M5 | Manual device matrix → store release | not started |
+
+Current suite: **21 Jest files / 147 tests**, all green via
+`docker-compose.mobile-test.yml`.
 
 ## Quickstart — run the test suite
 
@@ -45,7 +53,7 @@ podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
 
 Image: `docker/Dockerfile.mobile-test` — Node 20 + the
 node-gyp toolchain, `npm install`, then `npm test --ci`. The current
-suite is **17 files / 113 tests**.
+suite is **21 files / 147 tests**.
 
 ### B. On a dev machine (needed to actually build the native app)
 
@@ -58,51 +66,84 @@ npm run typecheck    # tsc --noEmit
 
 Requirements: **Node ≥ 18** and npm.
 
-## How to use the mobile app today
+## How to place a call
 
-> The mobile app is **JS-complete through layer M3.b** but not yet a
-> shipped installable. There is no signed `.ipa` / `.apk` and no App
-> Store / Play Store listing. The only way to exercise it on a real
-> phone right now is the dev-machine workflow below.
+The app is **runnable today** on an iOS Simulator (and on a wired
+iPhone if you sign the build with your Apple ID in Xcode). There is
+no signed `.ipa` / `.apk` and no App Store / Play Store listing yet
+— that's M5.
 
-### Today: as a developer, on a simulator / device
+### One-time setup (per dev machine)
 
 ```sh
 cd mobile
 npm install
-# one-time per dev machine — see "Native shells" below
-npm run ios      # opens iOS Simulator (needs macOS + Xcode)
-npm run android  # opens an Android emulator (needs JDK 17 + Android Studio)
+# Generate the native iOS shell — see "Native projects" below.
+# Skip "android" if you don't have Android Studio + JDK 17.
+npx @react-native-community/cli@latest init SocietySoftphone \
+  --version 0.74.5 --directory /tmp/sn-shell --skip-install
+cp -R /tmp/sn-shell/ios /tmp/sn-shell/android ./
+cd ios && pod install && cd ..
 ```
 
-On first launch the resident:
+### Boot the app
 
-1. **Logs in or self-registers** (Login / Register screens, M1.c) with
-   their society code, flat number, and password. Registration is
+```sh
+npm run ios       # opens iOS Simulator (needs macOS + Xcode)
+# npm run android also works on Android Studio + JDK 17
+```
+
+For a **second peer** (mobile↔mobile), boot a second iOS Simulator:
+
+```sh
+# in another terminal — picks a different sim device
+npx react-native run-ios --simulator="iPhone 15 Pro"
+```
+
+Or use the **Angular browser softphone** as the other end
+(`https://pabx-5fbf3550f938.herokuapp.com/`) — same cloud, same
+society, different login.
+
+### What happens on launch
+
+1. **Auto-restore** — App boots, calls `SessionStore.load()`. If a
+   saved session is on disk, it skips Login and the sip.js engine
+   spins up before DialScreen mounts.
+2. **Otherwise: log in or self-register** (Login / Register screens,
+   M1.c) with society code, flat number, password. Registration is
    ungated by design for v1 — see
-   [`mobile-app.md` §9.1](../docs/design/mobile-app.md).
-2. Lands on **Dial** (M2.d). Types a destination flat number and taps
-   **Call**.
-3. **Outbound calling** runs through the M2 seams. The
-   `StubCallController` drives the on-screen state machine; the real
-   sip.js `UserAgent` binding is part of the remaining toolchain work
-   (so the call state visibly progresses to "Calling…" but does **not**
-   yet land an INVITE without that binding).
-4. **Incoming calls** (M3.b) — `IncomingCallController.reportPush()`
-   parses an APNs / FCM wake-up payload and asks `react-native-callkeep`
-   to show the OS incoming-call UI. The accept → `ensureConnected` →
-   `answer` → `connectMedia` and decline → SIP 603 paths are wired but
-   bound to the same M2/M3 toolchain work for real signalling.
+   [`mobile-app.md` §9.1](../docs/design/mobile-app.md). On success
+   the screen saves the session, calls `setSession(...)` on
+   `AuthContext`, App's `useEffect` builds the sip env, and the
+   screen navigates to Dial.
+3. **Outbound** — `SipCallController` (PR #143) places a real INVITE
+   via sip.js. Call state visibly progresses *Calling → Connected*;
+   audio flows via WebRTC + the on-prem coturn.
+4. **Inbound** — when another peer dials you, sip.js delivers the
+   INVITE; `SipInboundBridge` (PR #143) feeds it to
+   `IncomingCallController.reportPush()`, which puts the controller
+   into `'ringing'`; `IncomingCallOverlay` (PR #144) paints a
+   full-screen Accept / Decline modal over whatever screen is
+   active. Accept → `answer()` → 200 OK → connected.
+5. **Hangup** from either side ends both. `setSession(null)` would
+   tear the UA down (logout button is the only piece of UX still
+   missing).
 
-### Later: as a resident
+### Prerequisites for an actual call to land
 
-Once the M3 native glue and a signed build are done, residents will
-install from TestFlight / Play internal-testing (M5) and ultimately
-from the App Store / Play Store. The runtime topology is unchanged
-from the Angular browser softphone: the app talks **only to the
-cloud**, signalling goes app → cloud → agent's outbound tunnel →
-Asterisk, and media (RTP) is a separate WebRTC path through the
-on-prem coturn. Full picture in
+- An **on-prem stack** (Asterisk + coturn + Mongo + `pbx-agent`)
+  attached to the cloud — `sudo ./install.sh` on a Linux box, or
+  `podman-compose -f docker-compose.agent.yml up`. See the top-
+  level `README.md` and `INSTALL.md`.
+- Two **seeded residents** of the same society in Mongo (the
+  installer / admin import handles this).
+- Mic permission on first call (system-prompted on the simulator /
+  device).
+
+The runtime topology is unchanged from the Angular browser softphone:
+the app talks **only to the cloud**; signalling goes app → cloud →
+agent's outbound tunnel → Asterisk; media (RTP) is a separate WebRTC
+path through the on-prem coturn. Full picture in
 [`mobile-app.md` §2.1](../docs/design/mobile-app.md).
 
 ## Native projects (`ios/` and `android/`)
@@ -127,31 +168,40 @@ generated, the project files are committed normally.)
 
 ```
 mobile/
-  App.tsx                       app root
-  index.js                      RN entry point
-  jest.setup.ts                 native-module mocks (M0)
+  App.tsx                          auth-aware shell — builds sip env on login (PR #144)
+  index.js                         RN entry point; imports webrtcGlobals first
+  jest.setup.ts                    native-module mocks (M0)
   src/
-    api/                        cloud REST client (M1.a)
+    api/                           cloud REST client (M1.a)
       cloudClient.ts, http.ts, defaultClient.ts, types.ts
-    call/                       call control seams (M2.d, M3.b)
-      callController.ts         outbound seam + StubCallController
-      incomingCallController.ts M3.b inbound glue
-      useCall.ts                React hook over CallController
-    navigation/                 React Navigation native-stack root
-    push/                       APNs/FCM payload + device registration (M3.a)
+    call/                          call control seams + sip.js adapters
+      callController.ts            outbound seam + StubCallController (M2.d)
+      sipCallController.ts         sip.js-backed CallController (PR #143)
+      incomingCallController.ts    M3.b inbound glue
+      sipIncomingSignaling.ts      SipInboundBridge — UA → reportPush + signaling impl (PR #143)
+      useCall.ts                   React hook over CallController
+    navigation/                    React Navigation native-stack root
+    push/                          APNs/FCM payload + device registration (M3.a)
       pushPayload.ts, deviceRegistrar.ts
-    screens/                    Login / Register / Dial / InCallPanel
-    session/                    keychain-backed session store (M1.b)
-    sip/                        pure call models + transport adapters
-      callState.ts              outbound call reducer (M2.a)
-      incomingCall.ts           inbound ring reducer (M3.b)
-      sipTunnel.ts              token'd /sip-ws transport (M2.b)
-      mediaSession.ts           WebRTC adapter (M2.c)
+    screens/                       Login / Register / Dial / InCallPanel / IncomingCallOverlay
+      IncomingCallOverlay.tsx      foreground ring Modal (PR #144)
+    session/                       keychain-backed session store (M1.b)
+    sip/                           pure call models + sip.js engine
+      callState.ts                 outbound call reducer (M2.a)
+      incomingCall.ts              inbound ring reducer (M3.b)
+      sipTunnel.ts                 token'd /sip-ws transport (M2.b)
+      mediaSession.ts              WebRTC adapter (M2.c)
+      sipUa.ts                     sip.js seam interfaces — MIRRORS ui/src/common/sip-ua.ts
+      sipJsUaFactory.ts            concrete sip.js wrapper — MIRRORS ui/src/common/sip-ua-sipjs.ts
+      webrtcGlobals.ts             installs react-native-webrtc as globals for sip.js platform/web SDH
       sdp.ts, sipUri.ts
-    state/                      AppDeps context (test-injectable seams)
-    test/                       in-test fakes
+    state/                         AppDeps + Auth contexts; sip env factory
+      deps.tsx                     AppDeps (includes optional incomingCallController)
+      authContext.tsx              {session, setSession} — App shell tracks login (PR #144)
+      createSipEnv.ts              factory: Session → wired engine + cleanup (PR #144)
+    test/                          in-test fakes
       fakeCloud.ts, fakeCloudTransport.ts, fakeCallController.ts
-    validation/                 form-input rules (M1.a)
+    validation/                    form-input rules (M1.a)
 ```
 
 Every layer is introduced **test-first**: a sibling `__tests__/`
@@ -171,12 +221,19 @@ relayed through the on-prem coturn. Full detail in
 
 ## What's next
 
-Strictly toolchain / device work, in TDD layer order:
+Everything authorable in JS is landed. What remains needs native
+modules, real devices, or product UX:
 
-- The sip.js `UserAgent` binding behind `CallController` and the
-  `IncomingCallSignaling` seam.
-- Real CallKit / PushKit (iOS) and ConnectionService / FCM (Android)
-  bindings behind `CallKitBridge`.
+- **Real CallKit / PushKit (iOS) and ConnectionService / FCM
+  (Android)** behind the `CallKitBridge` seam — wake the app from
+  killed / backgrounded states. A no-op stub is wired in
+  `createSipEnv.ts` today; `IncomingCallOverlay` handles the
+  foreground case without it.
+- **Logout UI** — `AuthContext.setSession(null)` already tears the
+  UA down deterministically; the screen / button for it is missing.
+- **Extract the duplicated `ui/mobile` sip-ua interfaces** into a
+  single shared source (each mobile copy has a `MIRRORS:` header
+  pointing back to its ui original).
 - **M4** — Detox flows across an iOS simulator + Android emulator
   against a dedicated test cloud + a synthetic answerer.
 - **M5** — manual device matrix (real APNs / FCM, audio over mobile
