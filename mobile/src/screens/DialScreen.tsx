@@ -12,14 +12,16 @@ import type {RootStackParamList} from '../navigation/types';
 import {FormField} from './FormField';
 import {InCallPanel} from './InCallPanel';
 import {useDeps} from '../state/deps';
+import {useAuth} from '../state/authContext';
 import {useCall} from '../call/useCall';
 import {isCallActive} from '../sip/callState';
 import {isDialableFlat} from '../sip/sipUri';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dial'>;
 
-export function DialScreen({route}: Props): React.JSX.Element {
-  const {callController} = useDeps();
+export function DialScreen({navigation, route}: Props): React.JSX.Element {
+  const {callController, sessionStore} = useDeps();
+  const {setSession} = useAuth();
   const {subscriber} = route.params.session;
   const call = useCall(callController);
   const [flat, setFlat] = useState('');
@@ -27,6 +29,20 @@ export function DialScreen({route}: Props): React.JSX.Element {
   // A call in flight takes over the whole screen.
   if (isCallActive(call)) {
     return <InCallPanel call={call} controller={callController} />;
+  }
+
+  async function onSignOut(): Promise<void> {
+    // Wipe the keychain first; if it throws we still flip the in-memory
+    // session so the user gets out of the authed UI. App.tsx's
+    // `useEffect([session])` tears down the sip.js UA when session
+    // becomes null — no UA leaks across the logout.
+    try {
+      await sessionStore.clear();
+    } catch {
+      /* swallow — best-effort wipe */
+    }
+    setSession(null);
+    navigation.reset({index: 0, routes: [{name: 'Login'}]});
   }
 
   const canDial = isDialableFlat(flat);
@@ -37,8 +53,18 @@ export function DialScreen({route}: Props): React.JSX.Element {
       testID="dial-screen"
       keyboardShouldPersistTaps="handled">
       <View style={styles.identity} testID="dial-identity">
-        <Text style={styles.flat}>{subscriber.flatNumber}</Text>
-        <Text style={styles.name}>{subscriber.displayName}</Text>
+        <View style={styles.identityText}>
+          <Text style={styles.flat}>{subscriber.flatNumber}</Text>
+          <Text style={styles.name}>{subscriber.displayName}</Text>
+        </View>
+        <Pressable
+          testID="dial-signout"
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+          onPress={onSignOut}
+          style={({pressed}) => [styles.signOut, pressed && styles.signOutDim]}>
+          <Text style={styles.signOutText}>Sign out</Text>
+        </Pressable>
       </View>
 
       <Text style={styles.heading}>Call a flat</Text>
@@ -79,9 +105,24 @@ export function DialScreen({route}: Props): React.JSX.Element {
 const styles = StyleSheet.create({
   root: {flex: 1, backgroundColor: '#0f2747'},
   content: {padding: 24, paddingTop: 56},
-  identity: {marginBottom: 32},
+  identity: {
+    marginBottom: 32,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  identityText: {flex: 1, marginRight: 12},
   flat: {color: '#ffffff', fontSize: 30, fontWeight: '700'},
   name: {color: '#cfe0f5', fontSize: 15, marginTop: 2},
+  signOut: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#3a567c',
+  },
+  signOutDim: {opacity: 0.5},
+  signOutText: {color: '#9bb3d1', fontSize: 13, fontWeight: '600'},
   heading: {color: '#9bb3d1', fontSize: 14, fontWeight: '600', marginBottom: 8},
   call: {
     backgroundColor: '#2f7d4f',
