@@ -19,11 +19,13 @@ import {FormField} from './FormField';
 import {FieldErrors, validateLoginForm} from '../validation/forms';
 import {ApiError} from '../api/types';
 import {useDeps} from '../state/deps';
+import {useAuth} from '../state/authContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
 
 export function LoginScreen({navigation}: Props): React.JSX.Element {
   const {client, sessionStore} = useDeps();
+  const {setSession} = useAuth();
   const [society, setSociety] = useState('');
   const [flat, setFlat] = useState('');
   const [password, setPassword] = useState('');
@@ -43,6 +45,11 @@ export function LoginScreen({navigation}: Props): React.JSX.Element {
     try {
       const session = await client.login(society.trim(), flat.trim(), password);
       await sessionStore.save(session);
+      // Signal the App shell so it builds the sip.js call engine
+      // before DialScreen mounts. Default useAuth() is a no-op so the
+      // existing isolated screen tests don't need to wrap in
+      // AuthProvider.
+      setSession(session);
       navigation.replace('Dial', {session});
     } catch (e) {
       setServerError(

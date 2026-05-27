@@ -11,11 +11,18 @@ import {CloudClient} from '../api/cloudClient';
 import {defaultClient} from '../api/defaultClient';
 import {SessionStore, SessionStoreApi} from '../session/sessionStore';
 import {CallController, StubCallController} from '../call/callController';
+import {IncomingCallController} from '../call/incomingCallController';
 
 export interface AppDeps {
   client: CloudClient;
   sessionStore: SessionStoreApi;
   callController: CallController;
+  /**
+   * Inbound-call state machine — only present when the user is logged
+   * in (it's bound to the active sip.js UA). Screens that subscribe
+   * to it must defensively handle `undefined`.
+   */
+  incomingCallController?: IncomingCallController;
 }
 
 const DepsContext = createContext<AppDeps>({

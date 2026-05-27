@@ -20,11 +20,13 @@ import {FormField} from './FormField';
 import {FieldErrors, validateRegisterForm} from '../validation/forms';
 import {ApiError} from '../api/types';
 import {useDeps} from '../state/deps';
+import {useAuth} from '../state/authContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Register'>;
 
 export function RegisterScreen({navigation}: Props): React.JSX.Element {
   const {client, sessionStore} = useDeps();
+  const {setSession} = useAuth();
   const [society, setSociety] = useState('');
   const [flat, setFlat] = useState('');
   const [residentName, setResidentName] = useState('');
@@ -62,6 +64,10 @@ export function RegisterScreen({navigation}: Props): React.JSX.Element {
       });
       // Ungated registration — the response is a live session.
       await sessionStore.save(session);
+      // Signal the App shell so it builds the sip.js call engine
+      // before DialScreen mounts (default useAuth() is a no-op so
+      // existing isolated screen tests don't need to wrap).
+      setSession(session);
       navigation.replace('Dial', {session});
     } catch (e) {
       setServerError(
