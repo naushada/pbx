@@ -8,10 +8,11 @@ order — each layer is fully green before the next starts.
 This mirrors the discipline of the root [`TDD-PLAN.md`](../../TDD-PLAN.md)
 (the C++/Angular system), adapted to the React Native toolchain.
 
-## Status (as of 2026-05-27)
+## Status (as of 2026-05-29)
 
 **End-to-end runnable** for outbound + foreground inbound calls from
-an iOS Simulator build with #143 + #144 landed.
+an iOS Simulator build, with sign-out + the shared sip-ua module +
+mobile-test CI gate landed.
 
 | Layer | State |
 |---|---|
@@ -23,16 +24,25 @@ an iOS Simulator build with #143 + #144 landed.
 | M3.b — Incoming-call glue (mocked CallKit) | ✅ landed |
 | **M3.b sip.js inbound bridge** | ✅ landed PR #143 — `SipInboundBridge` implements `IncomingCallSignaling` + feeds `reportPush` on every UA-delivered INVITE |
 | **App shell** | ✅ landed PR #144 — `AuthContext` + `createSipEnv` factory + `IncomingCallOverlay` foreground ring Modal; `App.tsx` builds the engine on login, tears it down on logout |
-| M3 native | not started — real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states (the M3.b `CallKitBridge` seam already accepts the right shape) |
+| **Sign-out UI** | ✅ landed PR #147 — `DialScreen` sign-out button: `sessionStore.clear()` → `setSession(null)` (App shell tears the UA down) → `navigation.reset(Login)` |
+| **Mobile typecheck in CI** | ✅ landed PR #156 — `Dockerfile.mobile-test`'s CMD runs `npm run typecheck && npm test --ci`; closed 7 latent TS errors that babel-jest had been silently transforming around. PR #155 + #156 wire `mobile-test` into `.github/workflows/publish-images.yml` as a PR merge gate. |
+| **Lockfile + npm ci** | ✅ landed PR #154 — `mobile/package-lock.json` committed, Dockerfile.mobile-test switched from `npm install` to `npm ci` for deterministic builds. |
+| M3 native | not started — real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states (the M3.b `CallKitBridge` seam already accepts the right shape; the in-app `IncomingCallOverlay` Modal handles the foreground case without it) |
 | M4 — End-to-end (Detox) | not started — needs iOS simulator + Android emulator + a test cloud + synthetic answerer |
 | M5 — Manual device matrix | not started |
 
 Containerised Jest runner shipped via PR #137
 ([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
-— the entire suite (**21 files / 150 tests**) is reproducible without
-an RN install on the host. See
+— the entire suite (**21 files / 150 tests** + **0 typecheck errors**)
+is reproducible without an RN install on the host. See
 [`mobile/README.md`](../../mobile/README.md) for invocation and the
 how-to-call walkthrough.
+
+**On main as of 2026-05-29:** the mobile work that doesn't need a
+native toolchain or physical devices is fully landed. The remaining
+items (M3 native, M4 Detox, M5 device matrix) are gated on Xcode +
+Android SDK + simulators + a fleet — verification scope, not
+implementation scope.
 
 ---
 
