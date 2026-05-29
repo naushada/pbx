@@ -2,6 +2,9 @@
 node_modules/
 npm-debug.log
 yarn-error.log
+# npm's local cache when --userconfig points it inside mobile/ (e.g. in
+# CI / clean-checkout runs that don't have write access to ~/.npm).
+.npm/
 
 # Metro / build
 .metro-health-check*
