@@ -137,6 +137,10 @@ else
   ok "Internet reachable (resolved ${DEFAULT_CLOUD_HOST})"
 fi
 
+# A custom CLOUD_HOST (env var or interactive prompt below) gets a
+# second resolution check once it's been chosen — the early check above
+# is only the "internet up?" smoke test against the default host.
+
 # ── 2. Install OS dependencies ──────────────────────────────────────
 step "Installing dependencies (podman, podman-compose, jq, openssl)"
 
@@ -174,6 +178,14 @@ if [[ -z "${CLOUD_HOST:-}" ]]; then
   CLOUD_HOST="${CLOUD_HOST:-$DEFAULT_CLOUD_HOST}"
 fi
 
+# Resolution check on the ACTUAL chosen host — the early "internet up?"
+# check resolved DEFAULT_CLOUD_HOST, which may differ from a custom
+# CLOUD_HOST. A typo here surfaces NOW (interactive) rather than later
+# (agent log line buried in step 9b).
+if ! getent hosts "$CLOUD_HOST" >/dev/null 2>&1; then
+  warn "Couldn't resolve '$CLOUD_HOST'. Double-check the hostname your dev team gave you, or fix DNS, before the agent comes up."
+fi
+
 if [[ -z "${CERTS_TARBALL:-}" ]]; then
   ask "Path to the cert tarball your dev team gave you (e.g. /tmp/${SOCIETY_CODE}-certs.tar.gz):"
   read -r CERTS_TARBALL
@@ -198,9 +210,12 @@ fi
 
 if [[ -z "${ADMIN_PASSWORD:-}" ]]; then
   ask "Admin password (typed silently):"
-  stty -echo
-  read -r ADMIN_PASSWORD
-  stty echo
+  # `read -s` is bash's silent read — it suppresses echo for THIS read
+  # only and restores the tty even on SIGINT. Earlier revisions used
+  # `stty -echo` / `read -r` / `stty echo`; if the operator hit Ctrl-C
+  # in the middle, the tty stayed in echo-off mode after the script
+  # exited and they had to type `stty echo` blind.
+  read -s -r ADMIN_PASSWORD
   printf '\n'
 fi
 [[ -n "$ADMIN_PASSWORD" ]] || die "Admin password cannot be empty."
