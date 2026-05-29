@@ -60,7 +60,7 @@ See:
 | 4   | Conference (`JOIN CONFERENCE`) — `AriClient::handle_conference_join` create-or-attaches the society's shared mixing bridge `<society>-conf` + adds the caller channel. `create_bridge` `409 Conflict` (bridge already exists) is treated as success so the 2nd+ joiner is not hung up. | ✅ PR #113 + PR #115 |
 | 4   | Directory presence — `AriClient` handles the `ContactStatusChange` ARI event (PJSIP contact lifecycle) → `REGISTER_STATE` SipFrame → cloud `IPresenceCache`. `EndpointStateChange` alone was insufficient: AORs are provisioned `qualify_frequency=0`, so a plain REGISTER never moved endpoint state and every flat showed Offline. | ✅ PR #114 |
 
-### Test totals: **597 / 600** C++ + UI karma 61 + UI Playwright 12 + **150** mobile Jest (3 baseline failures — see [Skipped tests](#skipped-tests))
+### Test totals: **599 / 600** C++ + UI karma 61 + UI Playwright 12 + **150** mobile Jest (1 baseline failure — see [Skipped tests](#skipped-tests))
 
 | Layer | Suites | Tests |
 |-------|--------|------:|
@@ -176,12 +176,10 @@ Counts will drift over time — `podman-compose -f docker-compose.test.yml run -
 
 ### Skipped tests
 
-**Three** inherited xpmile shared-library tests are filtered out by `docker/Dockerfile.test`'s default CMD because they fail in the upstream library too — environment-dependent, not real parser/protocol regressions. Current full-suite result with the compose `command:` override (no filter): **597 PASSED / 3 FAILED / 0 SKIPPED**.
+**One** inherited xpmile shared-library test is filtered out by `docker/Dockerfile.test`'s default CMD because it fails in the upstream library too — environment-dependent, not a real parser/protocol regression. Current full-suite result with the compose `command:` override (no filter): **599 PASSED / 1 FAILED / 0 SKIPPED**.
 
 | Test                                                          | Why skipped |
 |---------------------------------------------------------------|-------------|
-| `AccountLoginTest.ValidCredentials_Returns200WithAccountData` | Requires a live MongoDB seeded with the upstream shipment-account fixture data. |
-| `AccountLoginTest.ResponseBody_ExcludesSensitiveFields`       | Same root cause — depends on the 200 OK path that needs seeded Mongo. |
 | `WsDbServer.SecondAgentRejected_When_FirstAlive`              | The shared-library production code returns "stale agent evicted, retry"; the test still asserts a 409 and has drifted from the code. |
 
 Override the filter to include them once a Mongo fixture is wired up:
@@ -193,6 +191,7 @@ podman run --rm --entrypoint ./offtarget localhost/onprem-pbx_offtarget:latest \
 
 **Recently retired** — the filter used to also exclude:
 
+- `AccountLoginTest.ValidCredentials_Returns200WithAccountData` and `AccountLoginTest.ResponseBody_ExcludesSensitiveFields` — both were mislabelled as "needs live Mongo" but the underlying bug was a test-fixture schema mismatch: the JSON fixtures seeded `passwordHash` at the **top level** of the account doc, but `handle_account_login_POST` reads it from `loginCredentials.passwordHash` (the same path `migrate_account_passwords` writes to). Nested the hash; both tests pass against the existing `MockMongodbClient`.
 - `SeedDataTest.BootstrapAdminHasHashedPassword` — the xpmile-inherited test read `/src/docker/mongo-init.js` which onprem-pbx doesn't ship; recast to read `/src/install.sh`'s `db.subscribers.replaceOne(...)` admin-seed block instead, asserting it uses `portalPasswordHash` + `$pbkdf2-sha256$` modular-crypt form and never inlines `$ADMIN_PASSWORD`.
 - `MicroServiceRouting.RoutesSubscriberImportTemplateGET` (the POST half hit the admin-only `/import` route without a session token); PR #141 fixed the test by seeding an admin session + adding `?token=admin-tok` to the URL, the same pattern as the working `RoutesSubscriberImportPost`.
 PR #140 separately closed the `InnerTlsTest.*` skip-coverage gap by

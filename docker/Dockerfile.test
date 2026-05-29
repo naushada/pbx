@@ -49,17 +49,22 @@ RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
  && make -j"$(nproc)" offtarget pbx-agent pbx-cloud
 
 WORKDIR /src/build/test
-# Three tests filtered out because they need fixtures we don't ship:
-#   1. AccountLoginTest.ValidCredentials_Returns200WithAccountData
-#      — inherited xpmile; needs live Mongo.
-#   2. AccountLoginTest.ResponseBody_ExcludesSensitiveFields
-#      — same.
-#   3. WsDbServer.SecondAgentRejected_When_FirstAlive
+# One test filtered out because it needs fixtures we don't ship:
+#   1. WsDbServer.SecondAgentRejected_When_FirstAlive
 #      — inherited xpmile; timing-sensitive.
 # Documented in README.md (Status > Skipped tests). Drop a name from
 # the filter once the corresponding fixture / fix lands.
 #
 # Recently retired:
+#   - AccountLoginTest.ValidCredentials_Returns200WithAccountData
+#     + AccountLoginTest.ResponseBody_ExcludesSensitiveFields — were
+#     mislabelled as "needs live Mongo" but the underlying bug was a
+#     test-fixture schema mismatch: the JSON fixtures seeded
+#     `passwordHash` at the top level of the account doc, but
+#     `handle_account_login_POST` reads it from
+#     `loginCredentials.passwordHash` (webservice.cpp:1003 — the same
+#     path `migrate_account_passwords` writes to). Hash nested under
+#     loginCredentials; both tests pass without a live DB, 2026-05-29.
 #   - SeedDataTest.BootstrapAdminHasHashedPassword — was filtered
 #     because the test read /src/docker/mongo-init.js which onprem-pbx
 #     doesn't ship; recast to read /src/install.sh's
@@ -71,4 +76,4 @@ WORKDIR /src/build/test
 #     session + include ?token=admin-tok in the URL (same pattern as
 #     RoutesSubscriberImportPost), 2026-05-23.
 CMD ["./offtarget", "--gtest_color=yes", \
-     "--gtest_filter=-AccountLoginTest.ValidCredentials_Returns200WithAccountData:AccountLoginTest.ResponseBody_ExcludesSensitiveFields:WsDbServer.SecondAgentRejected_When_FirstAlive"]
+     "--gtest_filter=-WsDbServer.SecondAgentRejected_When_FirstAlive"]
