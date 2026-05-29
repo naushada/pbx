@@ -558,32 +558,50 @@ TEST(AccountUpdateTest, NoPasswordChange_DoesNotTouchHash)
 
 TEST(SeedDataTest, BootstrapAdminHasHashedPassword)
 {
-    std::ifstream f("/src/docker/mongo-init.js");
-    ASSERT_TRUE(f.is_open()) << "Cannot open mongo-init.js";
+    // onprem-pbx seeds the bootstrap admin via `install.sh` (see PR #96),
+    // not via the xpmile-style `docker/mongo-init.js`. This test reads
+    // install.sh and verifies the seed contract is intact:
+    //   1. the subscribers.replaceOne(...) admin seed uses the
+    //      `portalPasswordHash` field (not a plain `portalPassword`);
+    //   2. the hash is generated in modular-crypt `$pbkdf2-sha256$` form,
+    //      matching what `MongodbClient::hash_password` emits server-side
+    //      so cloud `verify_password` accepts it without translation;
+    //   3. the seed never inlines `$ADMIN_PASSWORD` (the operator-supplied
+    //      env var with the plain password) — the hash is computed first
+    //      and only `$ESC_HASH` reaches the replaceOne.
+    std::ifstream f("/src/install.sh");
+    ASSERT_TRUE(f.is_open()) << "Cannot open /src/install.sh — "
+                                "Dockerfile.test must COPY it in";
 
     std::string contents((std::istreambuf_iterator<char>(f)),
                           std::istreambuf_iterator<char>());
 
-    // Extract the document passed to insertOne(...)
-    auto start = contents.find("insertOne(");
-    ASSERT_NE(std::string::npos, start);
-    start = contents.find('{', start);
-    ASSERT_NE(std::string::npos, start);
+    // Locate the admin `subscribers.replaceOne(...)` block. The match
+    // string is anchored on `db.subscribers.replaceOne` so a future
+    // unrelated `replaceOne` call doesn't shift the window.
+    auto start = contents.find("db.subscribers.replaceOne(");
+    ASSERT_NE(std::string::npos, start)
+        << "install.sh must seed the bootstrap admin via "
+           "db.subscribers.replaceOne(...)";
+    auto end = contents.find("{ upsert: true }", start);
+    ASSERT_NE(std::string::npos, end)
+        << "admin replaceOne(...) block didn't reach its upsert tail";
 
-    auto end = contents.find("});", start);
-    ASSERT_NE(std::string::npos, end);
-    end = contents.rfind('}', end);
-    ASSERT_NE(std::string::npos, end);
+    const std::string seed = contents.substr(start, end - start);
 
-    std::string doc = contents.substr(start, end - start + 1);
+    EXPECT_NE(std::string::npos, seed.find("portalPasswordHash:"))
+        << "admin seed must store the password in `portalPasswordHash`";
+    EXPECT_EQ(std::string::npos, seed.find("$ADMIN_PASSWORD"))
+        << "admin seed must NOT inline the plain-text $ADMIN_PASSWORD — "
+           "the hash gets computed by the python heredoc, only $ESC_HASH "
+           "reaches the replaceOne";
 
-    // Must use passwordHash, not plain-text accountPassword
-    EXPECT_NE(std::string::npos, doc.find("passwordHash"))
-        << "Seed data must contain passwordHash";
-    EXPECT_NE(std::string::npos, doc.find("$pbkdf2-sha256$"))
-        << "passwordHash must be in modular-crypt format";
-    EXPECT_EQ(std::string::npos, doc.find("accountPassword"))
-        << "Seed data must NOT contain plain-text accountPassword";
+    // The hash-format literal lives in the python heredoc above the
+    // replaceOne; check it's there too.
+    EXPECT_NE(std::string::npos, contents.find("$pbkdf2-sha256$"))
+        << "install.sh must produce the password hash in modular-crypt "
+           "`$pbkdf2-sha256$` form (the format MongodbClient::"
+           "hash_password emits + verify_password accepts)";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
