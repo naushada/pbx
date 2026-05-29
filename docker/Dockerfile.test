@@ -17,6 +17,10 @@ COPY CMakeLists.txt /src/
 COPY modules/      /src/modules/
 COPY pbx-agent/    /src/pbx-agent/
 COPY test/         /src/test/
+# SeedDataTest.BootstrapAdminHasHashedPassword reads /src/install.sh
+# to verify the bootstrap admin's seed line uses portalPasswordHash +
+# `$pbkdf2-sha256$` modular-crypt form, not a plain-text password.
+COPY install.sh    /src/install.sh
 # pjsip_template_drift_test reads docker/asterisk/pjsip.conf to verify
 # the inlined endpoint fields in PjsipProvisioner match the
 # [endpoint-resident-template] section. Skips gracefully if missing
@@ -45,25 +49,26 @@ RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
  && make -j"$(nproc)" offtarget pbx-agent pbx-cloud
 
 WORKDIR /src/build/test
-# Four tests filtered out because they need fixtures we don't ship:
+# Three tests filtered out because they need fixtures we don't ship:
 #   1. AccountLoginTest.ValidCredentials_Returns200WithAccountData
 #      — inherited xpmile; needs live Mongo.
 #   2. AccountLoginTest.ResponseBody_ExcludesSensitiveFields
 #      — same.
 #   3. WsDbServer.SecondAgentRejected_When_FirstAlive
 #      — inherited xpmile; timing-sensitive.
-#   4. SeedDataTest.BootstrapAdminHasHashedPassword
-#      — inherited xpmile; reads /src/docker/mongo-init.js which
-#      onprem-pbx doesn't ship (we seed via install.sh, not
-#      mongo-init).
 # Documented in README.md (Status > Skipped tests). Drop a name from
 # the filter once the corresponding fixture / fix lands.
 #
 # Recently retired:
+#   - SeedDataTest.BootstrapAdminHasHashedPassword — was filtered
+#     because the test read /src/docker/mongo-init.js which onprem-pbx
+#     doesn't ship; recast to read /src/install.sh's
+#     `db.subscribers.replaceOne(...)` admin seed instead (PR added
+#     `COPY install.sh /src/install.sh` to this Dockerfile), 2026-05-29.
 #   - MicroServiceRouting.RoutesSubscriberImportTemplateGET — was
 #     filtered because the POST half of the test hit the admin-only
 #     /import route without a session token; fix was to seed an admin
 #     session + include ?token=admin-tok in the URL (same pattern as
 #     RoutesSubscriberImportPost), 2026-05-23.
 CMD ["./offtarget", "--gtest_color=yes", \
-     "--gtest_filter=-AccountLoginTest.ValidCredentials_Returns200WithAccountData:AccountLoginTest.ResponseBody_ExcludesSensitiveFields:WsDbServer.SecondAgentRejected_When_FirstAlive:SeedDataTest.BootstrapAdminHasHashedPassword"]
+     "--gtest_filter=-AccountLoginTest.ValidCredentials_Returns200WithAccountData:AccountLoginTest.ResponseBody_ExcludesSensitiveFields:WsDbServer.SecondAgentRejected_When_FirstAlive"]
