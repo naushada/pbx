@@ -88,6 +88,16 @@ MONGO_DB="${MONGO_DB_NAME:-$DEFAULT_MONGO_DB}"
   $CERTS_TARBALL   (inside the container)
   Put the .tar.gz inside the host dir you mounted at $DATA_DIR."
 
+# Symmetric to install.sh (PR #158): surface a CLOUD_HOST typo NOW —
+# while the operator is still at their terminal — rather than later as
+# a buried "agent can't reach cloud" message in `docker logs pbx-agent`
+# 2 minutes in. `getent hosts` runs inside this container; pbx-agent
+# uses the same host's DNS (the agent container's resolv.conf flows
+# from the same daemon), so a failure here predicts the agent's fate.
+if ! getent hosts "$CLOUD_HOST" >/dev/null 2>&1; then
+  warn "Couldn't resolve '$CLOUD_HOST'. Double-check the hostname your dev team gave you, or fix container DNS, before pbx-agent comes up."
+fi
+
 ok "society       = $SOCIETY_CODE ($SOCIETY_NAME)"
 ok "admin email   = $ADMIN_EMAIL"
 ok "cloud host    = $CLOUD_HOST"

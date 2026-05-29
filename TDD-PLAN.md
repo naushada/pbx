@@ -292,7 +292,7 @@ layering, not part of the original plan — see
 9. ✅ **Layer 5c (Mobile RN)** — through M3.b + sip engine + auth shell + sign-out; 150 jest tests + 0 typecheck errors. See [`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md) for the layer-by-layer detail.
 10. ✅ **Layer 6 CI side** — every PR runs `offtarget` (600/600) + `mobile-test` (Jest + tsc) + `ui-test` (Angular `ng build`) as merge gates; `publish-images.yml` push-jobs publish images + auto-deploy `pbx-cloud` to Heroku.
 11. ✅ **Shared `sip-ua/`** — `shared/sip-ua/sip-ua.ts` + `sip-ua-sipjs.ts` consolidated from ui/mobile duplicates (PR #146).
-12. ✅ **Operator-script hygiene** — `install.sh` tty-safe password prompt + DNS check on chosen host (PR #158), `setup-society.sh` base64-pad preservation + IP validation (PR #159), `bootstrap-society.sh` tty fix (PR #160).
+12. ✅ **Operator-script hygiene** — `install.sh` tty-safe password prompt + DNS check on chosen host (PR #158), `setup-society.sh` base64-pad preservation + IP validation (PR #159), `bootstrap-society.sh` tty fix (PR #160), `installer-entrypoint.sh` DNS check on chosen host (PR #161 — symmetric to #158 for the Path B / DooD install).
 
 **Pending** (require external access I haven't been granted):
 
