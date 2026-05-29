@@ -15,10 +15,10 @@ import {SipCallController} from '../call/sipCallController';
 import {SipInboundBridge} from '../call/sipIncomingSignaling';
 import {
   CallKitBridge,
-  IncomingCall,
   IncomingCallController,
   IncomingCallSignaling,
 } from '../call/incomingCallController';
+import {IncomingCall} from '../sip/incomingCall';
 
 /** Just the slice of `react-native-callkeep` we currently need. */
 const NOOP_CALL_KIT: CallKitBridge = {

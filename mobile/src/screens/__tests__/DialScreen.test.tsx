@@ -39,12 +39,15 @@ function renderDial(opts?: {clearError?: unknown}) {
     ),
   } as unknown as SessionStoreApi;
   const setSession = jest.fn();
-  const navigation = {reset: jest.fn()} as unknown as never;
+  // Only the bits DialScreen reaches into. Typing the mock as the full
+  // NativeStackNavigationProp would drag in every screen-stack overload
+  // for one method, so we keep it minimal + cast at the prop boundary.
+  const navigation = {reset: jest.fn()};
   render(
     <AuthProvider value={{session: SESSION, setSession}}>
       <DepsProvider value={{client, sessionStore, callController}}>
         <DialScreen
-          navigation={navigation}
+          navigation={navigation as never}
           route={
             {key: 'd', name: 'Dial', params: {session: SESSION}} as never
           }
