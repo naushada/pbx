@@ -246,6 +246,40 @@ jobs:
       - name: Run mobile jest suite
         run: docker run --rm onprem-pbx-mobile-test:ci
 
+  ui-test:
+    # Angular UI bundle — `ng build --configuration development` is the
+    # strictest typecheck we have for the Angular sources (it runs the
+    # AOT template compiler on top of tsc). Production goes through the
+    # same call in Dockerfile.cloud stage 2, but `publish-cloud` is
+    # push-only — so without this job, a UI type / template error lands
+    # on main, then breaks the deploy. This gates it pre-merge.
+    #
+    # Native Node (no container build) — saves ~30s of image cache work
+    # vs a Dockerfile.ui-test wrapper. ubuntu-latest's actions/setup-node
+    # has the `cache: npm` plumbing for free; the ng build itself takes
+    # the bulk of the runtime regardless.
+    name: Build UI bundle (typecheck via ng build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '16'
+          cache: 'npm'
+          cache-dependency-path: 'ui/package-lock.json'
+
+      - name: Install ui deps
+        run: cd ui && npm ci --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build ui bundle (development configuration)
+        # The `shared/sip-ua/*` imports inside ui/ are resolved via the
+        # `paths` mapping in ui/tsconfig.json — same as the production
+        # Dockerfile.cloud build.
+        run: cd ui && npx ng build --configuration development
+
   services:
     name: Publish onprem-pbx-${{ matrix.service }} (multi-arch)
     needs: [bootstrap, test]
