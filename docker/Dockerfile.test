@@ -49,13 +49,18 @@ RUN cmake -DBUILD_TESTS=ON -DBUILD_BINARIES=ON .. \
  && make -j"$(nproc)" offtarget pbx-agent pbx-cloud
 
 WORKDIR /src/build/test
-# One test filtered out because it needs fixtures we don't ship:
-#   1. WsDbServer.SecondAgentRejected_When_FirstAlive
-#      — inherited xpmile; timing-sensitive.
-# Documented in README.md (Status > Skipped tests). Drop a name from
-# the filter once the corresponding fixture / fix lands.
+# All offtarget tests now run unfiltered. Recently retired:
 #
-# Recently retired:
+#   - WsDbServer.SecondAgentRejected_When_FirstAlive — was filtered
+#     as "timing-sensitive in the upstream xpmile library". Real
+#     bug: the test asserted the server sent 409 Conflict to the
+#     second agent, but production `WsDbServer::on_agent_connected`
+#     now evicts the (stale) first agent via `::shutdown(SHUT_RDWR)`
+#     and tells the second to back off with 503 + Retry-After: 2.
+#     The 409 path still exists in the parallel TLS-accept loop in
+#     `svc()`, but `on_agent_connected` itself moved to the
+#     eviction-and-retry shape. Test asserts the new contract; the
+#     .hpp docstring updated to match, 2026-05-29.
 #   - AccountLoginTest.ValidCredentials_Returns200WithAccountData
 #     + AccountLoginTest.ResponseBody_ExcludesSensitiveFields — were
 #     mislabelled as "needs live Mongo" but the underlying bug was a
@@ -75,5 +80,4 @@ WORKDIR /src/build/test
 #     /import route without a session token; fix was to seed an admin
 #     session + include ?token=admin-tok in the URL (same pattern as
 #     RoutesSubscriberImportPost), 2026-05-23.
-CMD ["./offtarget", "--gtest_color=yes", \
-     "--gtest_filter=-WsDbServer.SecondAgentRejected_When_FirstAlive"]
+CMD ["./offtarget", "--gtest_color=yes"]
