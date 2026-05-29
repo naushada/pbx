@@ -74,12 +74,14 @@ done
 [ -z "$ADMIN_EMAIL" ]   && die "--admin-email is required"
 [ -z "$MONGO_URI" ]     && die "--mongo-uri is required (e.g. mongodb://localhost:27017/pabx)"
 
-# Prompt for password if not provided — never echo it.
+# Prompt for password if not provided — never echo it. Same fix as
+# install.sh (PR #158): `read -s -r` is bash's silent read which
+# suppresses echo for THIS read only and handles SIGINT cleanup — an
+# earlier `stty -echo` / `read -r` / `stty echo` block left the
+# operator's tty in echo-off mode when they hit Ctrl-C mid-prompt.
 if [ -z "$ADMIN_PASSWORD" ]; then
   printf 'admin password: '
-  stty -echo
-  read -r ADMIN_PASSWORD
-  stty echo
+  read -s -r ADMIN_PASSWORD
   printf '\n'
 fi
 [ -z "$ADMIN_PASSWORD" ] && die "admin password cannot be empty"

@@ -2,12 +2,33 @@
 
 Tests are written **before** production code, one slice at a time. The order below is the execution order: each layer is fully green before the next starts.
 
+## Status as of 2026-05-29
+
+| Layer | Scope | Status |
+|---|---|---|
+| **L0** Wire-format primitives | `SipFrame*`, `HttpParser*`, `MessageParserBase*`, `SipParser*` | ✅ Done |
+| **L1** Cloud HTTP / WS / Mongo | `SipBridge*`, `MicroServicePbx*`, `MicroServiceRouting*`, `PushSender*`, inherited modules | ✅ Done |
+| **L2** pbx-agent | `SipFrameDemux*`, `CloudConnector*`, `AriClient*`, `CloudTunnelEndpoint*` | ✅ Done |
+| **L3** Cloud ↔ Agent integration | `TunnelE2E*`, `BrowserStream*`, `AgentStream*`, `AceSslTransport*`, `AriWsClient*`, `HandoffOrdering*` (source-invariant) | ✅ Done |
+| **L4** SIP correctness (real Asterisk) | `SipScenarios*` Python/pytest + sipp + real Asterisk | ⏳ Not started — gated on a docker-compose test fixture with Asterisk + coturn + a sipp UA; existing call-routing tests (`AriClient*`, `CallRouter*`) cover the seam against ARI fakes today |
+| **L5a** UI Karma | `dashboard`, `directory`, `history`, `login`, `auth.guard`, `app-globals` + more (61 specs per README) | ✅ Done |
+| **L5b** UI Playwright | `ui/e2e/tests/{login,dashboard,directory,history,settings}.spec.ts` (~12 tests) | ✅ Done |
+| **L5c** Mobile RN | TDD layers M0 → M3.b + sip engine + auth shell + sign-out — 150 jest tests across 21 files. Detailed plan in [`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md) | ✅ Through M3.b (App-shell, sign-out); M4 Detox / M5 device matrix gated on simulators + real devices |
+| **L6** Smoke | Production deploy validation runs the `test` (offtarget GTest) + `mobile-test` (Jest+tsc) + `ui-test` (ng build) gates on every PR and push (see `.github/workflows/publish-images.yml`); no separate post-deploy `/healthz`+canary runner yet | 🟡 CI gates done; post-deploy canary still manual |
+
+**Offtarget baseline (`docker-compose.test.yml`):** 600/600 PASSED, 0 SKIPPED, no `gtest_filter`. (The four xpmile-inherited failures retired by PRs #151 + #152 + #153 — see `README.md` "Skipped tests" section.)
+
+**CI merge gates** on every PR (PR #155+#156+#157): `offtarget` GTest 600/600, `mobile-test` Jest 150/150 + `tsc --noEmit` clean, `ui-test` Angular `ng build` clean.
+
+The remaining real work is L4 (Asterisk-fixture sipp scenarios) and L6 post-deploy canary; everything else is shipped.
+
 ## Conventions
 
 - C++ unit & integration tests run inside the built image as the `offtarget` GTest binary.
 - Filter convention: `--gtest_filter='<Suite>*'`. New suites added under `modules/module/pbx/test/` and `pbx-agent/test/`.
 - Angular tests use Karma + Jasmine.
 - End-to-end browser tests use Playwright headed against a real Asterisk + a synthetic-call helper, in a podman-compose harness.
+- Mobile (React Native) tests use Jest + `react-native-testing-library`; same suite runs under `docker/Dockerfile.mobile-test`. TS strictness is enforced separately via `npm run typecheck` in the same CMD (PR #156).
 - "Red → green → refactor": every commit either adds a failing test or makes a failing test pass. CI rejects commits that only add code with no test diff.
 
 ---
@@ -252,18 +273,33 @@ Run after every deploy against the live Heroku app + a staging society agent:
 
 ## Order of work (drives the implementation)
 
+The originally-planned order ran L0 → L1 → L2 → L3 → L4 (Asterisk) →
+L5 (browser) → L6 (smoke). Reality ran L0 → L1 → L2 → L3 → L5 → L6
+(CI gates) before L4. Mobile (L5c) is a parallel slice on the M0-M3
+layering, not part of the original plan — see
+[`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md).
+
+**Done** (in landed order):
+
 1. ✅ Seed repo skeleton from the shared library — minimal subset shipped in Layer 0 commit (`modules/module/http/*`, `test/CMakeLists.txt`, root `CMakeLists.txt`, `docker/Dockerfile.test`, `docker-compose.test.yml`). Remaining inherited modules (webservice, mongodb, wsdbproxy, email) land alongside Layer 1 when first needed. *(Reuse map in DESIGN.md §12.)*
 2. ✅ **Layer 0.b.** `MessageParser` base extracted; inherited `HttpParser*` 20/20 still green; `MessageParserBase*` 8/8 + `SipParser*` 17/17 green.
-3. ✅ Layer 0.a `SipFrame*` 10/10 green.
-4. ✅ Layer 1 — complete (modulo `HandoffOrdering`). `SipBridge*` 12/12, inherited modules verbatim-copy 112/115 (3 environmental skips), `MicroServicePbx*` 23/23, `PushSender*` 8/8, `MicroServiceRouting*` 9/9 (PBX routes intercept first; inherited URIs fall through). The subscriber directory denormalizes `flatNumber` onto each row (the filter + UI dial by it) and strips secrets from its response. Subscriber portal login is email-keyed with a real strict mode (`PBX_AUTH_STRICT=1` → Mongo lookup + bcrypt verify; default dev mode synthesises a profile); login persists a `sessions` row, and the `/sip-ws` upgrade resolves that token to the subscriber identity it puts in the bridge's OPEN frame. `/sip-ws` upgrade gates on the portal session cookie in `WebConnection::handle_input`; the real `SipBridge` hand-off is stubbed to 503 until the cloud-side tunnel endpoint exists (Layer 2). `HandoffOrdering` deferred to Layer 3 TunnelE2E — it needs ACE reactor mocking that's cheaper to do with a real reactor running.
-5. ✅ Layer 2 — feature-complete modulo concrete socket I/O (deferred to Layer 3). `SipFrameDemux*` 14/14, `CloudConnector*` 15/15 (includes the SipFrame-level heartbeat slice — agent-originated PING + PONG/inbound liveness tracking), `AriClient*` 11/11, `CloudTunnelEndpoint*` 12/12. The `/sip-ws` swap shipped as: `CloudTunnelEndpoint` wired into `WebServer` (`cloudTunnelEndpoint()` accessor parallel to `wsDbServer()`); `WebConnection::handle_input` got an `/agent` WS upgrade branch mirroring `/ws/db`'s hand-off ordering; the `/sip-ws` 503 is now context-aware (`X-PBX-AgentConnected: yes|no`).
-6. ✅ Layer 3 — complete. `TunnelE2E*` 8/8, `BrowserStream*` 9/9, `AgentStream*` 10/10, `AceSslTransport*` 10/10, `AriWsClient*` 14/14, `HandoffOrdering*` 8/8 (`BrowserStream`/`AgentStream` counts include the post-Layer-3 WebSocket keep-alive slice — see above). The originally-planned reactor-based `HandoffOrdering` test was replaced with a sharper **source-invariant** test (reads `webservice.cpp` directly and asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three WS upgrade branches — `/sip-ws`, `/agent`, `/ws/db`). The bug class we're guarding against is "swap two lines that both look like teardown" — a real-reactor test could pass even with the bug on some platforms; the source-grep is unambiguous. The inherited `/ws/db` branch is included as a regression guard so we catch drift in the inherited copy too.
-5. ⏳ Layer 2 — `CloudConnector*`. Implement to green.
-6. ⏳ Layer 3 — `TunnelE2E*`. Wire everything end-to-end with fakes.
-7. ⏳ Compose Asterisk + coturn locally. Write `MicroServicePbx*` + `AriClient*`. Implement to green.
-8. ⏳ `PushSender*`.
-9. ⏳ Angular skeleton + Karma specs; implement components.
-10. ⏳ Playwright E2E.
-11. ⏳ Smoke + first society pilot.
+3. ✅ **Layer 0.a** `SipFrame*` 10/10 green.
+4. ✅ **Layer 1** — `SipBridge*` 12/12, `MicroServicePbx*` 23/23, `PushSender*` 8/8, `MicroServiceRouting*` 9/9. The subscriber directory denormalizes `flatNumber` onto each row, strips secrets from its response, and the `/api/v1/subscriber/login` strict-mode (`PBX_AUTH_STRICT=1`) does email-keyed Mongo lookup + bcrypt verify; login persists a `sessions` row and `/sip-ws` resolves that token to the OPEN frame's identity. (See also: the 2026-05-29 baseline-failure cleanup PRs #151–#153 which retired the 4 xpmile-inherited test gaps the inherited copies had been carrying.)
+5. ✅ **Layer 2** — `SipFrameDemux*` 14/14, `CloudConnector*` 15/15 (includes the SipFrame-level heartbeat slice — agent-originated PING + PONG/inbound liveness tracking), `AriClient*` 11/11, `CloudTunnelEndpoint*` 12/12. The `/sip-ws` swap shipped as: `CloudTunnelEndpoint` wired into `WebServer`; `WebConnection::handle_input` got an `/agent` WS upgrade branch mirroring `/ws/db`'s hand-off ordering; the `/sip-ws` 503 is context-aware (`X-PBX-AgentConnected: yes|no`).
+6. ✅ **Layer 3** — `TunnelE2E*` 8/8, `BrowserStream*` 9/9, `AgentStream*` 10/10, `AceSslTransport*` 10/10, `AriWsClient*` 14/14, `HandoffOrdering*` 8/8 (source-invariant test against `webservice.cpp` — asserts `remove_handler` precedes `m_handle = ACE_INVALID_HANDLE` for all three WS upgrade branches; cheaper and sharper than a real-reactor test for this specific bug class).
+7. ✅ **InnerTLS over `/agent` (D3)** — full mTLS handshake through paired `WsInnerTlsBridge` instances tested via `FullMtlsHandshake_ViaPairedBridges` (PR #148). `InnerTlsServer` cert-verify failures now log a labelled error code + the presented cert's subject/issuer/serial via a `verify_callback` (PR #150) — the next live deploy will surface specifically what's failing.
+8. ✅ **Layer 5a (UI Karma) + 5b (UI Playwright)** — 61 Karma specs + 5 Playwright e2e flows shipped (`ui/src/**/*.spec.ts` + `ui/e2e/tests/*.spec.ts`).
+9. ✅ **Layer 5c (Mobile RN)** — through M3.b + sip engine + auth shell + sign-out; 150 jest tests + 0 typecheck errors. See [`docs/design/mobile-app-tdd.md`](./docs/design/mobile-app-tdd.md) for the layer-by-layer detail.
+10. ✅ **Layer 6 CI side** — every PR runs `offtarget` (600/600) + `mobile-test` (Jest + tsc) + `ui-test` (Angular `ng build`) as merge gates; `publish-images.yml` push-jobs publish images + auto-deploy `pbx-cloud` to Heroku.
+11. ✅ **Shared `sip-ua/`** — `shared/sip-ua/sip-ua.ts` + `sip-ua-sipjs.ts` consolidated from ui/mobile duplicates (PR #146).
+12. ✅ **Operator-script hygiene** — `install.sh` tty-safe password prompt + DNS check on chosen host (PR #158), `setup-society.sh` base64-pad preservation + IP validation (PR #159), `bootstrap-society.sh` tty fix (PR #160).
+
+**Pending** (require external access I haven't been granted):
+
+- ⏳ **Layer 4 (`SipScenarios*`)** — needs a docker-compose harness with Asterisk + coturn + sipp UAs. Designable offline; verification needs the harness running.
+- ⏳ **Layer 5c mobile native** — real CallKit / PushKit / ConnectionService / FCM behind the existing `CallKitBridge` seam (a no-op stub is wired in `createSipEnv.ts`). Needs Xcode + Android SDK + simulators.
+- ⏳ **Mobile M4 Detox + M5 device matrix** — needs simulators + physical devices.
+- ⏳ **Layer 6 post-deploy canary** — `/healthz` + a sipp register from outside the LAN against the live Heroku cloud. Designable offline; verification needs Heroku auth.
+- ⏳ **`/agent` cert-reject root-cause** — diagnostic instrumentation laid via PR #150 (verify_callback) on top of the bridge being ruled out by PR #148. Needs a live agent reconnect against Heroku to surface what the labelled log line says.
 
 Definition of done for a layer: all tests green on `./offtarget --gtest_filter='<Suite>*'` (or `ng test` / `playwright test`), and CI has caught at least one regression introduced during development of the next layer (proves the test really binds the behaviour).
