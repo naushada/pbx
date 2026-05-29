@@ -34,6 +34,23 @@ export class SipInboundBridge implements IncomingCallSignaling {
   constructor(
     ua: SipUaHandle,
     private readonly controller: IncomingCallReporter,
+    /**
+     * Concurrent-call busy gate (defence-in-depth for ringReducer). When
+     * provided AND returns true at INVITE time, the new call is rejected
+     * with SIP 486 Busy Here and `reportPush` is never invoked — same
+     * shape as the web softphone's `SipService.onIncoming`:
+     *
+     *     if (this.call || this.incoming) {
+     *         void h.reject('busy');
+     *         return;
+     *     }
+     *
+     * Without this gate, a second INVITE arriving while a previous call
+     * is active would overwrite the `IncomingCall` state via the
+     * narrowed (PR #164) ringReducer and ring the user — never what we
+     * want.
+     */
+    private readonly isBusy?: () => boolean,
   ) {
     ua.onIncomingCall(handle => this.onInvite(handle));
   }
@@ -57,6 +74,15 @@ export class SipInboundBridge implements IncomingCallSignaling {
   }
 
   private onInvite(handle: IncomingCallHandle): void {
+    // Busy gate first — never touch `pending` or `reportPush` if the
+    // line is already occupied; the new dialog is dropped right back
+    // out via SIP 486 Busy Here.
+    if (this.isBusy?.()) {
+      handle.reject('busy').catch(() => {
+        /* logged by SipJsUaHandle */
+      });
+      return;
+    }
     this.pending.set(handle.info.callId, handle);
     // Synthesise the same payload PushKit/FCM will deliver later.
     // We don't get a display-name from the SIP URI, so we mirror flat

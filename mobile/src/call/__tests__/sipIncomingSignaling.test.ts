@@ -138,3 +138,63 @@ describe('SipInboundBridge — IncomingCallSignaling', () => {
     expect(inv.reject).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Concurrent-call busy gate ──────────────────────────────────────────
+//
+// Web softphone: `SipService.onIncoming` short-circuits with
+// `void h.reject('busy')` when there's already an active call or
+// pending incoming. Mobile mirrors that via the bridge's `isBusy`
+// predicate so a second INVITE during an in-progress call never
+// reaches the IncomingCallController (which would otherwise overwrite
+// state via the narrowed PR #164 ringReducer).
+
+function busySetup(isBusy: () => boolean) {
+  const ua = new FakeSipUa();
+  const controller = {reportPush: jest.fn()};
+  const bridge = new SipInboundBridge(ua, controller, isBusy);
+  return {bridge, ua, controller};
+}
+
+describe('SipInboundBridge — busy gate', () => {
+  it('rejects with busy when isBusy returns true and never invokes the controller', () => {
+    const {ua, controller} = busySetup(() => true);
+    const inv = new FakeIncomingHandle('call-7', 'B-204');
+
+    ua.deliver(inv);
+
+    expect(inv.reject).toHaveBeenCalledWith('busy');
+    expect(controller.reportPush).not.toHaveBeenCalled();
+  });
+
+  it('lets the INVITE through when isBusy returns false', () => {
+    const {ua, controller} = busySetup(() => false);
+    const inv = new FakeIncomingHandle('call-7', 'B-204');
+
+    ua.deliver(inv);
+
+    expect(inv.reject).not.toHaveBeenCalled();
+    expect(controller.reportPush).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the INVITE through when no isBusy is configured (default)', () => {
+    // Backwards-compatible: existing call sites that built a bridge
+    // without the gate keep working.
+    const {ua, controller} = setup();
+    const inv = new FakeIncomingHandle('call-7', 'B-204');
+
+    ua.deliver(inv);
+
+    expect(inv.reject).not.toHaveBeenCalled();
+    expect(controller.reportPush).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not register the rejected handle (later answer/reject is a no-op)', async () => {
+    const {bridge, ua} = busySetup(() => true);
+    const inv = new FakeIncomingHandle('call-7', 'B-204');
+    ua.deliver(inv);
+
+    await bridge.answer('call-7');
+
+    expect(inv.accept).not.toHaveBeenCalled();
+  });
+});
