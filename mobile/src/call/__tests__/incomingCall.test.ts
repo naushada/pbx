@@ -184,6 +184,27 @@ describe('IncomingCallController', () => {
     expect(controller.getCall()?.callId).toBe('call-7');
   });
 
+  it('rings again after a previously declined call ends', () => {
+    // Surfaced as a hold-back in PR #163: the older `ringReducer`'s
+    // first-ring-wins was too broad and blocked the next ring forever
+    // after the first call resolved. Web's `SipService.rejectIncoming`
+    // clears `this.incoming = undefined`, so a second INVITE rings;
+    // mobile now matches that behaviour via the narrowed reducer guard
+    // (only blocks while state === 'ringing').
+    const {controller, callKit} = setup();
+    controller.reportPush(wakeUpPush({callId: 'call-A'}));
+    expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(1);
+
+    controller.decline();
+    expect(controller.getCall()?.state).toBe('declined');
+
+    controller.reportPush(wakeUpPush({callId: 'call-B'}));
+
+    expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(2);
+    expect(controller.getCall()?.state).toBe('ringing');
+    expect(controller.getCall()?.callId).toBe('call-B');
+  });
+
   // ── Guard kiosk auto-answer (DESIGN.md §9) ─────────────────────────
   //
   // Mirrors the web softphone's `SipService.onIncoming` short-circuit:
@@ -247,13 +268,27 @@ describe('IncomingCallController', () => {
     expect(signaling.answer).not.toHaveBeenCalled();
   });
 
-  // Future test: per-call re-evaluation across consecutive rings. Held
-  // back because the existing `ringReducer` is first-ring-wins
-  // regardless of state (mobile/src/sip/incomingCall.ts:42-51) — after
-  // a `decline()` the call object stays in `state: 'declined'` and a
-  // second `reportPush` is a no-op. This diverges from the web
-  // softphone (`SipService.rejectIncoming` clears `this.incoming =
-  // undefined`). Tracked as a separate follow-up; doesn't affect the
-  // auto-answer wiring on a fresh controller (covered by the two
-  // tests above).
+  it('re-evaluates shouldAutoAnswer per call (session flip takes effect)', async () => {
+    let autoAnswer = false;
+    const {controller, callKit, signaling} =
+      autoAnswerSetup(() => autoAnswer);
+
+    // Ring 1 — resident, normal ring.
+    controller.reportPush(wakeUpPush({callId: 'call-A'}));
+    expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(1);
+    expect(signaling.answer).not.toHaveBeenCalled();
+    controller.decline();
+
+    // Ring 2 — session flips to guard kiosk, auto-answers (this also
+    // exercises the rearm-after-decline path the narrowed reducer
+    // enables).
+    autoAnswer = true;
+    controller.reportPush(wakeUpPush({callId: 'call-B'}));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(signaling.answer).toHaveBeenCalledWith('call-B');
+    // Display count unchanged from ring 1 — ring 2 skipped the UI.
+    expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(1);
+  });
 });
