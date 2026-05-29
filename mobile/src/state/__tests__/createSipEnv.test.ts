@@ -248,4 +248,108 @@ describe('createSipEnv', () => {
     expect(inboundHandle.accept).not.toHaveBeenCalled();
     expect(env.incomingCallController.getCall()?.state).toBe('ringing');
   });
+
+  // ── Concurrent-call busy gate ───────────────────────────────────────
+  //
+  // The bridge's `isBusy` predicate is wired here to AND the OUTBOUND
+  // (SipCallController) and INBOUND (IncomingCallController) views so
+  // a second INVITE during an in-progress call is dropped with 486
+  // Busy. Direct unit coverage of the predicate's truth table.
+
+  function inboundInvite(callId: string): IncomingCallHandle {
+    return {
+      info: {fromUri: 'sip:Z@x', fromFlat: 'Z-001', callId},
+      accept: jest.fn(async () => ({
+        onStateChange: () => {},
+        hangup: async () => {},
+        setMute: () => {},
+      })),
+      reject: jest.fn(async () => {}),
+    };
+  }
+
+  it('busy-rejects a second INVITE while the previous inbound is still ringing', () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const first = inboundInvite('call-A');
+    built[0].incomingCb!(first);
+    expect(env.incomingCallController.getCall()?.state).toBe('ringing');
+
+    const second = inboundInvite('call-B');
+    built[0].incomingCb!(second);
+
+    expect(second.reject).toHaveBeenCalledWith('busy');
+    expect(second.accept).not.toHaveBeenCalled();
+    // First is unaffected — still the active ring.
+    expect(env.incomingCallController.getCall()?.callId).toBe('call-A');
+  });
+
+  it('busy-rejects a second INVITE while the previous inbound is accepted', async () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const first = inboundInvite('call-A');
+    built[0].incomingCb!(first);
+    await env.incomingCallController.accept();
+    expect(env.incomingCallController.getCall()?.state).toBe('accepted');
+
+    const second = inboundInvite('call-B');
+    built[0].incomingCb!(second);
+
+    expect(second.reject).toHaveBeenCalledWith('busy');
+  });
+
+  it('allows a new INVITE after the previous ring was declined', () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    built[0].incomingCb!(inboundInvite('call-A'));
+    env.incomingCallController.decline();
+    expect(env.incomingCallController.getCall()?.state).toBe('declined');
+
+    const second = inboundInvite('call-B');
+    built[0].incomingCb!(second);
+
+    expect(second.reject).not.toHaveBeenCalled();
+    expect(env.incomingCallController.getCall()?.callId).toBe('call-B');
+    expect(env.incomingCallController.getCall()?.state).toBe('ringing');
+  });
+
+  it('busy-rejects an INVITE while an outbound call is in progress', () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    // Stage an outbound call so SipCallController.getCall().state !== 'idle'.
+    const outbound: SipCallHandle = {
+      onStateChange: () => {},
+      hangup: async () => {},
+      setMute: () => {},
+    };
+    (built[0].placeCall as jest.Mock).mockImplementation(() => outbound);
+    env.callController.placeCall('B-204');
+    expect(env.callController.getCall().state).not.toBe('idle');
+
+    const inv = inboundInvite('call-A');
+    built[0].incomingCb!(inv);
+
+    expect(inv.reject).toHaveBeenCalledWith('busy');
+    expect(env.incomingCallController.getCall()).toBeNull();
+  });
 });

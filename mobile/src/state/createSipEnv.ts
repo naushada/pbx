@@ -91,7 +91,20 @@ export function createSipEnv(opts: CreateSipEnvOpts): SipEnv {
       opts.session.subscriber.role === 'guard',
   });
 
-  bridge = new SipInboundBridge(ua, incomingCallController);
+  // Concurrent-call busy gate — mirrors the web softphone's
+  // `if (this.call || this.incoming) { void h.reject('busy'); }` in
+  // SipService.onIncoming. Bridges the OUTBOUND-call view
+  // (SipCallController) and the INBOUND-ring view
+  // (IncomingCallController) so neither side can be doubly engaged.
+  bridge = new SipInboundBridge(ua, incomingCallController, () => {
+    const outbound = callController.getCall();
+    const inbound = incomingCallController.getCall();
+    return (
+      outbound.state !== 'idle' ||
+      (inbound !== null &&
+        (inbound.state === 'ringing' || inbound.state === 'accepted'))
+    );
+  });
 
   return {
     callController,
