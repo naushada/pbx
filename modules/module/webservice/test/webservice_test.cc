@@ -323,9 +323,13 @@ TEST(AccountLoginTest, ValidCredentials_Returns200WithAccountData)
     MicroService e;
     MockMongodbClient db;
     std::string hash = MongodbClient::hash_password("secret");
+    // `handle_account_login_POST` reads from `loginCredentials.passwordHash`
+    // (webservice.cpp:1003) — the migration path's target schema, also
+    // what `migrate_account_passwords` writes. Don't seed the hash at the
+    // top-level; the handler won't find it and will return 401.
     db.getDocumentResult =
-        "{\"loginCredentials\":{\"accountCode\":\"admin\"},"
-        "\"passwordHash\":\"" + hash + "\","
+        "{\"loginCredentials\":{\"accountCode\":\"admin\","
+        "\"passwordHash\":\"" + hash + "\"},"
         "\"personalInfo\":{\"role\":\"Admin\",\"name\":\"Test\"}}";
 
     std::string req = make_post("/api/v1/account/login",
@@ -341,9 +345,13 @@ TEST(AccountLoginTest, WrongPassword_Returns401)
 {
     MicroService e;
     MockMongodbClient db;
+    // Hash nested under loginCredentials so the handler actually finds
+    // it + calls `verify_password` — without that, this test would pass
+    // for the wrong reason (handler not finding a hash → 401, instead
+    // of `verify_password` rejecting the wrong password → 401).
     db.getDocumentResult =
-        "{\"loginCredentials\":{\"accountCode\":\"admin\"},"
-        "\"passwordHash\":\"" + MongodbClient::hash_password("secret") + "\"}";
+        "{\"loginCredentials\":{\"accountCode\":\"admin\","
+        "\"passwordHash\":\"" + MongodbClient::hash_password("secret") + "\"}}";
 
     std::string req = make_post("/api/v1/account/login",
                                 "{\"userId\":\"admin\",\"password\":\"wrongpassword\"}");
@@ -422,10 +430,14 @@ TEST(AccountLoginTest, ResponseBody_ExcludesSensitiveFields)
     MicroService e;
     MockMongodbClient db;
     std::string hash = MongodbClient::hash_password("secret");
+    // Hash nested under loginCredentials — see ValidCredentials_*
+    // comment. Also keeps the legacy `accountPassword` field so this
+    // test exercises the strip path for BOTH sensitive fields (handler
+    // erases them from the response body at webservice.cpp:1019-1020).
     db.getDocumentResult =
         "{\"loginCredentials\":{\"accountCode\":\"admin\","
-        "\"accountPassword\":\"secret\"},"
-        "\"passwordHash\":\"" + hash + "\","
+        "\"accountPassword\":\"secret\","
+        "\"passwordHash\":\"" + hash + "\"},"
         "\"personalInfo\":{\"role\":\"Admin\",\"name\":\"Test\"}}";
 
     std::string req = make_post("/api/v1/account/login",
