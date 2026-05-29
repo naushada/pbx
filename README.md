@@ -47,7 +47,7 @@ See:
 | UI  | Angular 14 + Clarity softphone — 7 slices: scaffold → login + `AuthGuard` → `SipService` (sip.js seam) → directory + outbound call → inbound + ringtone + Web Push + Service Worker → conference + history + settings + `DeviceService` → `Dockerfile.ui` (nginx) → Playwright E2E | ✅ Complete (see [`ui/README.md`](./ui/README.md)) |
 | Mob | React Native mobile softphone (`mobile/`) — TDD layers M0 (scaffold) → M1 (auth) → M2 (outbound + sip.js `UserAgent` engine sharing the cloud softphone's wrapper via `shared/sip-ua/`) → M3.a (push payload + device registration) → M3.b (incoming-call glue + `SipInboundBridge` + `IncomingCallOverlay` foreground ring UI) → App-shell auth-aware sip env wiring → sign-out control. 21 Jest files / 150 tests green via `docker/Dockerfile.mobile-test`. **End-to-end runnable** for outbound + foreground inbound calls from an iOS Simulator build (one-time `react-native init` for the `ios/` shell is the only remaining dev-machine step). Remaining: real CallKit / PushKit / ConnectionService / FCM for wake-up from background, M4 Detox, M5 device matrix. | ✅ M0–M3.b + sip engine + App shell + sign-out landed (see [`mobile/README.md`](./mobile/README.md)) |
 | CI/CD | `publish-images.yml` workflow auto-deploys `pbx-cloud` to Heroku on every same-path push to main: builds amd64 image, pushes to `registry.heroku.com/pabx/web`, calls `heroku container:release`. Replaces the manual `./deploy-heroku.sh deploy` round-trip; the script stays as an escape hatch for emergency push from a laptop. | ✅ PR #95 |
-| CI/CD | `concurrency.cancel-in-progress: true` on the workflow — a newer push auto-cancels older in-flight runs for the same ref. Saves CI minutes; bundles back-to-back merges into one CI cycle (e.g. PR #100 + PR #101 → single run, single deploy). Plus an `offtarget` GTest job as a quality gate before any image publish or Heroku release — catches today's class of bugs (missing-header, missing opcode whitelist, stale provisioner gate, missing bridge re-arm) at CI time instead of at deploy. Plus `LM_INFO`/`LM_WARNING` re-added to the cloud's `priority_mask` so the observability lines from PR #80 + PR #88 actually emit. | ✅ PR #96 |
+| CI/CD | `concurrency.cancel-in-progress: true` on the workflow — a newer push auto-cancels older in-flight runs for the same ref. Saves CI minutes; bundles back-to-back merges into one CI cycle (e.g. PR #100 + PR #101 → single run, single deploy). Plus three test gates that block image publish + Heroku release: `offtarget` GTest (PR #96), `mobile-test` Jest + `tsc --noEmit` (PR #155 + #156), and `ui-test` Angular `ng build` (PR #157). All three also run on every `pull_request` against `main` (PR #155) so failures show up at PR-review time, not after main has advanced. Plus `LM_INFO`/`LM_WARNING` re-added to the cloud's `priority_mask` so the observability lines from PR #80 + PR #88 actually emit. | ✅ PR #96 (+ #155/#156/#157 for PR gates) |
 | Op   | `install.sh` Mongo seeding — after the compose stack is up, seeds the on-prem Mongo with the society's `societies` row + first ADMIN subscriber (PBKDF2-SHA256 hashed locally, never sent over the wire). Without this the cloud's login returns 401 "Invalid credentials" for everything in strict-auth mode. | ✅ PR #96 |
 | Op   | Windows install path documented + `onprem-pbx-installer` container (DooD pattern) — one `docker run` from PowerShell brings the stack up; talks to the host's Docker daemon via the mounted socket. Bundles `scripts/installer-entrypoint.sh` + all per-society compose + cert tooling. Linux operators can also use it as an alternative to `install.sh`. | ✅ PR #97 (docs + container) |
 | Op   | Docker Hub repo descriptions auto-synced from [`docker/dockerhub-descriptions/*.md`](./docker/dockerhub-descriptions/) on every image publish — Hub "Overview" tab for each image always reflects current behaviour. Marks `pbx-cpp-builder` as INTERNAL so operators don't accidentally pull it. | ✅ PR #99 |
@@ -468,27 +468,46 @@ six accept env-var overrides for unattended re-runs — see
 ## Container image releases (CI)
 
 [`.github/workflows/publish-images.yml`](./.github/workflows/publish-images.yml)
-is the single workflow that, on every `main`-branch push touching
-image-relevant files, builds + tests + publishes container images +
-deploys `pbx-cloud` to Heroku. End-to-end: ~15 min on a warm cache,
-~30-90 min cold.
+is the single workflow that runs all test gates + publishes images +
+deploys `pbx-cloud` to Heroku.
+
+**Triggers:**
+
+- `pull_request` against `main` (PR #155) — runs the three test gates
+  (`test` + `mobile-test` + `ui-test`) as merge gates. The publish +
+  deploy jobs are gated off with `if: github.event_name == 'push' ||
+  workflow_dispatch`.
+- `push` to `main` (path-filtered to image-relevant files) — runs the
+  test gates AND publishes images + deploys to Heroku. End-to-end:
+  ~15 min on a warm cache, ~30-90 min cold.
+- `workflow_dispatch` — manual run (same shape as push).
 
 ### What the workflow does (job graph)
 
 ```
-bootstrap ──┬─► test ──┬─► services (agent + wsdbagent matrix)  →  Docker Hub
-            │          ├─► publish-cloud  →  Heroku registry + container:release
-            │          └─► (any new image jobs gated here)
-            └─► installer  →  Docker Hub
+                 ┌─► test         ────┐   (offtarget GTest — gates publish on PR + push)
+bootstrap ───────┼─► (bootstrap)      │
+[push-only]      └─► services         ├─► (publish + deploy — push-only)
+                     publish-cloud    │
+                     installer        ┘
+ui-test          ──── (Angular ng build — runs on PR + push, gates nothing else)
+mobile-test      ──── (Jest + tsc --noEmit — runs on PR + push, gates nothing else)
 ```
+
+`test` `needs: bootstrap` but uses `if: always() && (success ||
+skipped)` so it still runs on PR (where bootstrap is gated off).
+`mobile-test` and `ui-test` have no bootstrap dependency (no native
+C++ build).
 
 | Job | What | Arch | Cache | Notes |
 |---|---|---|---|---|
-| `bootstrap` | Build `pbx-cpp-builder:bootstrap` (ACE/TAO 7.0.0 + mongo-cxx-driver + googletest on ubuntu:20.04) | amd64 + arm64 | registry buildcache (`mode=max`) | Slow cold (~30 min/arch); cached re-runs in seconds. Every other job `FROM`s this via `BUILDER_IMAGE` ARG. |
-| `test` | Build `docker/Dockerfile.test` against the just-published bootstrap, run `offtarget` GTest suite | amd64 only | none (one-shot) | **Quality gate: a failed test or compile error stops services + publish-cloud.** Catches the class of bug that used to surface only at Heroku deploy (PR #85 missing-header, PR #99 missing opcode whitelist, PR #100 stale provisioner gate, PR #101 missing bridge re-arm). Added in PR #96. |
-| `services` | Build + push `onprem-pbx-agent` + `onprem-pbx-wsdbagent` (matrix) | amd64 + arm64 (QEMU) | registry buildcache per image | Pulled by `install.sh` via `docker-compose pull`. |
-| `publish-cloud` | Build `pbx-cloud`, push to `registry.heroku.com/pabx/web`, `heroku container:release web --app pabx` | amd64 only | (Heroku Common Runtime is amd64) | Replaces the manual `./deploy-heroku.sh deploy` round-trip (PR #95). The script stays as an escape hatch for emergency push from a laptop. Heroku registry rejects OCI manifests + attestations, so `provenance: false` + `oci-mediatypes=false` are set. |
-| `installer` | Build + push `onprem-pbx-installer` (DooD pattern — runs the install scripts against the host's Docker daemon) | amd64 + arm64 (QEMU) | registry buildcache | Cross-platform install: one `docker run` from macOS/Windows/Linux brings the stack up. Bundles `scripts/installer-entrypoint.sh` + the per-society compose + cert tooling. Added in PR #97. |
+| `bootstrap` | Build `pbx-cpp-builder:bootstrap` (ACE/TAO 7.0.0 + mongo-cxx-driver + googletest on ubuntu:20.04) | amd64 + arm64 | registry buildcache (`mode=max`) | Push-only (PR #155). Slow cold (~30 min/arch); cached re-runs in seconds. `test` and downstream image jobs `FROM` this via `BUILDER_IMAGE` ARG. PRs that touch `Dockerfile.bootstrap` itself are rare; the contributor lands it on main first. |
+| `test` | Build `docker/Dockerfile.test` against the (last-published or just-built) bootstrap, run `offtarget` GTest suite (600/600) | amd64 only | none (one-shot) | **Merge gate on PR + publish gate on push.** Catches the class of bug that used to surface only at Heroku deploy (PR #85 missing-header, PR #99 missing opcode whitelist, PR #100 stale provisioner gate, PR #101 missing bridge re-arm). Added in PR #96; gained PR trigger in PR #155. |
+| `mobile-test` | Build `docker/Dockerfile.mobile-test`, run `npm run typecheck && npm test --ci` (150/150 jest + 0 typecheck errors) | amd64 only | none (one-shot) | **Merge gate on PR + sanity check on push.** Added in PR #155; gained `tsc --noEmit` in PR #156. |
+| `ui-test` | `cd ui && npm ci --legacy-peer-deps && npx ng build --configuration development` | amd64 only | `actions/setup-node`'s npm cache | **Merge gate on PR + sanity check on push.** Angular's AOT template compiler runs on top of tsc; catches template binding errors that plain `tsc` would miss. Same call the production Heroku deploy uses. Added in PR #157. |
+| `services` | Build + push `onprem-pbx-agent` + `onprem-pbx-wsdbagent` (matrix) | amd64 + arm64 (QEMU) | registry buildcache per image | Push-only (PR #155). Pulled by `install.sh` via `docker-compose pull`. |
+| `publish-cloud` | Build `pbx-cloud`, push to `registry.heroku.com/pabx/web`, `heroku container:release web --app pabx` | amd64 only | (Heroku Common Runtime is amd64) | Push-only (PR #155). Replaces the manual `./deploy-heroku.sh deploy` round-trip (PR #95). The script stays as an escape hatch for emergency push from a laptop. Heroku registry rejects OCI manifests + attestations, so `provenance: false` + `oci-mediatypes=false` are set. |
+| `installer` | Build + push `onprem-pbx-installer` (DooD pattern — runs the install scripts against the host's Docker daemon) | amd64 + arm64 (QEMU) | registry buildcache | Push-only (PR #155). Cross-platform install: one `docker run` from macOS/Windows/Linux brings the stack up. Bundles `scripts/installer-entrypoint.sh` + the per-society compose + cert tooling. Added in PR #97. |
 
 Each image-publishing job also runs `peter-evans/dockerhub-description@v4`
 to keep the Docker Hub "Overview" tab in sync with
