@@ -72,6 +72,34 @@ on:
       - 'pbx-agent/**'
       - 'CMakeLists.txt'
       - '.github/workflows/publish-images.yml'
+  # Run the test gates (offtarget + mobile-test) on every PR against
+  # main so failing tests block the merge button instead of being
+  # caught only after main has already advanced. Publish + deploy
+  # jobs (bootstrap push, services, publish-cloud, installer) all
+  # remain push-only — gated by `if: github.event_name == 'push'`.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile.bootstrap'
+      - 'docker/Dockerfile.test'
+      - 'docker/Dockerfile.mobile-test'
+      - 'docker/Dockerfile.cloud'
+      - 'docker/Dockerfile.agent'
+      - 'docker/Dockerfile.wsdbagent'
+      - 'docker/Dockerfile.installer'
+      - 'ui/**'
+      - 'mobile/**'
+      - 'shared/**'
+      - 'scripts/**'
+      - 'modules/**'
+      - 'pbx-agent/**'
+      - 'test/**'
+      - 'certs/innertls/**'
+      - 'install.sh'
+      - 'CMakeLists.txt'
+      - 'docker-compose.test.yml'
+      - 'docker-compose.mobile-test.yml'
+      - '.github/workflows/publish-images.yml'
   workflow_dispatch:
 
 # Latest-push-wins: a newer push to main auto-cancels any earlier
@@ -93,6 +121,11 @@ jobs:
 
   bootstrap:
     name: Publish pbx-cpp-builder:bootstrap (multi-arch)
+    # Push-only — the bootstrap image gets re-published on main. PR
+    # runs of `test` pull the last-published `:bootstrap` from the
+    # registry. PRs that touch `docker/Dockerfile.bootstrap` are a rare
+    # case; the contributor should land it on main first.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -148,6 +181,11 @@ jobs:
     # in Lima locally on whichever arch the developer has.
     name: Run offtarget GTest suite
     needs: bootstrap
+    # Run on PR (where bootstrap is gated off → skipped) AND on push
+    # (where bootstrap rebuilt successfully). Skipped dependencies
+    # would default to skipping the dependent job, so the `always()`
+    # is required to override that.
+    if: ${{ always() && (needs.bootstrap.result == 'success' || needs.bootstrap.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -176,12 +214,43 @@ jobs:
           tags: onprem-pbx-test:ci
           # No registry cache — the test image is one-shot, no consumers.
 
-      - name: Run offtarget tests (3 baseline failures excluded by Dockerfile CMD)
+      - name: Run offtarget tests (no failures expected — full suite)
         run: docker run --rm onprem-pbx-test:ci
+
+  mobile-test:
+    # Mobile jest suite — 150 tests across 21 files (M0–M3.b + sip
+    # engine + auth shell + sign-out). Pure Node — no native modules
+    # actually built (mocked in jest.setup.ts), so no bootstrap
+    # dependency. Mirrors `offtarget`'s role for the C++ side. Runs on
+    # every PR; never publishes anything.
+    name: Run mobile Jest suite
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build mobile-test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.mobile-test
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: onprem-pbx-mobile-test:ci
+
+      - name: Run mobile jest suite
+        run: docker run --rm onprem-pbx-mobile-test:ci
 
   services:
     name: Publish onprem-pbx-${{ matrix.service }} (multi-arch)
     needs: [bootstrap, test]
+    # Push-only — PRs run the test gates but never publish.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -235,6 +304,8 @@ jobs:
   publish-cloud:
     name: Deploy pbx-cloud to Heroku (amd64-only)
     needs: [bootstrap, test]
+    # Push-only — PRs run the test gates but never deploy to Heroku.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -301,6 +372,8 @@ jobs:
     # Independent of bootstrap (no FROM dependency on it), so no
     # `needs:` here — runs in parallel with bootstrap.
     name: Publish onprem-pbx-installer (multi-arch)
+    # Push-only — PRs run the test gates but never publish.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
