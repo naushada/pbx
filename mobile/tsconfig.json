@@ -2,7 +2,12 @@
   "extends": "@react-native/typescript-config/tsconfig.json",
   "compilerOptions": {
     "strict": true,
-    "types": ["jest", "react-native"]
+    "types": ["jest", "react-native"],
+    "baseUrl": ".",
+    "paths": {
+      "sip.js": ["node_modules/sip.js"],
+      "sip.js/*": ["node_modules/sip.js/*"]
+    }
   },
   "include": ["src", "App.tsx", "index.js", "jest.setup.ts", "../shared/sip-ua/**/*.ts"],
   "exclude": ["node_modules", "ios", "android", "coverage"]

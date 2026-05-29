@@ -25,6 +25,13 @@ import {
     IncomingCallHandle, IncomingCallInfo,
 } from './sip-ua';
 
+// Minimal structural view of an `RTCPeerConnection` — only the parts
+// `SipJsCallHandle.setMute` actually touches. Avoids a hard dependency
+// on the DOM `lib` (which mobile's tsconfig omits).
+interface RTCPeerConnectionLike {
+    getSenders(): ReadonlyArray<{ track: { kind: string; enabled: boolean } | null }>;
+}
+
 export class SipJsUaFactory implements SipUaFactory {
 
     create(opts: SipUaOpts): SipUaHandle {
@@ -149,7 +156,7 @@ class SipJsUaHandle implements SipUaHandle {
         // Fire INVITE asynchronously — caller already has the handle so
         // any state callback registered before this microtask resolves
         // sees the very first 'calling' emission.
-        inviter.invite().catch(err => handle.emitFailure(errorReason(err)));
+        inviter.invite().catch((err: unknown) => handle.emitFailure(errorReason(err)));
         return handle;
     }
 
@@ -231,9 +238,13 @@ export class SipJsCallHandle implements SipCallHandle {
         for (const cb of this.listeners) cb(change);
     }
 
-    private peerConnection(): RTCPeerConnection | undefined {
+    // Structural shape covers the slice of RTCPeerConnection setMute
+    // needs — both the browser DOM `RTCPeerConnection` and
+    // react-native-webrtc's class satisfy it without a hard `dom` lib
+    // dependency in mobile's tsconfig.
+    private peerConnection(): RTCPeerConnectionLike | undefined {
         const sdh = this.session.sessionDescriptionHandler as unknown as
-            { peerConnection?: RTCPeerConnection } | undefined;
+            { peerConnection?: RTCPeerConnectionLike } | undefined;
         return sdh?.peerConnection;
     }
 

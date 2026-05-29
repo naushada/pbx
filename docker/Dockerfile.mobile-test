@@ -45,5 +45,9 @@ COPY mobile/ ./
 # in the source tree (mirrors metro.config.js's watchFolders entry).
 COPY shared/ /shared/
 
-# --ci: fail (don't write) on an obsolete snapshot; deterministic runs.
-CMD ["npm", "test", "--", "--ci", "--colors"]
+# Run `tsc --noEmit` (typecheck) before jest. Jest's babel-jest skips
+# strict type-checking, so a TS error can land + run green; running
+# tsc here makes the CI gate catch it. `set -e` makes the CMD fail
+# fast on the first error.
+# --ci: jest fails (doesn't write) on an obsolete snapshot — deterministic.
+CMD ["sh", "-c", "set -e; npm run typecheck && npm test -- --ci --colors"]
