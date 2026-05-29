@@ -83,6 +83,12 @@ export function createSipEnv(opts: CreateSipEnvOpts): SipEnv {
     ensureConnected: () => Promise.resolve(),
     connectMedia: () => Promise.resolve(),
     logMissedCall: opts.logMissedCall ?? NOOP_MISSED_CALL,
+    // Guard kiosk auto-answer (DESIGN.md §9). Mirrors the web
+    // softphone's `SipService.onIncoming` check. AND-ed with the role
+    // here so `autoAnswer` on a resident is silently ignored.
+    shouldAutoAnswer: () =>
+      opts.session.subscriber.autoAnswer === true &&
+      opts.session.subscriber.role === 'guard',
   });
 
   bridge = new SipInboundBridge(ua, incomingCallController);

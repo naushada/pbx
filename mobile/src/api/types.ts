@@ -7,12 +7,23 @@
  * string or HTTP status.
  */
 
+export type SubscriberRole = 'resident' | 'guard' | 'admin';
+
 export interface Subscriber {
   societyId: string;
   flatNumber: string;
   sipUsername: string;
   displayName: string;
-  role: string;
+  role: SubscriberRole;
+  /**
+   * Kiosk auto-answer flag (DESIGN.md §9). When `true` AND `role` is
+   * `'guard'`, an incoming call is auto-accepted by the controller
+   * with no ringing UI — the guard kiosk picks up immediately so the
+   * visitor at the gate sees them on camera without anyone tapping
+   * Accept. The role check is defence-in-depth: `autoAnswer` on a
+   * resident is silently ignored, never honoured.
+   */
+  autoAnswer?: boolean;
 }
 
 export interface Session {

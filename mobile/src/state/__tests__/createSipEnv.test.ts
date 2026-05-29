@@ -47,7 +47,7 @@ function fakeFactory(): {factory: SipUaFactory; built: FakeSipUa[]} {
   return {factory, built};
 }
 
-function session(): Session {
+function session(overrides: Partial<Session['subscriber']> = {}): Session {
   return {
     token: 'tok-7',
     subscriber: {
@@ -56,6 +56,7 @@ function session(): Session {
       sipUsername: 'u_abc',
       displayName: 'Asha Rao',
       role: 'resident',
+      ...overrides,
     },
   };
 }
@@ -163,5 +164,88 @@ describe('createSipEnv', () => {
     });
 
     await expect(env.cleanup()).resolves.toBeUndefined();
+  });
+
+  // ── Guard kiosk auto-answer (DESIGN.md §9) ─────────────────────────
+  //
+  // The controller takes a `shouldAutoAnswer` predicate; createSipEnv
+  // wires it to AND together the session's `autoAnswer` flag with the
+  // role being `'guard'`. Mirrors `SipService.onIncoming` in the web
+  // softphone — autoAnswer on a resident is silently ignored.
+
+  it('auto-answers an incoming call for a guard with autoAnswer=true', async () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session({role: 'guard', autoAnswer: true}),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const acceptedHandle: SipCallHandle = {
+      onStateChange: () => {},
+      hangup: async () => {},
+      setMute: () => {},
+    };
+    const inboundHandle: IncomingCallHandle = {
+      info: {fromUri: 'sip:B-204@x', fromFlat: 'B-204', callId: 'call-G1'},
+      accept: jest.fn(async () => acceptedHandle),
+      reject: jest.fn(async () => {}),
+    };
+    built[0].incomingCb!(inboundHandle);
+    // Settle the controller's auto-`accept()` Promise chain.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(inboundHandle.accept).toHaveBeenCalledTimes(1);
+    expect(env.incomingCallController.getCall()?.state).not.toBe('ringing');
+  });
+
+  it('rings normally for a resident even if their autoAnswer is somehow true', () => {
+    // Defence-in-depth: createSipEnv AND-s the role check. A back-end
+    // bug or stale token shouldn't let a resident's flag silently
+    // auto-accept calls on their phone.
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session({role: 'resident', autoAnswer: true}),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const inboundHandle: IncomingCallHandle = {
+      info: {fromUri: 'sip:B-204@x', fromFlat: 'B-204', callId: 'call-R1'},
+      accept: jest.fn(async () => ({
+        onStateChange: () => {},
+        hangup: async () => {},
+        setMute: () => {},
+      })),
+      reject: jest.fn(async () => {}),
+    };
+    built[0].incomingCb!(inboundHandle);
+
+    expect(inboundHandle.accept).not.toHaveBeenCalled();
+    expect(env.incomingCallController.getCall()?.state).toBe('ringing');
+  });
+
+  it('rings normally for a guard whose autoAnswer is undefined', () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session({role: 'guard'}), // autoAnswer omitted
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const inboundHandle: IncomingCallHandle = {
+      info: {fromUri: 'sip:B-204@x', fromFlat: 'B-204', callId: 'call-G2'},
+      accept: jest.fn(async () => ({
+        onStateChange: () => {},
+        hangup: async () => {},
+        setMute: () => {},
+      })),
+      reject: jest.fn(async () => {}),
+    };
+    built[0].incomingCb!(inboundHandle);
+
+    expect(inboundHandle.accept).not.toHaveBeenCalled();
+    expect(env.incomingCallController.getCall()?.state).toBe('ringing');
   });
 });

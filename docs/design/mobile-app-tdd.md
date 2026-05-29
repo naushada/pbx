@@ -26,6 +26,7 @@ mobile-test CI gate landed.
 | **App shell** | ✅ landed PR #144 — `AuthContext` + `createSipEnv` factory + `IncomingCallOverlay` foreground ring Modal; `App.tsx` builds the engine on login, tears it down on logout |
 | **Sign-out UI** | ✅ landed PR #147 — `DialScreen` sign-out button: `sessionStore.clear()` → `setSession(null)` (App shell tears the UA down) → `navigation.reset(Login)` |
 | **Incoming-call vibration** | ✅ landed PR #162 — `IncomingCallAlerter` pulses the device while `IncomingCallController` is in `'ringing'` state (1 s on / 2 s off pattern via RN's built-in `Vibration` API). Closes the parity gap vs the web softphone's `RingtoneService` for the foreground case; audio ring will land alongside real CallKit/PushKit when that slice ships. |
+| **Guard kiosk auto-answer** | ✅ landed PR #163 — `Subscriber.autoAnswer?: boolean` + `SubscriberRole` union (`'resident' \| 'guard' \| 'admin'`); `IncomingCallController` accepts a `shouldAutoAnswer` predicate; `createSipEnv` AND-s `sub.autoAnswer && sub.role === 'guard'` (defence-in-depth — `autoAnswer` on a resident is silently ignored). Auto-answered calls skip CallKit display + ring timer + (transitively) the Vibration alerter, matching `SipService.onIncoming` in the web softphone (DESIGN.md §9). |
 | **Mobile typecheck in CI** | ✅ landed PR #156 — `Dockerfile.mobile-test`'s CMD runs `npm run typecheck && npm test --ci`; closed 7 latent TS errors that babel-jest had been silently transforming around. PR #155 + #156 wire `mobile-test` into `.github/workflows/publish-images.yml` as a PR merge gate. |
 | **Lockfile + npm ci** | ✅ landed PR #154 — `mobile/package-lock.json` committed, Dockerfile.mobile-test switched from `npm install` to `npm ci` for deterministic builds. |
 | M3 native | not started — real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states (the M3.b `CallKitBridge` seam already accepts the right shape; the in-app `IncomingCallOverlay` Modal handles the foreground case without it) |
@@ -34,7 +35,7 @@ mobile-test CI gate landed.
 
 Containerised Jest runner shipped via PR #137
 ([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
-— the entire suite (**21 files / 154 tests** + **0 typecheck errors**)
+— the entire suite (**21 files / 159 tests** + **0 typecheck errors**)
 is reproducible without an RN install on the host. See
 [`mobile/README.md`](../../mobile/README.md) for invocation and the
 how-to-call walkthrough.

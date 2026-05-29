@@ -53,6 +53,17 @@ export interface IncomingCallDeps {
   /** Injectable timer — defaults to setTimeout/clearTimeout. */
   setTimer?: (fn: () => void, ms: number) => TimerHandle;
   clearTimer?: (handle: TimerHandle) => void;
+  /**
+   * Guard kiosk auto-answer predicate (DESIGN.md §9). When provided
+   * AND returns true, `reportPush` skips the CallKit ring UI + the
+   * missed-call timer and goes straight through `accept()` — same
+   * shape as the web softphone's `SipService.onIncoming` auto-accept
+   * (`sub.autoAnswer && sub.role === 'guard'`). Evaluated per-call so
+   * a session flip between guard / resident takes effect on the next
+   * ring without rebuilding the controller. Defence-in-depth: callers
+   * are responsible for AND-ing in the role check, never just the flag.
+   */
+  shouldAutoAnswer?: () => boolean;
 }
 
 /** SIP 603 Decline — the resident explicitly declined the call. */
@@ -115,6 +126,16 @@ export class IncomingCallController {
     // No new ring — a malformed-through-reducer or a duplicate push
     // while one is already in flight. Do not re-display or re-arm.
     if (ringing === null || ringing === before) {
+      return ringing;
+    }
+    // Guard kiosk auto-answer (DESIGN.md §9): skip the CallKit ring UI
+    // + the missed-call timer and go straight through accept(). The
+    // accept() dispatch transitions state synchronously before its
+    // first await, so React batches both updates and listeners never
+    // see a "ringing" frame — the overlay's Vibration alerter never
+    // arms either.
+    if (this.deps.shouldAutoAnswer?.()) {
+      void this.accept();
       return ringing;
     }
     this.deps.callKit.displayIncomingCall(

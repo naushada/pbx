@@ -511,7 +511,7 @@ For 1:1 directmedia, Asterisk's DTLS cert isn't actually used on the media path 
 
 - Modelled as a regular subscriber with `role = "guard"` and `flatId = null`. There is no special flat document — routing is role-based (`subscribers(societyId, role)` index).
 - Well-known extension: digit `0`. The Asterisk dialplan resolves `0` → "fork-ring every active subscriber with `role=guard` in this society". Typically 1–2 kiosk endpoints.
-- Per-account `autoAnswer: true` can be set on guard subscribers so the kiosk picks up without a click. Default off.
+- Per-account `autoAnswer: true` can be set on guard subscribers so the kiosk picks up without a click. Default off. Honoured by **both softphones**: web (`ui/src/common/sip.service.ts::SipService.onIncoming`) and mobile (`mobile/src/state/createSipEnv.ts` wires the controller's `shouldAutoAnswer` predicate to `sub.autoAnswer && sub.role === 'guard'`). The role check is defence-in-depth on both sides — `autoAnswer` on a resident is silently ignored.
 - Guards can dial any flat using the same search-by-flat UI as residents, scoped to their `societyId`.
 - Every guard-initiated call is written to the `audit` collection in addition to the normal CDR row.
 
