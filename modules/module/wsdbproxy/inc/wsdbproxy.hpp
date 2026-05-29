@@ -93,11 +93,19 @@ public:
    * @brief Hand the accepted WebSocket socket to the server.
    *
    * Called by WebConnection after a successful `/ws/db` upgrade handshake.
-   * If an agent is already connected the socket is rejected with 409 and
-   * closed before this method returns.
+   * If an agent is already connected the existing one is treated as
+   * STALE — its socket is `::shutdown(SHUT_RDWR)`d to unwedge any
+   * blocked recv — and the new agent is told to back off via
+   *   HTTP/1.1 503 Service Unavailable
+   *   Retry-After: 2
+   * before this method returns false. The agent's reconnect loop then
+   * retries in 2 s. (Earlier revisions sent 409 Conflict; the parallel
+   * TLS-accept loop in svc() still uses 409 for its early reject, but
+   * on_agent_connected itself moved to the eviction-and-retry shape.)
    *
    * @param handle  Raw socket descriptor (ACE_HANDLE) of the agent connection.
-   * @return true if accepted; false if rejected (409 sent, socket closed).
+   * @return true if accepted; false if the stale connection was evicted
+   *         and the new agent was told to retry (503 sent, socket closed).
    */
   bool on_agent_connected(ACE_HANDLE handle);
 

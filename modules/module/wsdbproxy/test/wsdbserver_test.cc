@@ -195,6 +195,17 @@ TEST(WsDbServer, Disconnect_WakesAllPendingDispatchers)
 
 TEST(WsDbServer, SecondAgentRejected_When_FirstAlive)
 {
+    // Production behaviour (`WsDbServer::on_agent_connected`):
+    // when a second agent arrives while one is already connected,
+    // the server treats the existing one as STALE — calls
+    // `::shutdown(SHUT_RDWR)` on its socket to unwedge any blocked
+    // recv — and tells the second agent to back off and retry via
+    //   HTTP/1.1 503 Service Unavailable
+    //   Retry-After: 2
+    // (NOT 409 Conflict — that was the older behaviour, still used
+    // by the parallel TLS-accept loop's early-reject in svc(), but
+    // not by on_agent_connected itself). This test asserts both
+    // halves of the new contract.
     int sv1[2], sv2[2];
     ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv1), 0);
     ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv2), 0);
@@ -203,12 +214,24 @@ TEST(WsDbServer, SecondAgentRejected_When_FirstAlive)
     ASSERT_EQ(server.open(), 0);
 
     EXPECT_TRUE(server.on_agent_connected(sv1[0]));
-    EXPECT_FALSE(server.on_agent_connected(sv2[0]));  // rejected
+    EXPECT_FALSE(server.on_agent_connected(sv2[0]));
 
-    // sv2[1] should have received 409
+    // (a) Second agent gets the retry-after instruction.
     char buf[256] = {};
-    ::recv(sv2[1], buf, sizeof(buf) - 1, MSG_DONTWAIT);
-    EXPECT_NE(std::string(buf).find("409"), std::string::npos);
+    const ssize_t n = ::recv(sv2[1], buf, sizeof(buf) - 1, MSG_DONTWAIT);
+    EXPECT_GT(n, 0) << "second agent socket should carry the 503 response";
+    const std::string body(buf, n > 0 ? static_cast<std::size_t>(n) : 0);
+    EXPECT_NE(body.find("503"), std::string::npos)
+        << "expected 503 Service Unavailable, got: " << body;
+    EXPECT_NE(body.find("Retry-After: 2"), std::string::npos)
+        << "expected Retry-After: 2 header, got: " << body;
+
+    // (b) First (stale) agent's socket has been shut down — its peer
+    // sees EOF on read instead of hanging.
+    char eof_buf[1] = {};
+    const ssize_t eof_n = ::recv(sv1[1], eof_buf, 1, MSG_DONTWAIT);
+    EXPECT_EQ(eof_n, 0)
+        << "first agent's socket should be SHUT_RDWR'd by the eviction";
 
     server.close(0);
     ::close(sv1[1]);
