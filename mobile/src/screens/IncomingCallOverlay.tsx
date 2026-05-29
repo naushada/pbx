@@ -9,22 +9,43 @@
  * The real CallKit / PushKit / ConnectionService UI lands in a
  * follow-up; until then this overlay is the in-app fallback that
  * makes foreground-to-foreground inbound calls actually usable.
+ *
+ * Pulses the device via `IncomingCallAlerter` while ringing — the web
+ * softphone has a Web-Audio ringtone (RingtoneService) but RN doesn't
+ * ship Web Audio, so the in-app fallback uses Vibration. Audio ring
+ * will land alongside real CallKit.
  */
 import React, {useEffect, useState} from 'react';
 import {Modal, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 import {IncomingCallController} from '../call/incomingCallController';
+import {IncomingCallAlerter, vibrationAlerter} from '../call/incomingCallAlerter';
 import {IncomingCall} from '../sip/incomingCall';
 
 interface Props {
   controller: IncomingCallController;
+  /** Test seam — production wires the default Vibration-backed alerter. */
+  alerter?: IncomingCallAlerter;
 }
 
-export function IncomingCallOverlay({controller}: Props): React.JSX.Element {
+export function IncomingCallOverlay({
+  controller,
+  alerter = vibrationAlerter,
+}: Props): React.JSX.Element {
   const [call, setCall] = useState<IncomingCall | null>(controller.getCall());
 
   useEffect(() => controller.subscribe(setCall), [controller]);
 
   const ringing = call !== null && call.state === 'ringing';
+
+  // Pulse while ringing. Stops on every transition out of 'ringing'
+  // (accepted / declined / missed / app shutdown) — the cleanup runs
+  // before the next effect, so a back-to-back ring also re-arms
+  // cleanly.
+  useEffect(() => {
+    if (!ringing) return undefined;
+    alerter.start();
+    return () => alerter.stop();
+  }, [ringing, alerter]);
 
   return (
     <Modal
