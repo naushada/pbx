@@ -40,9 +40,14 @@ export function ringReducer(
 ): IncomingCall | null {
   switch (event.type) {
     case 'ring':
-      // First-ring-wins: a second push while one is already in flight
-      // is a no-op — the line is single-occupancy.
-      if (call !== null) return call;
+      // Idempotent duplicate-push guard: while a call is ACTIVELY
+      // ringing, a second push is a no-op — the line is single-
+      // occupancy. After that ring resolves (decline / missed / accept),
+      // the next push CAN ring — otherwise the line is stuck after the
+      // first call. Mirrors the web softphone, where
+      // `SipService.rejectIncoming` clears `this.incoming = undefined`
+      // so the next INVITE can ring.
+      if (call !== null && call.state === 'ringing') return call;
       return {
         state: 'ringing',
         callId: event.callId,
