@@ -78,7 +78,13 @@ fi
 # ── 2. coturn static-auth-secret ─────────────────────────────────────
 mkdir -p "$(dirname "$TURN_CONF_PATH")"
 if [[ -f "$TURN_CONF_PATH" ]] && grep -q '^static-auth-secret=' "$TURN_CONF_PATH"; then
-    STATIC_AUTH_SECRET=$(awk -F= '/^static-auth-secret=/ { print $2 }' "$TURN_CONF_PATH")
+    # `openssl rand -base64 32` produces 44 chars with a trailing `=`
+    # pad. `awk -F= '… { print $2 }'` would split on every `=` and drop
+    # the trailing pad — re-running the script would silently shift the
+    # secret to a truncated variant and break HMAC against whatever
+    # `societies.turnSharedSecret` the cloud Mongo holds. `sed` here
+    # consumes the *first* `=` only, preserving the rest of the line.
+    STATIC_AUTH_SECRET=$(sed -n 's/^static-auth-secret=//p' "$TURN_CONF_PATH" | head -n 1)
     log "reusing existing static-auth-secret from ${TURN_CONF_PATH}"
 else
     STATIC_AUTH_SECRET=$(openssl rand -base64 32)
@@ -86,13 +92,31 @@ else
 fi
 
 # ── 3. Detect external IP (best-effort) ──────────────────────────────
+# Validate that the response actually looks like an address — a captive
+# portal or proxy can return HTML, an error page, or a hostname and
+# without the check it'd land in `external-ip=` and crash coturn at
+# startup (or worse, work but advertise the wrong address in ICE
+# candidates and silently break TURN allocation).
+is_ip_address() {
+    # IPv4 dotted-quad OR IPv6 (any plausible shape — we don't need to
+    # be RFC-strict here, just rule out captive-portal HTML).
+    [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && return 0
+    [[ "$1" =~ ^[0-9a-fA-F:]+$ && "$1" == *":"* ]] && return 0
+    return 1
+}
+
 if [[ -z "${EXTERNAL_IP:-}" ]]; then
     log "detecting external IP via ifconfig.me…"
     EXTERNAL_IP=$(curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)
+    if [[ -n "$EXTERNAL_IP" ]] && ! is_ip_address "$EXTERNAL_IP"; then
+        log "  …ifconfig.me returned '${EXTERNAL_IP}' — not an IP address"
+        log "    (captive portal? proxy?). Discarding."
+        EXTERNAL_IP=""
+    fi
     if [[ -z "$EXTERNAL_IP" ]]; then
-        log "  …couldn't detect (offline?). Falling back to 'auto' — coturn"
-        log "    will STUN-itself to discover. Set EXTERNAL_IP explicitly"
-        log "    if the society host is double-NAT'd."
+        log "  …couldn't detect a usable address. Falling back to 'auto' —"
+        log "    coturn will STUN-itself to discover. Set EXTERNAL_IP"
+        log "    explicitly if the society host is double-NAT'd."
         EXTERNAL_IP=auto
     else
         log "  external IP = $EXTERNAL_IP"
