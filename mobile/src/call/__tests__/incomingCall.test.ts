@@ -183,4 +183,77 @@ describe('IncomingCallController', () => {
     expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(1);
     expect(controller.getCall()?.callId).toBe('call-7');
   });
+
+  // ── Guard kiosk auto-answer (DESIGN.md §9) ─────────────────────────
+  //
+  // Mirrors the web softphone's `SipService.onIncoming` short-circuit:
+  // when the subscriber is a guard with `autoAnswer === true`, the
+  // controller goes straight from "push arrived" → answered, skipping
+  // the CallKit ring UI + the missed-call timer entirely. Defence-in-
+  // depth is enforced at the createSipEnv layer (it AND-s the role
+  // check); the controller just takes a `shouldAutoAnswer` predicate.
+
+  function autoAnswerSetup(predicate: () => boolean) {
+    const clock = new FakeClock();
+    const callKit = {
+      displayIncomingCall: jest.fn(),
+      endCall: jest.fn(),
+    };
+    const signaling = {
+      answer: jest.fn(async () => {}),
+      reject: jest.fn(),
+    };
+    const ensureConnected = jest.fn(async () => {});
+    const connectMedia = jest.fn(async () => {});
+    const controller = new IncomingCallController({
+      callKit,
+      signaling,
+      ensureConnected,
+      connectMedia,
+      logMissedCall: jest.fn(),
+      ringTimeoutMs: RING_TIMEOUT_MS,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      shouldAutoAnswer: predicate,
+    });
+    return {controller, clock, callKit, signaling, ensureConnected, connectMedia};
+  }
+
+  it('auto-answers when shouldAutoAnswer returns true — no CallKit ring, no timer', async () => {
+    const {controller, clock, callKit, signaling, ensureConnected, connectMedia} =
+      autoAnswerSetup(() => true);
+
+    controller.reportPush(wakeUpPush());
+    // Drain any pending microtasks so `void this.accept()` runs to
+    // completion within the test's deterministic horizon.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(callKit.displayIncomingCall).not.toHaveBeenCalled();
+    expect(clock.pending.length).toBe(0);
+    expect(ensureConnected).toHaveBeenCalledTimes(1);
+    expect(signaling.answer).toHaveBeenCalledWith('call-7');
+    expect(connectMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('rings normally when shouldAutoAnswer returns false (e.g. resident)', () => {
+    const {controller, clock, callKit, signaling} =
+      autoAnswerSetup(() => false);
+
+    controller.reportPush(wakeUpPush());
+
+    expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(1);
+    expect(clock.pending.length).toBe(1);
+    expect(signaling.answer).not.toHaveBeenCalled();
+  });
+
+  // Future test: per-call re-evaluation across consecutive rings. Held
+  // back because the existing `ringReducer` is first-ring-wins
+  // regardless of state (mobile/src/sip/incomingCall.ts:42-51) — after
+  // a `decline()` the call object stays in `state: 'declined'` and a
+  // second `reportPush` is a no-op. This diverges from the web
+  // softphone (`SipService.rejectIncoming` clears `this.incoming =
+  // undefined`). Tracked as a separate follow-up; doesn't affect the
+  // auto-answer wiring on a fresh controller (covered by the two
+  // tests above).
 });
