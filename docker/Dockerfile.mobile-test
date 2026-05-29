@@ -29,11 +29,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# package.json first so the dependency install layer is cached
-# independently of source changes. No lockfile is committed yet, so
-# this is `npm install`, not `npm ci`.
-COPY mobile/package.json ./
-RUN npm install --no-audit --no-fund
+# package.json + package-lock.json first so the dependency install
+# layer is cached independently of source changes. `npm ci` is strict
+# — it errors instead of silently re-resolving when the lockfile
+# diverges from package.json, which is the deterministic build we want
+# from CI / clean-checkout runs.
+COPY mobile/package.json mobile/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # Source, configs and the native-module mocks.
 COPY mobile/ ./
