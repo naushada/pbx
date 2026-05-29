@@ -85,4 +85,55 @@ describe('IncomingCallOverlay', () => {
 
     expect(screen.queryByText('Asha Rao')).toBeNull();
   });
+
+  describe('alerter', () => {
+    const makeAlerter = () => ({start: jest.fn(), stop: jest.fn()});
+
+    it('does not pulse before any call rings', () => {
+      const controller = buildController();
+      const alerter = makeAlerter();
+
+      render(<IncomingCallOverlay controller={controller} alerter={alerter} />);
+
+      expect(alerter.start).not.toHaveBeenCalled();
+      expect(alerter.stop).not.toHaveBeenCalled();
+    });
+
+    it('starts the alerter when the controller transitions to ringing', () => {
+      const controller = buildController();
+      const alerter = makeAlerter();
+      render(<IncomingCallOverlay controller={controller} alerter={alerter} />);
+
+      controller.reportPush(validPush);
+
+      expect(alerter.start).toHaveBeenCalledTimes(1);
+      expect(alerter.stop).not.toHaveBeenCalled();
+    });
+
+    it('stops the alerter when the user declines', () => {
+      const controller = buildController();
+      const alerter = makeAlerter();
+      render(<IncomingCallOverlay controller={controller} alerter={alerter} />);
+      controller.reportPush(validPush);
+      expect(alerter.start).toHaveBeenCalledTimes(1);
+
+      controller.decline();
+
+      expect(alerter.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops the alerter on unmount even while still ringing', () => {
+      const controller = buildController();
+      const alerter = makeAlerter();
+      const {unmount} = render(
+        <IncomingCallOverlay controller={controller} alerter={alerter} />,
+      );
+      controller.reportPush(validPush);
+      expect(alerter.start).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      expect(alerter.stop).toHaveBeenCalledTimes(1);
+    });
+  });
 });
