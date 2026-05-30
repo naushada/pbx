@@ -47,6 +47,39 @@ export interface DirectoryEntry {
   online: boolean;
 }
 
+/**
+ * CDR row — `GET /api/v1/cdr?societyId=…` response row. Shape mirrors
+ * the web softphone's `CallRecord` (`ui/src/common/app-globals.ts`).
+ * The cloud's `handle_cdr_GET` returns every CDR for the society; the
+ * mobile HistoryScreen filters client-side to rows involving the
+ * signed-in flat (web does NOT filter today — known pre-existing
+ * issue; mobile gets it right).
+ */
+export type CallDirection = 'inbound' | 'outbound';
+export type CallKind = 'p2p' | 'conference';
+export type HangupCause =
+  | 'normal'
+  | 'busy'
+  | 'noanswer'
+  | 'rejected'
+  | 'failed';
+
+export interface CallRecord {
+  callId: string;
+  societyId: string;
+  fromFlat: string;
+  toFlat: string;
+  direction: CallDirection;
+  type: CallKind;
+  /** ISO-8601 timestamp from the cloud. */
+  startedAt: string;
+  answeredAt?: string;
+  endedAt: string;
+  durationSec: number;
+  hangupCause: HangupCause;
+  conferenceBridge?: string;
+}
+
 export type ApiErrorCode =
   | 'INVALID_CREDENTIALS' // wrong flat / password (HTTP 401)
   | 'UNKNOWN_SOCIETY' //     no such society (HTTP 404)

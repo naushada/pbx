@@ -99,6 +99,16 @@ describe('DialScreen', () => {
     });
   });
 
+  it('History button navigates to the History screen with the session', () => {
+    const {navigation} = renderDial();
+
+    fireEvent.press(screen.getByTestId('dial-history'));
+
+    expect(navigation.navigate).toHaveBeenCalledWith('History', {
+      session: SESSION,
+    });
+  });
+
   describe('sign out', () => {
     it('renders the sign-out button on the idle dialer', () => {
       renderDial();
