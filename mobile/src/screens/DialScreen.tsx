@@ -11,6 +11,7 @@ import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import type {RootStackParamList} from '../navigation/types';
 import {FormField} from './FormField';
 import {InCallPanel} from './InCallPanel';
+import {RegistrationStatusBadge} from './RegistrationStatusBadge';
 import {useDeps} from '../state/deps';
 import {useAuth} from '../state/authContext';
 import {useCall} from '../call/useCall';
@@ -56,6 +57,9 @@ export function DialScreen({navigation, route}: Props): React.JSX.Element {
         <View style={styles.identityText}>
           <Text style={styles.flat}>{subscriber.flatNumber}</Text>
           <Text style={styles.name}>{subscriber.displayName}</Text>
+          <View style={styles.badgeRow}>
+            <RegistrationStatusBadge />
+          </View>
         </View>
         <Pressable
           testID="dial-signout"
@@ -143,6 +147,7 @@ const styles = StyleSheet.create({
   identityText: {flex: 1, marginRight: 12},
   flat: {color: '#ffffff', fontSize: 30, fontWeight: '700'},
   name: {color: '#cfe0f5', fontSize: 15, marginTop: 2},
+  badgeRow: {marginTop: 8, flexDirection: 'row'},
   signOut: {
     paddingVertical: 6,
     paddingHorizontal: 10,

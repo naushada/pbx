@@ -26,6 +26,10 @@ import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {RootNavigator} from './src/navigation/RootNavigator';
 import {AuthProvider} from './src/state/authContext';
 import {AppDeps, DepsProvider} from './src/state/deps';
+import {
+  RegistrationProvider,
+  RegistrationState,
+} from './src/state/registrationContext';
 import {SessionStore} from './src/session/sessionStore';
 import {defaultClient} from './src/api/defaultClient';
 import {Session} from './src/api/types';
@@ -39,6 +43,9 @@ export default function App(): React.JSX.Element {
   // on logout / session change without leaking the UA's WebSocket.
   const envRef = useRef<SipEnv | null>(null);
   const [env, setEnv] = useState<SipEnv | null>(null);
+  // Surfaced via RegistrationContext — the badge in each post-login
+  // screen header reads from this. 'unknown' until the UA emits.
+  const [registration, setRegistration] = useState<RegistrationState>('unknown');
 
   // Boot: try to restore a persisted session before the first render of
   // the navigator. SessionStore.load() never throws — null on miss.
@@ -67,6 +74,13 @@ export default function App(): React.JSX.Element {
     }
     if (session) {
       const next = createSipEnv({session, cloudBaseUrl: CLOUD_BASE_URL});
+      // Reset registration to 'unknown' for the new UA so a stale
+      // 'registered' from the previous session can't briefly show.
+      setRegistration('unknown');
+      next.sipUaHandle.onStateChange(change => {
+        if (cancelled) return;
+        setRegistration(change.state);
+      });
       next.sipUaHandle.start().catch(() => {
         /* state stream will surface 'terminated' */
       });
@@ -76,6 +90,8 @@ export default function App(): React.JSX.Element {
       }
       envRef.current = next;
       setEnv(next);
+    } else {
+      setRegistration('unknown');
     }
     return () => {
       cancelled = true;
@@ -111,14 +127,16 @@ export default function App(): React.JSX.Element {
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" />
       <AuthProvider value={{session, setSession: setSessionState}}>
-        <DepsProvider value={deps}>
-          <RootNavigator />
-          {env && (
-            <IncomingCallOverlay
-              controller={env.incomingCallController}
-            />
-          )}
-        </DepsProvider>
+        <RegistrationProvider value={registration}>
+          <DepsProvider value={deps}>
+            <RootNavigator />
+            {env && (
+              <IncomingCallOverlay
+                controller={env.incomingCallController}
+              />
+            )}
+          </DepsProvider>
+        </RegistrationProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );
