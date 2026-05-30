@@ -123,11 +123,30 @@ export default function App(): React.JSX.Element {
     return base;
   }, [env]);
 
+  const registrationCtx = useMemo(
+    () => ({
+      state: registration,
+      // Re-issue start() on the current UA — idempotent at the sip.js
+      // layer. Errors are swallowed; the state stream surfaces the
+      // result via the badge.
+      reconnect: async (): Promise<void> => {
+        const live = envRef.current;
+        if (!live) return;
+        try {
+          await live.sipUaHandle.start();
+        } catch {
+          /* state stream will surface 'terminated' */
+        }
+      },
+    }),
+    [registration],
+  );
+
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" />
       <AuthProvider value={{session, setSession: setSessionState}}>
-        <RegistrationProvider value={registration}>
+        <RegistrationProvider value={registrationCtx}>
           <DepsProvider value={deps}>
             <RootNavigator />
             {env && (

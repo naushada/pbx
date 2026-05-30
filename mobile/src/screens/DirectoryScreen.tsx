@@ -37,6 +37,7 @@ import {useCall} from '../call/useCall';
 import {isCallActive} from '../sip/callState';
 import {InCallPanel} from './InCallPanel';
 import {RegistrationStatusBadge} from './RegistrationStatusBadge';
+import {ReconnectButton} from './ReconnectButton';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Directory'>;
 
@@ -102,6 +103,7 @@ export function DirectoryScreen({navigation, route}: Props): React.JSX.Element {
         <Text style={styles.title}>Directory</Text>
         <View style={styles.headerBadge}>
           <RegistrationStatusBadge />
+          <ReconnectButton />
         </View>
       </View>
 
@@ -192,7 +194,7 @@ const styles = StyleSheet.create({
   backDim: {opacity: 0.5},
   backText: {color: '#7fb0ef', fontSize: 15, fontWeight: '600'},
   title: {color: '#ffffff', fontSize: 22, fontWeight: '700'},
-  headerBadge: {marginLeft: 'auto'},
+  headerBadge: {marginLeft: 'auto', flexDirection: 'row', alignItems: 'center'},
   filter: {
     marginHorizontal: 16,
     marginBottom: 8,

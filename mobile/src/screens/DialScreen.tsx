@@ -12,6 +12,7 @@ import type {RootStackParamList} from '../navigation/types';
 import {FormField} from './FormField';
 import {InCallPanel} from './InCallPanel';
 import {RegistrationStatusBadge} from './RegistrationStatusBadge';
+import {ReconnectButton} from './ReconnectButton';
 import {useDeps} from '../state/deps';
 import {useAuth} from '../state/authContext';
 import {useCall} from '../call/useCall';
@@ -59,6 +60,7 @@ export function DialScreen({navigation, route}: Props): React.JSX.Element {
           <Text style={styles.name}>{subscriber.displayName}</Text>
           <View style={styles.badgeRow}>
             <RegistrationStatusBadge />
+            <ReconnectButton />
           </View>
         </View>
         <Pressable

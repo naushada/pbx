@@ -16,7 +16,7 @@ import {
 
 function renderWith(state: RegistrationState) {
   return render(
-    <RegistrationProvider value={state}>
+    <RegistrationProvider value={{state, reconnect: async () => {}}}>
       <RegistrationStatusBadge />
     </RegistrationProvider>,
   );
