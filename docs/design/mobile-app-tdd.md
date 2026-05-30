@@ -31,6 +31,7 @@ mobile-test CI gate landed.
 | **Concurrent-call busy gate** | ✅ landed PR #165 — `SipInboundBridge` accepts an optional `isBusy` predicate; `createSipEnv` wires it to AND the OUTBOUND (`SipCallController`) and INBOUND (`IncomingCallController`) views (`outbound.state !== 'idle' \|\| inbound \in {'ringing', 'accepted'}`). A second INVITE while a call is in progress is dropped with SIP 486 Busy Here at the bridge — never reaches the controller, so the narrowed ringReducer can't overwrite the active call's state. Mirrors `SipService.onIncoming`'s `if (this.call \|\| this.incoming) void h.reject('busy')`. |
 | **Directory + tap-to-call** | ✅ landed PR #166 — `CloudClient.getDirectory(societyId, flatPrefix?)` consumes the same `GET /api/v1/subscriber?societyId=…` endpoint the web softphone's `DirectoryComponent` uses. New `DirectoryScreen` renders a filterable list with online presence dots; tap → `callController.placeCall(flatNumber)`. Reachable from `DialScreen` via a "Directory" button. Self-filter (current user's own flat omitted) + offline-call-disabled gate mirror web behaviour. |
 | **Call history + tap-to-redial** | ✅ landed PR #167 — `CloudClient.getCallHistory(societyId)` consumes the same `GET /api/v1/cdr?societyId=…` endpoint the web softphone's `HistoryComponent` uses. New `HistoryScreen` filters CDRs to rows involving the signed-in flat (fixes a pre-existing web bug — web shows every society CDR), sorts newest-first, and renders direction arrows + duration. Tap a row to redial the peer flat. Reachable from `DialScreen` via a "History" button. |
+| **Registration status badge** | ✅ landed PR #168 — `RegistrationContext` plumbs `SipUaState` from `App.tsx`'s UA `onStateChange` subscription down to every post-login screen. New `RegistrationStatusBadge` pill (Online / Connecting… / Offline) renders in the DialScreen identity card and Directory + History headers — same visibility the web softphone's Dashboard provides via `SipService` registration state. Default value is `'unknown'` so an isolated screen test without `RegistrationProvider` falls back to Offline instead of crashing. |
 | **Mobile typecheck in CI** | ✅ landed PR #156 — `Dockerfile.mobile-test`'s CMD runs `npm run typecheck && npm test --ci`; closed 7 latent TS errors that babel-jest had been silently transforming around. PR #155 + #156 wire `mobile-test` into `.github/workflows/publish-images.yml` as a PR merge gate. |
 | **Lockfile + npm ci** | ✅ landed PR #154 — `mobile/package-lock.json` committed, Dockerfile.mobile-test switched from `npm install` to `npm ci` for deterministic builds. |
 | M3 native | not started — real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states (the M3.b `CallKitBridge` seam already accepts the right shape; the in-app `IncomingCallOverlay` Modal handles the foreground case without it) |
@@ -39,7 +40,7 @@ mobile-test CI gate landed.
 
 Containerised Jest runner shipped via PR #137
 ([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
-— the entire suite (**23 files / 200 tests** + **0 typecheck errors**)
+— the entire suite (**24 files / 209 tests** + **0 typecheck errors**)
 is reproducible without an RN install on the host. See
 [`mobile/README.md`](../../mobile/README.md) for invocation and the
 how-to-call walkthrough.
