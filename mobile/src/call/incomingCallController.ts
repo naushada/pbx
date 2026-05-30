@@ -166,6 +166,25 @@ export class IncomingCallController {
     await this.deps.connectMedia();
   }
 
+  /**
+   * Drop the lingering call object — used by `createSipEnv` to clear
+   * the inbound-side state after the SipCallController reports the
+   * adopted call has ended. Without this the `'accepted'` (or
+   * `'declined'`/`'missed'`) state would keep the busy gate latched
+   * past the call's actual end, blocking all future inbound rings.
+   *
+   * Safe in any non-ringing state — never clears an active ring (the
+   * controller's existing ring-timer / signaling paths own that
+   * transition).
+   */
+  clear(): void {
+    if (this.call === null || this.call.state === 'ringing') return;
+    this.call = null;
+    for (const listener of this.listeners) {
+      listener(null);
+    }
+  }
+
   /** Decline the ringing call — SIP 603, then dismiss the CallKit UI. */
   decline(): void {
     const call = this.call;

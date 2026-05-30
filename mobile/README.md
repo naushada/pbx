@@ -31,7 +31,7 @@ further code work.
 | M4 | Detox E2E across iOS simulator + Android emulator | not started |
 | M5 | Manual device matrix → store release | not started |
 
-Current suite: **24 Jest files / 209 tests** (+ `tsc --noEmit` clean), all green via
+Current suite: **24 Jest files / 230 tests** (+ `tsc --noEmit` clean), all green via
 `docker-compose.mobile-test.yml`.
 
 ## Quickstart — run the test suite
@@ -54,7 +54,7 @@ podman-compose -f docker-compose.mobile-test.yml run --rm mobile-test
 
 Image: `docker/Dockerfile.mobile-test` — Node 20 + the
 node-gyp toolchain, `npm install`, then `npm test --ci`. The current
-suite is **24 files / 209 tests**. The build also copies the
+suite is **24 files / 230 tests**. The build also copies the
 top-level `shared/` directory parallel to `mobile/` so the
 `shared/sip-ua/` source resolves the same way it does in-tree.
 

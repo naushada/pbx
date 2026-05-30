@@ -352,4 +352,120 @@ describe('createSipEnv', () => {
     expect(inv.reject).toHaveBeenCalledWith('busy');
     expect(env.incomingCallController.getCall()).toBeNull();
   });
+
+  // ── Inbound-call adoption + post-end busy-gate clear ──────────────
+  //
+  // The bridge's `onAnswered` hook hands the accepted SipCallHandle to
+  // SipCallController via `adoptInboundCall`, which puts callController
+  // into 'connected' so `<InCallPanel />` renders and `hangup()`
+  // works for the inbound case the same way it does for outbound.
+  //
+  // When that call eventually ends, createSipEnv's
+  // `callController.subscribe(call => if (state === 'ended')
+  // incomingCallController.clear())` wiring drops the lingering
+  // IncomingCall state so the busy gate clears and the next inbound
+  // INVITE rings normally.
+
+  function answeredHandle(): SipCallHandle {
+    const listeners: Array<(c: {state: string}) => void> = [];
+    return {
+      onStateChange: cb =>
+        listeners.push(cb as (c: {state: string}) => void),
+      hangup: jest.fn(async () => {
+        listeners.forEach(cb => cb({state: 'ended'}));
+      }),
+      setMute: jest.fn(),
+    };
+  }
+
+  it('adopts an accepted inbound call into SipCallController', async () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const accepted = answeredHandle();
+    const inv: IncomingCallHandle = {
+      info: {fromUri: 'sip:B-204@x', fromFlat: 'B-204', callId: 'call-A'},
+      accept: jest.fn(async () => accepted),
+      reject: jest.fn(async () => {}),
+    };
+    built[0].incomingCb!(inv);
+    await env.incomingCallController.accept();
+
+    expect(env.callController.getCall().state).toBe('connected');
+    expect(env.callController.getCall().target).toBe('sip:B-204@pbx.local');
+  });
+
+  it('hanging up the adopted call clears the inbound state + frees the busy gate', async () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const accepted = answeredHandle();
+    const inv: IncomingCallHandle = {
+      info: {fromUri: 'sip:B-204@x', fromFlat: 'B-204', callId: 'call-A'},
+      accept: jest.fn(async () => accepted),
+      reject: jest.fn(async () => {}),
+    };
+    built[0].incomingCb!(inv);
+    await env.incomingCallController.accept();
+    expect(env.callController.getCall().state).toBe('connected');
+
+    // Hangup drives FakeAnsweredHandle's 'ended' emission, which the
+    // controller's onSipState turns into a 'remoteHangup' dispatch
+    // because we didn't go through the controller's local hangup path.
+    env.callController.hangup();
+
+    expect(env.callController.getCall().state).toBe('ended');
+    // createSipEnv's subscribe → clear() wiring fired.
+    expect(env.incomingCallController.getCall()).toBeNull();
+
+    // A new INVITE should now ring (busy gate is clear).
+    const next: IncomingCallHandle = {
+      info: {fromUri: 'sip:C-301@x', fromFlat: 'C-301', callId: 'call-B'},
+      accept: jest.fn(async () => answeredHandle()),
+      reject: jest.fn(async () => {}),
+    };
+    built[0].incomingCb!(next);
+
+    expect(next.reject).not.toHaveBeenCalled();
+    expect(env.incomingCallController.getCall()?.callId).toBe('call-B');
+  });
+
+  it('allows a fresh outbound dial after the previous call ended', () => {
+    const {factory, built} = fakeFactory();
+    const env = createSipEnv({
+      session: session(),
+      cloudBaseUrl: 'https://x',
+      factory,
+    });
+
+    const first: SipCallHandle = {
+      onStateChange: () => {},
+      hangup: async () => {},
+      setMute: () => {},
+    };
+    const second: SipCallHandle = {
+      onStateChange: () => {},
+      hangup: async () => {},
+      setMute: () => {},
+    };
+    const placeCallMock = built[0].placeCall as jest.Mock;
+    placeCallMock.mockImplementationOnce(() => first);
+    placeCallMock.mockImplementationOnce(() => second);
+    env.callController.placeCall('B-204');
+    env.callController.hangup();
+    expect(env.callController.getCall().state).toBe('ended');
+
+    env.callController.placeCall('C-301');
+
+    expect(placeCallMock).toHaveBeenCalledTimes(2);
+    expect(env.callController.getCall().state).toBe('calling');
+  });
 });

@@ -9,6 +9,16 @@ export type CallState = 'idle' | 'calling' | 'connected' | 'ended';
 
 export type CallEvent =
   | {type: 'dial'; target: string}
+  /**
+   * Adopt an already-answered inbound call into the SipCallController.
+   * Goes idle (or post-ended) → connected directly, skipping the
+   * `calling` transition that an outbound dial walks through. The
+   * inbound-side `IncomingCallController` has already taken the user
+   * through Accept; this hands the resulting `SipCallHandle` to the
+   * controller so the in-call panel + hangup path light up for the
+   * inbound case the same way they do for outbound.
+   */
+  | {type: 'adopted'; target: string}
   | {type: 'answered'}
   | {type: 'localHangup'}
   | {type: 'remoteHangup'}
@@ -33,10 +43,19 @@ export const idleCall: Call = {state: 'idle', target: null, endReason: null};
 export function callReducer(call: Call, event: CallEvent): Call {
   switch (event.type) {
     case 'dial':
-      // First-call-wins: dialing while a call is already in flight is a
-      // no-op — no double call.
-      if (call.state !== 'idle') return call;
+      // Block ONLY while a call is actively occupying the line. Was
+      // `state !== 'idle'`, but that also blocked a fresh dial after a
+      // previous call ended — so the user could only ever place ONE
+      // call per app launch. `isCallActive` allows the post-`ended`
+      // re-dial path.
+      if (isCallActive(call)) return call;
       return {state: 'calling', target: event.target, endReason: null};
+
+    case 'adopted':
+      // Same gate as dial — don't overwrite a live call; allow from
+      // idle or post-`ended`.
+      if (isCallActive(call)) return call;
+      return {state: 'connected', target: event.target, endReason: null};
 
     case 'answered':
       if (call.state !== 'calling') return call;
