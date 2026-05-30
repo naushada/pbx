@@ -19,6 +19,7 @@ import {
   IncomingCallSignaling,
 } from '../call/incomingCallController';
 import {IncomingCall} from '../sip/incomingCall';
+import {isCallActive} from '../sip/callState';
 
 /** Just the slice of `react-native-callkeep` we currently need. */
 const NOOP_CALL_KIT: CallKitBridge = {
@@ -96,14 +97,40 @@ export function createSipEnv(opts: CreateSipEnvOpts): SipEnv {
   // SipService.onIncoming. Bridges the OUTBOUND-call view
   // (SipCallController) and the INBOUND-ring view
   // (IncomingCallController) so neither side can be doubly engaged.
-  bridge = new SipInboundBridge(ua, incomingCallController, () => {
-    const outbound = callController.getCall();
-    const inbound = incomingCallController.getCall();
-    return (
-      outbound.state !== 'idle' ||
-      (inbound !== null &&
-        (inbound.state === 'ringing' || inbound.state === 'accepted'))
-    );
+  // Uses `isCallActive` for the outbound side so a post-`ended` state
+  // doesn't latch busy forever.
+  bridge = new SipInboundBridge(
+    ua,
+    incomingCallController,
+    () => {
+      const outbound = callController.getCall();
+      const inbound = incomingCallController.getCall();
+      return (
+        isCallActive(outbound) ||
+        (inbound !== null &&
+          (inbound.state === 'ringing' || inbound.state === 'accepted'))
+      );
+    },
+    // onAnswered: hand the accepted inbound SipCallHandle to the
+    // SipCallController via `adoptInboundCall`. That puts callController
+    // into 'connected' state with a peer URI, which lights up
+    // `<InCallPanel />` everywhere `isCallActive(call)` is checked —
+    // so the user has hangup controls for the inbound call same as
+    // outbound. Without this, an accepted inbound was a silent dead
+    // end.
+    (handle, peerFlat) => callController.adoptInboundCall(handle, peerFlat),
+  );
+
+  // After ANY call ends (inbound-adopted or outbound), drop the
+  // lingering `IncomingCall` state so the busy gate clears. Without
+  // this the 'accepted' state from an answered inbound (or 'declined'
+  // from a rejected one) would latch the busy gate and block all
+  // future inbound rings. Mirrors web's `SipService.rejectIncoming` /
+  // `endCall` clearing `this.incoming = undefined`.
+  callController.subscribe(call => {
+    if (call.state === 'ended') {
+      incomingCallController.clear();
+    }
   });
 
   return {

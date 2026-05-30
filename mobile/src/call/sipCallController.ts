@@ -18,6 +18,7 @@ import {
   CallEvent,
   callReducer,
   idleCall,
+  isCallActive,
 } from '../sip/callState';
 import {callTargetUri} from '../sip/sipUri';
 import {
@@ -55,15 +56,36 @@ export class SipCallController implements CallController {
     } catch {
       return; // not a dialable flat — same contract as StubCallController
     }
-    // First-call-wins: the reducer returns identity when not idle, so
-    // we check beforehand to avoid wasted INVITE traffic.
-    if (this.call.state !== 'idle') return;
+    // Block ONLY while a call actively occupies the line. The previous
+    // `state !== 'idle'` check also blocked a fresh dial after a
+    // previous call ended — `isCallActive` allows the re-dial path
+    // (matches the narrowed reducer guard above).
+    if (isCallActive(this.call)) return;
 
     this.weHungUp = false;
     const handle = this.ua.placeCall(target);
     this.currentSipCall = handle;
     handle.onStateChange(change => this.onSipState(change));
     this.dispatch({type: 'dial', target});
+  }
+
+  /**
+   * Hand an already-answered inbound `SipCallHandle` to the controller
+   * so the in-call panel + hangup path light up for the inbound case
+   * the same way they do for outbound. Wired by `createSipEnv` via
+   * `SipInboundBridge.onAnswered`. The `target` URI is constructed for
+   * display only (`InCallPanel.flatOf` extracts the user-part); no
+   * dial happens — the SIP layer is already established.
+   *
+   * No-op if the controller already has an active call (defence-in-
+   * depth — the bridge's busy gate normally prevents this).
+   */
+  adoptInboundCall(handle: SipCallHandle, peerFlat: string): void {
+    if (isCallActive(this.call)) return;
+    this.weHungUp = false;
+    this.currentSipCall = handle;
+    handle.onStateChange(change => this.onSipState(change));
+    this.dispatch({type: 'adopted', target: `sip:${peerFlat}@pbx.local`});
   }
 
   hangup(): void {

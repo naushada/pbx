@@ -199,3 +199,78 @@ describe('SipCallController.subscribe', () => {
     expect(cb).not.toHaveBeenCalled();
   });
 });
+
+describe('SipCallController.adoptInboundCall', () => {
+  it('transitions directly to connected with a peer-derived target', () => {
+    const {controller} = setup();
+    const handle = new FakeSipCallHandle();
+
+    controller.adoptInboundCall(handle, 'B-204');
+
+    expect(controller.getCall().state).toBe('connected');
+    expect(controller.getCall().target).toBe('sip:B-204@pbx.local');
+  });
+
+  it('subscribes to the adopted handle so a remote hangup ends the call', () => {
+    const {controller} = setup();
+    const handle = new FakeSipCallHandle();
+    controller.adoptInboundCall(handle, 'B-204');
+
+    handle.emit({state: 'ended'});
+
+    expect(controller.getCall().state).toBe('ended');
+    expect(controller.getCall().endReason).toBe('remote hung up');
+  });
+
+  it('hangup() on an adopted call drives the SIP layer + transitions to ended', () => {
+    const {controller} = setup();
+    const handle = new FakeSipCallHandle();
+    controller.adoptInboundCall(handle, 'B-204');
+
+    controller.hangup();
+
+    expect(handle.hangup).toHaveBeenCalledTimes(1);
+    expect(controller.getCall().state).toBe('ended');
+    expect(controller.getCall().endReason).toBe('hung up');
+  });
+
+  it('refuses to adopt while a call is already active', () => {
+    const {controller} = setup();
+    controller.placeCall('A-101');
+    const before = controller.getCall();
+    const inbound = new FakeSipCallHandle();
+
+    controller.adoptInboundCall(inbound, 'B-204');
+
+    expect(controller.getCall()).toBe(before);
+    expect(inbound.hangup).not.toHaveBeenCalled();
+  });
+
+  it('allows an adopt after a previous call ended', () => {
+    const {controller, ua} = setup();
+    controller.placeCall('A-101');
+    ua.callHandle.emit({state: 'ended'});
+    expect(controller.getCall().state).toBe('ended');
+
+    const inbound = new FakeSipCallHandle();
+    controller.adoptInboundCall(inbound, 'B-204');
+
+    expect(controller.getCall().state).toBe('connected');
+    expect(controller.getCall().target).toBe('sip:B-204@pbx.local');
+  });
+});
+
+describe('SipCallController.placeCall — re-dial after end', () => {
+  it('allows a fresh dial after the previous call ended', () => {
+    const {controller, ua} = setup();
+    controller.placeCall('A-101');
+    ua.callHandle.emit({state: 'ended'});
+    expect(controller.getCall().state).toBe('ended');
+
+    controller.placeCall('B-204');
+
+    expect(ua.placeCall).toHaveBeenCalledTimes(2);
+    expect(controller.getCall().state).toBe('calling');
+    expect(controller.getCall().target).toMatch(/^sip:B-204@/);
+  });
+});

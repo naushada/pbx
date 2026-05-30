@@ -198,3 +198,35 @@ describe('SipInboundBridge — busy gate', () => {
     expect(inv.accept).not.toHaveBeenCalled();
   });
 });
+
+describe('SipInboundBridge — onAnswered hook', () => {
+  it('passes the accepted SipCallHandle + peerFlat to onAnswered', async () => {
+    const ua = new FakeSipUa();
+    const controller = {reportPush: jest.fn()};
+    const onAnswered = jest.fn();
+    const bridge = new SipInboundBridge(ua, controller, undefined, onAnswered);
+    const inv = new FakeIncomingHandle('call-7', 'B-204');
+    ua.deliver(inv);
+
+    await bridge.answer('call-7');
+
+    expect(onAnswered).toHaveBeenCalledTimes(1);
+    const [handle, peerFlat] = onAnswered.mock.calls[0];
+    expect(peerFlat).toBe('B-204');
+    // The handle should be the SipCallHandle returned by accept() —
+    // its shape is `{onStateChange, hangup, setMute}`.
+    expect(typeof handle.hangup).toBe('function');
+    expect(typeof handle.setMute).toBe('function');
+  });
+
+  it('does not invoke onAnswered when there is no pending handle', async () => {
+    const ua = new FakeSipUa();
+    const controller = {reportPush: jest.fn()};
+    const onAnswered = jest.fn();
+    const bridge = new SipInboundBridge(ua, controller, undefined, onAnswered);
+
+    await bridge.answer('never-rang');
+
+    expect(onAnswered).not.toHaveBeenCalled();
+  });
+});

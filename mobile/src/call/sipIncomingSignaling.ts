@@ -18,7 +18,7 @@
  * downstream control flow doesn't change when push lands.
  */
 import {IncomingCallSignaling} from './incomingCallController';
-import {IncomingCallHandle, SipUaHandle} from '../sip/sipUa';
+import {IncomingCallHandle, SipCallHandle, SipUaHandle} from '../sip/sipUa';
 
 /** Just the slice of IncomingCallController this bridge needs. */
 interface IncomingCallReporter {
@@ -51,6 +51,17 @@ export class SipInboundBridge implements IncomingCallSignaling {
      * want.
      */
     private readonly isBusy?: () => boolean,
+    /**
+     * Fires once the answered INVITE produces an active `SipCallHandle`.
+     * `createSipEnv` wires this to `SipCallController.adoptInboundCall`
+     * so the in-call panel + hangup path light up for the inbound case
+     * the same way they do for outbound. Without this, an accepted
+     * inbound call has no UI to hang up — the user is silently stuck.
+     */
+    private readonly onAnswered?: (
+      handle: SipCallHandle,
+      peerFlat: string,
+    ) => void,
   ) {
     ua.onIncomingCall(handle => this.onInvite(handle));
   }
@@ -59,7 +70,9 @@ export class SipInboundBridge implements IncomingCallSignaling {
     const handle = this.pending.get(callId);
     if (!handle) return;
     this.pending.delete(callId);
-    await handle.accept();
+    const peerFlat = handle.info.fromFlat;
+    const accepted = await handle.accept();
+    this.onAnswered?.(accepted, peerFlat);
   }
 
   reject(callId: string, code: number): void {

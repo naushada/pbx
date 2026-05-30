@@ -291,4 +291,58 @@ describe('IncomingCallController', () => {
     // Display count unchanged from ring 1 — ring 2 skipped the UI.
     expect(callKit.displayIncomingCall).toHaveBeenCalledTimes(1);
   });
+
+  // ── clear() — drop a lingering post-accept / post-decline state ────
+  //
+  // `createSipEnv` calls this when SipCallController reports the call
+  // has ended, so the busy gate doesn't latch on the stale 'accepted'
+  // state forever. Tested in isolation here.
+
+  describe('clear()', () => {
+    it('drops a lingering accepted call and notifies subscribers', async () => {
+      const {controller} = setup();
+      controller.reportPush(wakeUpPush());
+      await controller.accept();
+      expect(controller.getCall()?.state).toBe('accepted');
+      const seen: Array<unknown> = [];
+      controller.subscribe(c => seen.push(c));
+
+      controller.clear();
+
+      expect(controller.getCall()).toBeNull();
+      expect(seen).toEqual([null]);
+    });
+
+    it('drops a lingering declined call', () => {
+      const {controller} = setup();
+      controller.reportPush(wakeUpPush());
+      controller.decline();
+      expect(controller.getCall()?.state).toBe('declined');
+
+      controller.clear();
+
+      expect(controller.getCall()).toBeNull();
+    });
+
+    it('is a no-op while a call is actively ringing', () => {
+      const {controller} = setup();
+      controller.reportPush(wakeUpPush());
+      const before = controller.getCall();
+
+      controller.clear();
+
+      expect(controller.getCall()).toBe(before);
+    });
+
+    it('is a no-op when there is no call to begin with', () => {
+      const {controller} = setup();
+      const cb = jest.fn();
+      controller.subscribe(cb);
+
+      controller.clear();
+
+      expect(controller.getCall()).toBeNull();
+      expect(cb).not.toHaveBeenCalled();
+    });
+  });
 });
