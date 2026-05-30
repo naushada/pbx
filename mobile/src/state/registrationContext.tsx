@@ -1,16 +1,16 @@
 /**
- * RegistrationContext — exposes the sip.js UA's current state to any
- * post-login screen.
+ * RegistrationContext — exposes the sip.js UA's current state + a
+ * manual reconnect handle to any post-login screen.
  *
  * Web softphone's Dashboard subscribes to `PubsubsvcService.onCallState`
- * and renders "Connected", "Connecting…", "Disconnected". Mobile has
- * no equivalent surface — without it the user can't tell if they're
- * actually online + reachable for incoming calls. This context puts
- * the same information one `useRegistration()` call away.
+ * and renders "Connected", "Connecting…", "Disconnected" + has a
+ * Connect button for manual retry after a `failed`/`idle` state.
+ * Mobile mirrors both pieces here: `state` for the badge + `reconnect`
+ * for the retry button.
  *
- * Default value is `'unknown'` so an isolated screen test that
- * doesn't wrap in `RegistrationProvider` still renders without
- * crashing (the badge falls back to neutral grey).
+ * Default values render an offline badge and a no-op reconnect so
+ * isolated screen tests that don't wrap in `RegistrationProvider`
+ * still render without crashing.
  */
 import {createContext, useContext} from 'react';
 import {SipUaState} from '../sip/sipUa';
@@ -22,10 +22,29 @@ import {SipUaState} from '../sip/sipUa';
  */
 export type RegistrationState = SipUaState | 'unknown';
 
-const RegistrationContext = createContext<RegistrationState>('unknown');
+export interface RegistrationContextValue {
+  state: RegistrationState;
+  /**
+   * Re-issue `sipUaHandle.start()` on the current env. Idempotent —
+   * a no-op if there is no env (pre-login) and tolerant of an
+   * already-started UA (sip.js's `UserAgent.start()` early-returns
+   * when the transport is already up). Errors are swallowed; the
+   * state stream surfaces the result via the badge.
+   */
+  reconnect: () => Promise<void>;
+}
+
+const DEFAULT: RegistrationContextValue = {
+  state: 'unknown',
+  reconnect: async () => {
+    /* default no-op — context not provided in test */
+  },
+};
+
+const RegistrationContext = createContext<RegistrationContextValue>(DEFAULT);
 
 export const RegistrationProvider = RegistrationContext.Provider;
 
-export function useRegistration(): RegistrationState {
+export function useRegistration(): RegistrationContextValue {
   return useContext(RegistrationContext);
 }

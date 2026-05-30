@@ -36,7 +36,7 @@ function variantOf(state: RegistrationState): Variant {
 }
 
 export function RegistrationStatusBadge(): React.JSX.Element {
-  const state = useRegistration();
+  const {state} = useRegistration();
   const {label, dot} = variantOf(state);
   return (
     <View
