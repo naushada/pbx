@@ -42,7 +42,7 @@ function renderDial(opts?: {clearError?: unknown}) {
   // Only the bits DialScreen reaches into. Typing the mock as the full
   // NativeStackNavigationProp would drag in every screen-stack overload
   // for one method, so we keep it minimal + cast at the prop boundary.
-  const navigation = {reset: jest.fn()};
+  const navigation = {reset: jest.fn(), navigate: jest.fn()};
   render(
     <AuthProvider value={{session: SESSION, setSession}}>
       <DepsProvider value={{client, sessionStore, callController}}>
@@ -87,6 +87,16 @@ describe('DialScreen', () => {
 
     expect(screen.queryByTestId('dial-screen')).toBeNull();
     expect(screen.getByTestId('incall-panel')).toBeTruthy();
+  });
+
+  it('Directory button navigates to the Directory screen with the session', () => {
+    const {navigation} = renderDial();
+
+    fireEvent.press(screen.getByTestId('dial-directory'));
+
+    expect(navigation.navigate).toHaveBeenCalledWith('Directory', {
+      session: SESSION,
+    });
   });
 
   describe('sign out', () => {

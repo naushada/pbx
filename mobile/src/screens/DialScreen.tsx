@@ -93,6 +93,20 @@ export function DialScreen({navigation, route}: Props): React.JSX.Element {
         <Text style={styles.callText}>Call</Text>
       </Pressable>
 
+      <Pressable
+        testID="dial-directory"
+        accessibilityRole="button"
+        accessibilityLabel="Open directory"
+        onPress={() =>
+          navigation.navigate('Directory', {session: route.params.session})
+        }
+        style={({pressed}) => [
+          styles.directory,
+          pressed && styles.directoryDim,
+        ]}>
+        <Text style={styles.directoryText}>Directory</Text>
+      </Pressable>
+
       {call.state === 'ended' && call.endReason ? (
         <Text testID="dial-last-call" style={styles.ended}>
           Last call ended: {call.endReason}
@@ -133,5 +147,15 @@ const styles = StyleSheet.create({
   },
   callDim: {opacity: 0.5},
   callText: {color: '#ffffff', fontSize: 16, fontWeight: '700'},
+  directory: {
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#3a567c',
+  },
+  directoryDim: {opacity: 0.5},
+  directoryText: {color: '#9bb3d1', fontSize: 14, fontWeight: '600'},
   ended: {color: '#7f97b5', fontSize: 13, marginTop: 18, textAlign: 'center'},
 });
