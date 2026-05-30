@@ -200,3 +200,78 @@ describe('CloudClient.registerDevice', () => {
     ).rejects.toHaveProperty('code', 'RATE_LIMITED');
   });
 });
+
+describe('CloudClient.getDirectory', () => {
+  const TWO_ROWS = [
+    {
+      flatNumber: 'A-101',
+      displayName: 'Alice',
+      sipUri: 'sip:A-101@pbx.local',
+      online: true,
+    },
+    {
+      flatNumber: 'B-204',
+      displayName: 'Bob',
+      sipUri: 'sip:B-204@pbx.local',
+      online: false,
+    },
+  ];
+
+  it('builds GET /api/v1/subscriber with the URL-encoded societyId', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: TWO_ROWS}));
+
+    await new CloudClient(t).getDirectory('soc sunset');
+
+    expect(t.calls[0].method).toBe('GET');
+    expect(t.calls[0].path).toBe('/api/v1/subscriber?societyId=soc%20sunset');
+    expect(t.calls[0].body).toBeUndefined();
+  });
+
+  it('appends flatPrefix when provided and trims whitespace', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: TWO_ROWS}));
+
+    await new CloudClient(t).getDirectory('soc', '  A  ');
+
+    expect(t.calls[0].path).toBe('/api/v1/subscriber?societyId=soc&flatPrefix=A');
+  });
+
+  it('omits flatPrefix when undefined or empty-after-trim', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: TWO_ROWS}));
+    const c = new CloudClient(t);
+
+    await c.getDirectory('soc');
+    await c.getDirectory('soc', '');
+    await c.getDirectory('soc', '   ');
+
+    expect(t.calls[0].path).toBe('/api/v1/subscriber?societyId=soc');
+    expect(t.calls[1].path).toBe('/api/v1/subscriber?societyId=soc');
+    expect(t.calls[2].path).toBe('/api/v1/subscriber?societyId=soc');
+  });
+
+  it('returns the array body on a 2xx', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: TWO_ROWS}));
+
+    expect(await new CloudClient(t).getDirectory('soc')).toEqual(TWO_ROWS);
+  });
+
+  it('rejects a non-array body as a SERVER ApiError', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: {oops: true}}));
+
+    await expect(new CloudClient(t).getDirectory('soc')).rejects.toBeInstanceOf(
+      ApiError,
+    );
+    await expect(
+      new CloudClient(t).getDirectory('soc'),
+    ).rejects.toHaveProperty('code', 'SERVER');
+  });
+
+  it('maps a transport failure to ApiError NETWORK', async () => {
+    const t = new ScriptedTransport(() => {
+      throw new TransportError('dns');
+    });
+
+    await expect(
+      new CloudClient(t).getDirectory('soc'),
+    ).rejects.toHaveProperty('code', 'NETWORK');
+  });
+});

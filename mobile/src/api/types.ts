@@ -31,6 +31,22 @@ export interface Session {
   subscriber: Subscriber;
 }
 
+/**
+ * Directory entry — `GET /api/v1/subscriber?societyId=…` response row.
+ * Shape mirrors the web softphone's `DirectoryEntry`
+ * (`ui/src/common/app-globals.ts`); the cloud's `handle_directory_GET`
+ * projects each persisted `subscribers` row to exactly these four
+ * fields, renaming + stripping secrets in one pass.
+ */
+export interface DirectoryEntry {
+  flatNumber: string;
+  displayName: string;
+  /** "sip:<flatNumber>@pbx.local" — informational; nothing routes on it. */
+  sipUri: string;
+  /** Last-known REGISTER status from the agent (presence cache). */
+  online: boolean;
+}
+
 export type ApiErrorCode =
   | 'INVALID_CREDENTIALS' // wrong flat / password (HTTP 401)
   | 'UNKNOWN_SOCIETY' //     no such society (HTTP 404)

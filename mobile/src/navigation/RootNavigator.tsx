@@ -12,6 +12,7 @@ import type {RootStackParamList} from './types';
 import {LoginScreen} from '../screens/LoginScreen';
 import {RegisterScreen} from '../screens/RegisterScreen';
 import {DialScreen} from '../screens/DialScreen';
+import {DirectoryScreen} from '../screens/DirectoryScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -24,6 +25,7 @@ export function RootNavigator(): React.JSX.Element {
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Register" component={RegisterScreen} />
         <Stack.Screen name="Dial" component={DialScreen} />
+        <Stack.Screen name="Directory" component={DirectoryScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

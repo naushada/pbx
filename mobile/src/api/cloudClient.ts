@@ -5,7 +5,7 @@
  * resolves to a typed value or rejects with `ApiError` — HTTP status
  * codes and transport failures never leak past this class.
  */
-import {ApiError, Session} from './types';
+import {ApiError, DirectoryEntry, Session} from './types';
 import {HttpResponse, HttpTransport, TransportError} from './http';
 
 export interface RegisterRequest {
@@ -61,6 +61,31 @@ export class CloudClient {
     }
     const res = await this.send('POST', '/api/v1/subscriber/register', body);
     return this.sessionFrom(res);
+  }
+
+  /**
+   * GET /api/v1/subscriber?societyId=…[&flatPrefix=…] — society-scoped
+   * directory listing. Same endpoint the web softphone's
+   * `DirectoryComponent` uses. Returns an empty array if the cloud has
+   * no DB configured (the handler's safe default).
+   */
+  async getDirectory(
+    societyId: string,
+    flatPrefix?: string,
+  ): Promise<DirectoryEntry[]> {
+    let path = `/api/v1/subscriber?societyId=${encodeURIComponent(societyId)}`;
+    if (flatPrefix && flatPrefix.trim()) {
+      path += `&flatPrefix=${encodeURIComponent(flatPrefix.trim())}`;
+    }
+    const res = await this.send('GET', path);
+    if (!isOk(res)) {
+      throw errorFor(res);
+    }
+    const body = res.body;
+    if (!Array.isArray(body)) {
+      throw new ApiError('SERVER', 'malformed directory response');
+    }
+    return body as DirectoryEntry[];
   }
 
   /** GET /api/v1/society/resolve — society name/code → societyId. */

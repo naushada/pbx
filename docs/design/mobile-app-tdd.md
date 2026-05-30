@@ -29,6 +29,7 @@ mobile-test CI gate landed.
 | **Guard kiosk auto-answer** | ✅ landed PR #163 — `Subscriber.autoAnswer?: boolean` + `SubscriberRole` union (`'resident' \| 'guard' \| 'admin'`); `IncomingCallController` accepts a `shouldAutoAnswer` predicate; `createSipEnv` AND-s `sub.autoAnswer && sub.role === 'guard'` (defence-in-depth — `autoAnswer` on a resident is silently ignored). Auto-answered calls skip CallKit display + ring timer + (transitively) the Vibration alerter, matching `SipService.onIncoming` in the web softphone (DESIGN.md §9). |
 | **Ring re-arm after end** | ✅ landed PR #164 — narrowed `ringReducer`'s first-ring-wins guard from `if (call !== null)` to `if (call !== null && call.state === 'ringing')`. Idempotent duplicate pushes during an active ring still no-op, but after decline/missed/accept a new push rings again. Matches the web softphone's `SipService.rejectIncoming` clearing `this.incoming = undefined`. The held-back per-call shouldAutoAnswer re-evaluation test from #163 is now active. |
 | **Concurrent-call busy gate** | ✅ landed PR #165 — `SipInboundBridge` accepts an optional `isBusy` predicate; `createSipEnv` wires it to AND the OUTBOUND (`SipCallController`) and INBOUND (`IncomingCallController`) views (`outbound.state !== 'idle' \|\| inbound \in {'ringing', 'accepted'}`). A second INVITE while a call is in progress is dropped with SIP 486 Busy Here at the bridge — never reaches the controller, so the narrowed ringReducer can't overwrite the active call's state. Mirrors `SipService.onIncoming`'s `if (this.call \|\| this.incoming) void h.reject('busy')`. |
+| **Directory + tap-to-call** | ✅ landed PR #166 — `CloudClient.getDirectory(societyId, flatPrefix?)` consumes the same `GET /api/v1/subscriber?societyId=…` endpoint the web softphone's `DirectoryComponent` uses. New `DirectoryScreen` renders a filterable list with online presence dots; tap → `callController.placeCall(flatNumber)`. Reachable from `DialScreen` via a "Directory" button. Self-filter (current user's own flat omitted) + offline-call-disabled gate mirror web behaviour. |
 | **Mobile typecheck in CI** | ✅ landed PR #156 — `Dockerfile.mobile-test`'s CMD runs `npm run typecheck && npm test --ci`; closed 7 latent TS errors that babel-jest had been silently transforming around. PR #155 + #156 wire `mobile-test` into `.github/workflows/publish-images.yml` as a PR merge gate. |
 | **Lockfile + npm ci** | ✅ landed PR #154 — `mobile/package-lock.json` committed, Dockerfile.mobile-test switched from `npm install` to `npm ci` for deterministic builds. |
 | M3 native | not started — real CallKit / PushKit / ConnectionService / FCM for wake-up from killed/backgrounded states (the M3.b `CallKitBridge` seam already accepts the right shape; the in-app `IncomingCallOverlay` Modal handles the foreground case without it) |
@@ -37,7 +38,7 @@ mobile-test CI gate landed.
 
 Containerised Jest runner shipped via PR #137
 ([`docker/Dockerfile.mobile-test`](../../docker/Dockerfile.mobile-test))
-— the entire suite (**21 files / 169 tests** + **0 typecheck errors**)
+— the entire suite (**22 files / 185 tests** + **0 typecheck errors**)
 is reproducible without an RN install on the host. See
 [`mobile/README.md`](../../mobile/README.md) for invocation and the
 how-to-call walkthrough.
