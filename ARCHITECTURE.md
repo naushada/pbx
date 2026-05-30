@@ -252,7 +252,7 @@ directly to the on-prem agent.
 | Device registration | `push/DeviceRegistrar` posts the APNs / FCM token to `POST /api/v1/push/device` only when it has rotated. |
 
 Tests run in pure Node — every native module is faked in
-`jest.setup.ts`. The full **22-file / 185-test** suite is reproducible
+`jest.setup.ts`. The full **23-file / 200-test** suite is reproducible
 without an RN toolchain via
 [`docker/Dockerfile.mobile-test`](./docker/Dockerfile.mobile-test):
 

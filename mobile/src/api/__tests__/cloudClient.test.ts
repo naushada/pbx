@@ -275,3 +275,83 @@ describe('CloudClient.getDirectory', () => {
     ).rejects.toHaveProperty('code', 'NETWORK');
   });
 });
+
+describe('CloudClient.getCallHistory', () => {
+  const TWO_CDRS = [
+    {
+      callId: 'c-1',
+      societyId: 'soc',
+      fromFlat: 'A-101',
+      toFlat: 'B-204',
+      direction: 'outbound',
+      type: 'p2p',
+      startedAt: '2026-05-29T10:00:00Z',
+      endedAt: '2026-05-29T10:01:00Z',
+      durationSec: 60,
+      hangupCause: 'normal',
+    },
+    {
+      callId: 'c-2',
+      societyId: 'soc',
+      fromFlat: 'C-301',
+      toFlat: 'D-402',
+      direction: 'outbound',
+      type: 'p2p',
+      startedAt: '2026-05-29T11:00:00Z',
+      endedAt: '2026-05-29T11:02:00Z',
+      durationSec: 120,
+      hangupCause: 'normal',
+    },
+  ];
+
+  it('builds GET /api/v1/cdr with the URL-encoded societyId', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: TWO_CDRS}));
+
+    await new CloudClient(t).getCallHistory('soc with space');
+
+    expect(t.calls[0].method).toBe('GET');
+    expect(t.calls[0].path).toBe('/api/v1/cdr?societyId=soc%20with%20space');
+    expect(t.calls[0].body).toBeUndefined();
+  });
+
+  it('returns the array body on a 2xx', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: TWO_CDRS}));
+
+    expect(await new CloudClient(t).getCallHistory('soc')).toEqual(TWO_CDRS);
+  });
+
+  it('returns an empty array when the cloud reports no CDRs', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: []}));
+
+    expect(await new CloudClient(t).getCallHistory('soc')).toEqual([]);
+  });
+
+  it('rejects a non-array body as a SERVER ApiError', async () => {
+    const t = new ScriptedTransport(() => ({status: 200, body: {oops: true}}));
+
+    await expect(
+      new CloudClient(t).getCallHistory('soc'),
+    ).rejects.toBeInstanceOf(ApiError);
+    await expect(
+      new CloudClient(t).getCallHistory('soc'),
+    ).rejects.toHaveProperty('code', 'SERVER');
+  });
+
+  it('maps a transport failure to ApiError NETWORK', async () => {
+    const t = new ScriptedTransport(() => {
+      throw new TransportError('dns');
+    });
+
+    await expect(
+      new CloudClient(t).getCallHistory('soc'),
+    ).rejects.toHaveProperty('code', 'NETWORK');
+  });
+
+  it('maps a non-2xx response to a typed ApiError', async () => {
+    const t = new ScriptedTransport(() => ({status: 429, body: {}}));
+
+    await expect(
+      new CloudClient(t).getCallHistory('soc'),
+    ).rejects.toHaveProperty('code', 'RATE_LIMITED');
+  });
+});

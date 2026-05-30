@@ -5,7 +5,7 @@
  * resolves to a typed value or rejects with `ApiError` — HTTP status
  * codes and transport failures never leak past this class.
  */
-import {ApiError, DirectoryEntry, Session} from './types';
+import {ApiError, CallRecord, DirectoryEntry, Session} from './types';
 import {HttpResponse, HttpTransport, TransportError} from './http';
 
 export interface RegisterRequest {
@@ -86,6 +86,28 @@ export class CloudClient {
       throw new ApiError('SERVER', 'malformed directory response');
     }
     return body as DirectoryEntry[];
+  }
+
+  /**
+   * GET /api/v1/cdr?societyId=… — society-scoped CDR list. The cloud
+   * does not filter by flat today, so HistoryScreen filters client-
+   * side to rows where `fromFlat === self || toFlat === self`. Returns
+   * an empty array if the cloud has no DB configured (the handler's
+   * safe default).
+   */
+  async getCallHistory(societyId: string): Promise<CallRecord[]> {
+    const res = await this.send(
+      'GET',
+      `/api/v1/cdr?societyId=${encodeURIComponent(societyId)}`,
+    );
+    if (!isOk(res)) {
+      throw errorFor(res);
+    }
+    const body = res.body;
+    if (!Array.isArray(body)) {
+      throw new ApiError('SERVER', 'malformed call-history response');
+    }
+    return body as CallRecord[];
   }
 
   /** GET /api/v1/society/resolve — society name/code → societyId. */

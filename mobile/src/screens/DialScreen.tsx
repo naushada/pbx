@@ -93,19 +93,34 @@ export function DialScreen({navigation, route}: Props): React.JSX.Element {
         <Text style={styles.callText}>Call</Text>
       </Pressable>
 
-      <Pressable
-        testID="dial-directory"
-        accessibilityRole="button"
-        accessibilityLabel="Open directory"
-        onPress={() =>
-          navigation.navigate('Directory', {session: route.params.session})
-        }
-        style={({pressed}) => [
-          styles.directory,
-          pressed && styles.directoryDim,
-        ]}>
-        <Text style={styles.directoryText}>Directory</Text>
-      </Pressable>
+      <View style={styles.shortcuts}>
+        <Pressable
+          testID="dial-directory"
+          accessibilityRole="button"
+          accessibilityLabel="Open directory"
+          onPress={() =>
+            navigation.navigate('Directory', {session: route.params.session})
+          }
+          style={({pressed}) => [
+            styles.shortcut,
+            pressed && styles.shortcutDim,
+          ]}>
+          <Text style={styles.shortcutText}>Directory</Text>
+        </Pressable>
+        <Pressable
+          testID="dial-history"
+          accessibilityRole="button"
+          accessibilityLabel="Open call history"
+          onPress={() =>
+            navigation.navigate('History', {session: route.params.session})
+          }
+          style={({pressed}) => [
+            styles.shortcut,
+            pressed && styles.shortcutDim,
+          ]}>
+          <Text style={styles.shortcutText}>History</Text>
+        </Pressable>
+      </View>
 
       {call.state === 'ended' && call.endReason ? (
         <Text testID="dial-last-call" style={styles.ended}>
@@ -147,15 +162,16 @@ const styles = StyleSheet.create({
   },
   callDim: {opacity: 0.5},
   callText: {color: '#ffffff', fontSize: 16, fontWeight: '700'},
-  directory: {
+  shortcuts: {flexDirection: 'row', gap: 12, marginTop: 12},
+  shortcut: {
+    flex: 1,
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: 'center',
-    marginTop: 12,
     borderWidth: 1,
     borderColor: '#3a567c',
   },
-  directoryDim: {opacity: 0.5},
-  directoryText: {color: '#9bb3d1', fontSize: 14, fontWeight: '600'},
+  shortcutDim: {opacity: 0.5},
+  shortcutText: {color: '#9bb3d1', fontSize: 14, fontWeight: '600'},
   ended: {color: '#7f97b5', fontSize: 13, marginTop: 18, textAlign: 'center'},
 });

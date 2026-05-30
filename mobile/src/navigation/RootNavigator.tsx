@@ -13,6 +13,7 @@ import {LoginScreen} from '../screens/LoginScreen';
 import {RegisterScreen} from '../screens/RegisterScreen';
 import {DialScreen} from '../screens/DialScreen';
 import {DirectoryScreen} from '../screens/DirectoryScreen';
+import {HistoryScreen} from '../screens/HistoryScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -26,6 +27,7 @@ export function RootNavigator(): React.JSX.Element {
         <Stack.Screen name="Register" component={RegisterScreen} />
         <Stack.Screen name="Dial" component={DialScreen} />
         <Stack.Screen name="Directory" component={DirectoryScreen} />
+        <Stack.Screen name="History" component={HistoryScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

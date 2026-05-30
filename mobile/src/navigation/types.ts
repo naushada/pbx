@@ -11,4 +11,5 @@ export type RootStackParamList = {
   Register: undefined;
   Dial: {session: Session};
   Directory: {session: Session};
+  History: {session: Session};
 };
