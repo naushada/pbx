@@ -20,11 +20,21 @@ export interface MetricsConfig {
   debug?: boolean;
 }
 
+/**
+ * Ships a batch of events to a destination (e.g. the cloud). Must reject on
+ * failure so the manager keeps the batch buffered for a later retry.
+ */
+export type MetricsSink = (events: MetricEvent[]) => Promise<void>;
+
 export class MetricsManager {
   private static instance: MetricsManager;
   private events: MetricEvent[] = [];
   private config: MetricsConfig;
   private isInitialized = false;
+  // Cloud transport + batching state.
+  private sink: MetricsSink | null = null;
+  private flushing = false;
+  private readonly flushThreshold = 20;
 
   private constructor(config: MetricsConfig = {
     enabled: true,
@@ -65,6 +75,35 @@ export class MetricsManager {
     // Optional debug logging (off by default — avoids runtime/test noise).
     if (this.config.debug) {
       console.log(`[Metrics] Event tracked: ${type}`, data);
+    }
+
+    // Ship opportunistically once a batch accumulates.
+    if (this.sink && this.events.length >= this.flushThreshold) {
+      void this.flush();
+    }
+  }
+
+  /** Wire a destination (e.g. the cloud client) that events are flushed to. */
+  setSink(sink: MetricsSink): void {
+    this.sink = sink;
+  }
+
+  /**
+   * Send buffered events to the sink. On success they're dropped; on failure
+   * they stay buffered for the next attempt. Re-entrant calls are ignored
+   * while a flush is in flight.
+   */
+  async flush(): Promise<void> {
+    if (this.flushing || !this.sink || this.events.length === 0) return;
+    const batch = this.events.slice();
+    this.flushing = true;
+    try {
+      await this.sink(batch);
+      this.events.splice(0, batch.length); // keep events queued during send
+    } catch {
+      // keep the batch buffered; the next flush retries
+    } finally {
+      this.flushing = false;
     }
   }
 

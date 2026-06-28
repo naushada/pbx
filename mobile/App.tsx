@@ -51,16 +51,18 @@ export default function App(): React.JSX.Element {
   // screen header reads from this. 'unknown' until the UA emits.
   const [registration, setRegistration] = useState<RegistrationState>('unknown');
 
-  // Initialize metrics manager
+  // Initialize metrics manager and wire it to the cloud transport.
   useEffect(() => {
     const metricsManager = MetricsManager.getInstance();
     metricsManager.initialize();
-    
-    // Track app start
+    // Events are POSTed to the cloud (POST /api/v1/metrics) in batches;
+    // failures keep events buffered for the next flush.
+    metricsManager.setSink(events => defaultClient.postMetrics(events));
     metricsManager.trackEvent('app_start');
-    
+
     return () => {
-      // Could add cleanup logic for metrics if needed
+      // Best-effort flush of anything still buffered on teardown.
+      void metricsManager.flush();
     };
   }, []);
 
@@ -116,8 +118,10 @@ export default function App(): React.JSX.Element {
       // Track logout when session is cleared (use the remembered identity).
       if (loggedInRef.current) {
         const {societyId, flatNumber} = loggedInRef.current;
-        MetricsManager.getInstance().trackLogout(societyId, flatNumber);
+        const metrics = MetricsManager.getInstance();
+        metrics.trackLogout(societyId, flatNumber);
         loggedInRef.current = null;
+        void metrics.flush(); // ship the session's events on logout
       }
       setRegistration('unknown');
     }

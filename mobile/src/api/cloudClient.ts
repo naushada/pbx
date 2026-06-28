@@ -7,6 +7,7 @@
  */
 import {ApiError, CallRecord, DirectoryEntry, Session} from './types';
 import {HttpResponse, HttpTransport, TransportError} from './http';
+import type {MetricEvent} from '../metrics';
 
 export interface RegisterRequest {
   societyName: string;
@@ -136,6 +137,17 @@ export class CloudClient {
       platform: reg.platform,
       token: reg.token,
     });
+    if (isOk(res)) return;
+    throw errorFor(res);
+  }
+
+  /**
+   * POST /api/v1/metrics — ship a batch of usage events. Rejects with
+   * `ApiError` on failure so the caller (MetricsManager) keeps the batch
+   * buffered for a later retry.
+   */
+  async postMetrics(events: MetricEvent[]): Promise<void> {
+    const res = await this.send('POST', '/api/v1/metrics', {events});
     if (isOk(res)) return;
     throw errorFor(res);
   }
