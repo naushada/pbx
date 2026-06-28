@@ -36,6 +36,7 @@ import {Session} from './src/api/types';
 import {CLOUD_BASE_URL} from './src/config';
 import {createSipEnv, SipEnv} from './src/state/createSipEnv';
 import {IncomingCallOverlay} from './src/screens/IncomingCallOverlay';
+import {MetricsManager} from './src/metrics';
 
 export default function App(): React.JSX.Element {
   const [session, setSessionState] = useState<Session | null>(null);
@@ -43,9 +44,25 @@ export default function App(): React.JSX.Element {
   // on logout / session change without leaking the UA's WebSocket.
   const envRef = useRef<SipEnv | null>(null);
   const [env, setEnv] = useState<SipEnv | null>(null);
+  // Remembers who was logged in so we can emit a logout metric when the
+  // session clears (by then `session` is already null).
+  const loggedInRef = useRef<{societyId: string; flatNumber: string} | null>(null);
   // Surfaced via RegistrationContext — the badge in each post-login
   // screen header reads from this. 'unknown' until the UA emits.
   const [registration, setRegistration] = useState<RegistrationState>('unknown');
+
+  // Initialize metrics manager
+  useEffect(() => {
+    const metricsManager = MetricsManager.getInstance();
+    metricsManager.initialize();
+    
+    // Track app start
+    metricsManager.trackEvent('app_start');
+    
+    return () => {
+      // Could add cleanup logic for metrics if needed
+    };
+  }, []);
 
   // Boot: try to restore a persisted session before the first render of
   // the navigator. SessionStore.load() never throws — null on miss.
@@ -90,7 +107,18 @@ export default function App(): React.JSX.Element {
       }
       envRef.current = next;
       setEnv(next);
+      
+      // Track login when session is created
+      const {societyId, flatNumber} = session.subscriber;
+      MetricsManager.getInstance().trackLogin(societyId, flatNumber);
+      loggedInRef.current = {societyId, flatNumber};
     } else {
+      // Track logout when session is cleared (use the remembered identity).
+      if (loggedInRef.current) {
+        const {societyId, flatNumber} = loggedInRef.current;
+        MetricsManager.getInstance().trackLogout(societyId, flatNumber);
+        loggedInRef.current = null;
+      }
       setRegistration('unknown');
     }
     return () => {

@@ -27,6 +27,7 @@ import {
   SipUaHandle,
 } from '../sip/sipUa';
 import {CallController} from './callController';
+import {MetricsManager} from '../metrics';
 
 export class SipCallController implements CallController {
   private call: Call = idleCall;
@@ -35,6 +36,10 @@ export class SipCallController implements CallController {
 
   private currentSipCall: SipCallHandle | null = null;
   private weHungUp = false;
+  // Per-call metric bookkeeping; the event is emitted once when the call ends.
+  private callStartedAt: number | null = null;
+  private callDirection: 'outbound' | 'inbound' | null = null;
+  private callPeer: string | null = null;
 
   constructor(private readonly ua: SipUaHandle) {}
 
@@ -67,6 +72,10 @@ export class SipCallController implements CallController {
     this.currentSipCall = handle;
     handle.onStateChange(change => this.onSipState(change));
     this.dispatch({type: 'dial', target});
+    // Begin metric bookkeeping; emitted once the call ends.
+    this.callStartedAt = Date.now();
+    this.callDirection = 'outbound';
+    this.callPeer = flatNumber;
   }
 
   /**
@@ -86,6 +95,9 @@ export class SipCallController implements CallController {
     this.currentSipCall = handle;
     handle.onStateChange(change => this.onSipState(change));
     this.dispatch({type: 'adopted', target: `sip:${peerFlat}@pbx.local`});
+    this.callStartedAt = Date.now();
+    this.callDirection = 'inbound';
+    this.callPeer = peerFlat;
   }
 
   hangup(): void {
@@ -118,7 +130,7 @@ export class SipCallController implements CallController {
       case 'in-call':
         this.dispatch({type: 'answered'});
         break;
-      case 'ended':
+      case 'ended': {
         // If we initiated the hangup the reducer is already 'ended';
         // suppress to avoid stomping the "hung up" reason with
         // "remote hung up".
@@ -126,15 +138,36 @@ export class SipCallController implements CallController {
           this.dispatch({type: 'remoteHangup'});
         }
         this.currentSipCall = null;
+        this.trackCallEnd(true);
         break;
-      case 'failed':
+      }
+      case 'failed': {
         this.dispatch({
           type: 'failed',
           reason: change.detail ?? 'failed',
         });
         this.currentSipCall = null;
+        this.trackCallEnd(false);
         break;
+      }
     }
+  }
+
+  // Emit a single call metric when the active call ends, then reset bookkeeping.
+  private trackCallEnd(success: boolean): void {
+    if (this.callDirection === null) return; // nothing was tracked
+    const peer = this.callPeer ?? 'unknown';
+    const duration =
+      this.callStartedAt != null ? Date.now() - this.callStartedAt : undefined;
+    const metrics = MetricsManager.getInstance();
+    if (this.callDirection === 'inbound') {
+      metrics.trackInboundCall(peer, duration, success);
+    } else {
+      metrics.trackOutboundCall(peer, duration, success);
+    }
+    this.callStartedAt = null;
+    this.callDirection = null;
+    this.callPeer = null;
   }
 
   private dispatch(event: CallEvent): void {

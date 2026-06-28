@@ -94,3 +94,4 @@ mongo-data/
 test-results/
 coverage/
 build-lima/
+.aider*
